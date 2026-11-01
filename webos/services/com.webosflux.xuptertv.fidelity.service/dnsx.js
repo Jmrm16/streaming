@@ -127,9 +127,13 @@ function dohQuery(host, provider, done) {
 
 function systemLookup(host, done) {
   var finished = false;
+  var timer = setTimeout(function () {
+    finish(new Error('DNS del televisor: tiempo agotado'));
+  }, 2500);
   function finish(err, ips) {
     if (finished) { return; }
     finished = true;
+    try { clearTimeout(timer); } catch (eClear) { /* ignore */ }
     done(err, ips || []);
   }
   try {
@@ -289,16 +293,23 @@ function lookup(hostname, options, cb) {
 function probe(ip, port, cb) {
   var t0 = now();
   var finished = false;
-  var socket = net.connect({ host: ip, port: port });
+  var socket = null;
   function finish(err) {
     if (finished) { return; }
     finished = true;
-    try { socket.destroy(); } catch (eDestroy) { /* ignore */ }
+    if (socket) {
+      try { socket.destroy(); } catch (eDestroy) { /* ignore */ }
+    }
     cb(err, now() - t0);
   }
-  socket.setTimeout(PROBE_TIMEOUT, function () { finish(new Error('tiempo agotado')); });
-  socket.on('connect', function () { finish(null); });
-  socket.on('error', function (err) { finish(err); });
+  try {
+    socket = net.connect({ host: ip, port: port });
+    socket.setTimeout(PROBE_TIMEOUT, function () { finish(new Error('tiempo agotado')); });
+    socket.on('connect', function () { finish(null); });
+    socket.on('error', function (err) { finish(err); });
+  } catch (eConnect) {
+    finish(eConnect);
+  }
 }
 
 function setMode(value) {

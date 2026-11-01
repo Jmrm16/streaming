@@ -485,7 +485,7 @@ function queryString(params) {
   return parts.join('&');
 }
 
-function portalServiceCall(method, params, done) {
+function portalServiceCall(method, params, done, customTimeout) {
   var serviceId = vodApi.serviceId || 'com.webosflux.xuptertv.fidelity.service';
   var settled = false;
   function finish(error, payload) {
@@ -501,7 +501,7 @@ function portalServiceCall(method, params, done) {
       window.webOS.service.request('luna://' + serviceId, {
         method: method,
         parameters: params || {},
-        timeout: parseInt(vodApi.timeoutMs, 10) || 20000,
+        timeout: customTimeout || parseInt(vodApi.timeoutMs, 10) || 20000,
         onSuccess: function (payload) { finish(null, payload); },
         onFailure: function (error) {
           finish((error && error.errorText) || 'Error del servicio XuperTV', null);
@@ -3929,12 +3929,19 @@ function portalServiceCall(method, params, done) {
       if (error || !payload) {
         netdiagState.error = error || 'sin respuesta';
         summary.className = 'dg-summary bad';
-        summary.textContent = 'No se pudo ejecutar la prueba. El servicio de la app no respondió.';
+        var errMsg = String(error || '');
+        if (/exist|not found|no disponible/i.test(errMsg)) {
+          summary.textContent = 'El servicio de fondo no está instalado en la TV. Reinstala la app usando el instalador .bat';
+        } else if (/timeout|tiempo|espera/i.test(errMsg)) {
+          summary.textContent = 'Tiempo de espera agotado. La conexión es muy lenta o el DNS de tu operador no responde.';
+        } else {
+          summary.textContent = 'No se pudo ejecutar la prueba (' + (errMsg || 'el servicio no respondió') + ').';
+        }
         return;
       }
       netdiagState.report = payload;
       renderNetdiag(summary, list, payload);
-    });
+    }, 45000);
   }
 
   function buildNetdiagPanel() {

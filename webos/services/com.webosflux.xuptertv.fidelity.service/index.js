@@ -19,6 +19,11 @@ var urlmod = require('url');
 
 var service = new Service(pkg.name);
 
+/* Prevent unexpected network errors or aborts from terminating the service */
+process.on('uncaughtException', function (err) {
+  console.error('[xuper-service] uncaughtException:', (err && err.stack) || err);
+});
+
 /* Intercept process.exit so idle timers in webos-service do not kill the proxy */
 try {
   process.exit = function (code) {

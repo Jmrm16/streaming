@@ -24,9 +24,9 @@
 var https = require('https');
 var dnsx = require('./dnsx');
 
-var TCP_TIMEOUT = 4000;
-var HTTP_TIMEOUT = 6000;
-var MAX_HOSTS = 8;
+var TCP_TIMEOUT = 3000;
+var HTTP_TIMEOUT = 4000;
+var MAX_HOSTS = 4;
 
 function now() { return Date.now(); }
 
@@ -71,34 +71,38 @@ function httpsCheck(host, ip, done) {
     done(value);
   }
 
-  var req = https.request({
-    hostname: ip,
-    servername: host,
-    rejectUnauthorized: false,
-    port: 443,
-    path: '/',
-    method: 'GET',
-    headers: {
-      'User-Agent': 'XuperTV/webOS',
-      Host: host,
-      Connection: 'close'
-    }
-  }, function (res) {
-    var status = res.statusCode;
-    res.resume();
-    res.on('end', function () {
-      finish({ host: host, ip: ip, ok: status > 0, status: status, ms: now() - t0 });
+  try {
+    var req = https.request({
+      hostname: ip,
+      servername: host,
+      rejectUnauthorized: false,
+      port: 443,
+      path: '/',
+      method: 'GET',
+      headers: {
+        'User-Agent': 'XuperTV/webOS',
+        Host: host,
+        Connection: 'close'
+      }
+    }, function (res) {
+      var status = res.statusCode;
+      res.resume();
+      res.on('end', function () {
+        finish({ host: host, ip: ip, ok: status > 0, status: status, ms: now() - t0 });
+      });
     });
-  });
 
-  req.setTimeout(HTTP_TIMEOUT, function () {
-    try { req.abort(); } catch (eAbort) { /* ignore */ }
-    finish({ host: host, ip: ip, ok: false, error: 'tiempo agotado', ms: now() - t0 });
-  });
-  req.on('error', function (err) {
-    finish({ host: host, ip: ip, ok: false, error: err.code || err.message, ms: now() - t0 });
-  });
-  req.end();
+    req.setTimeout(HTTP_TIMEOUT, function () {
+      try { req.abort(); } catch (eAbort) { /* ignore */ }
+      finish({ host: host, ip: ip, ok: false, error: 'tiempo agotado', ms: now() - t0 });
+    });
+    req.on('error', function (err) {
+      finish({ host: host, ip: ip, ok: false, error: err.code || err.message, ms: now() - t0 });
+    });
+    req.end();
+  } catch (eReq) {
+    finish({ host: host, ip: ip, ok: false, error: eReq.message || 'error https', ms: now() - t0 });
+  }
 }
 
 function first(list) { return list && list.length ? list[0] : ''; }
@@ -125,48 +129,59 @@ function checkHost(host, done) {
     http: null,
     verdict: 'unknown'
   };
-  var t0 = now();
+  var pending = 2;
 
-  function onSystem(err, ips) {
-    result.system.ms = now() - t0;
+  function afterResolvers() {
+    pending--;
+    if (pending > 0) { return; }
+    result.mismatch = result.system.ok && result.doh.ok && !hasCommon(result.system.ips, result.doh.ips);
+
+    /* Prefer the DoH answer: it is the one the bypass will use. */
+    var dialIp = first(result.doh.ips) || first(result.system.ips);
+    if (!dialIp) {
+      result.verdict = (!result.system.ok && !result.doh.ok) ? 'sin-salida' : 'sin-tcp';
+      return done(result);
+    }
+    tcpCheck(dialIp, 443, function (tcp) {
+      result.tcp443 = tcp;
+      if (!tcp.ok) {
+        result.verdict = 'sin-tcp';
+        return done(result);
+      }
+      httpsCheck(host, dialIp, function (http) {
+        result.http = http;
+        if (!http.ok) { result.verdict = 'tls-falla'; return done(result); }
+        if (result.mismatch) { result.verdict = 'dns-distinto'; return done(result); }
+        if (!result.system.ok) { result.verdict = 'dns-local-falla'; return done(result); }
+        result.verdict = 'ok';
+        done(result);
+      });
+    });
+  }
+
+  var tSys = now();
+  dnsx.systemLookup(host, function (err, ips) {
+    result.system.ms = now() - tSys;
     if (err) {
       result.system.error = err.code || err.message;
     } else {
       result.system.ok = true;
       result.system.ips = ips;
     }
-    var t1 = now();
-    dnsx.queryDoh(host, function (dohErr, dohIps) {
-      result.doh.ms = now() - t1;
-      if (dohErr) {
-        result.doh.error = dohErr.message;
-      } else {
-        result.doh.ok = true;
-        result.doh.ips = dohIps;
-      }
-      result.mismatch = result.system.ok && result.doh.ok && !hasCommon(result.system.ips, result.doh.ips);
+    afterResolvers();
+  });
 
-      /* Prefer the DoH answer: it is the one the bypass will use. */
-      var dialIp = first(result.doh.ips) || first(result.system.ips);
-      tcpCheck(dialIp, 443, function (tcp) {
-        result.tcp443 = tcp;
-        if (!tcp.ok) {
-          result.verdict = 'sin-tcp';
-          return done(result);
-        }
-        httpsCheck(host, dialIp, function (http) {
-          result.http = http;
-          if (!http.ok) { result.verdict = 'tls-falla'; return done(result); }
-          if (result.mismatch) { result.verdict = 'dns-distinto'; return done(result); }
-          if (!result.system.ok) { result.verdict = 'dns-local-falla'; return done(result); }
-          result.verdict = 'ok';
-          done(result);
-        });
-      });
-    });
-  }
-
-  dnsx.systemLookup(host, onSystem);
+  var tDoh = now();
+  dnsx.queryDoh(host, function (dohErr, dohIps) {
+    result.doh.ms = now() - tDoh;
+    if (dohErr) {
+      result.doh.error = dohErr.message;
+    } else {
+      result.doh.ok = true;
+      result.doh.ips = dohIps;
+    }
+    afterResolvers();
+  });
 }
 
 /* A single query per provider, measured, to know whether DoH itself works. */
@@ -243,19 +258,32 @@ function run(options, cb) {
     return function (done) { checkProvider(provider, done); };
   });
 
-  parallel(providerTasks, function (providers) {
-    parallel(hostTasks, function (hostResults) {
-      cb(null, {
-        at: now(),
-        tookMs: now() - t0,
-        mode: dnsx.mode(),
-        verdict: verdictOf(hostResults, providers),
-        providers: providers,
-        hosts: hostResults,
-        cache: dnsx.summary(),
-        screen: options.screen || null
-      });
+  var pending = 2;
+  var provResults = [];
+  var hostResults = [];
+
+  function checkDone() {
+    pending--;
+    if (pending > 0) { return; }
+    cb(null, {
+      at: now(),
+      tookMs: now() - t0,
+      mode: dnsx.mode(),
+      verdict: verdictOf(hostResults, provResults),
+      providers: provResults,
+      hosts: hostResults,
+      cache: dnsx.summary(),
+      screen: options.screen || null
     });
+  }
+
+  parallel(providerTasks, function (providers) {
+    provResults = providers;
+    checkDone();
+  });
+  parallel(hostTasks, function (results) {
+    hostResults = results;
+    checkDone();
   });
 }
 
