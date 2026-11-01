@@ -6,22 +6,22 @@
       "name": "com.webosflux.xuptertv.fidelity.service",
       "description": "Magis portal client (anonymous session), catalog, search, detail and VOD resolve",
       "commands": [
-        { "name": "ping", "public": false },
-        { "name": "keepAlive", "public": false },
-        { "name": "heartbeat", "public": false },
-        { "name": "home", "public": false },
-        { "name": "search", "public": false },
-        { "name": "detail", "public": false },
-        { "name": "resolve", "public": false },
-        { "name": "resolveSmooth", "public": false },
-        { "name": "mediaInfo", "public": false },
-        { "name": "liveChannels", "public": false },
-        { "name": "liveCategories", "public": false },
-        { "name": "fetchM3u", "public": false },
-        { "name": "resolveLive", "public": false },
-        { "name": "abortMedia", "public": false },
-        { "name": "prewarm", "public": false },
-        { "name": "netdiag", "public": false }
+        { "name": "ping", "public": true },
+        { "name": "keepAlive", "public": true },
+        { "name": "heartbeat", "public": true },
+        { "name": "home", "public": true },
+        { "name": "search", "public": true },
+        { "name": "detail", "public": true },
+        { "name": "resolve", "public": true },
+        { "name": "resolveSmooth", "public": true },
+        { "name": "mediaInfo", "public": true },
+        { "name": "liveChannels", "public": true },
+        { "name": "liveCategories", "public": true },
+        { "name": "fetchM3u", "public": true },
+        { "name": "resolveLive", "public": true },
+        { "name": "abortMedia", "public": true },
+        { "name": "prewarm", "public": true },
+        { "name": "netdiag", "public": true }
       ]
     }
   ]
