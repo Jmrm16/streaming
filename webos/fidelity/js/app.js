@@ -6421,23 +6421,18 @@ function portalServiceCall(method, params, done, customTimeout) {
       try { playerVideo.mediaOption = null; } catch (eClearOpt) {}
     }
 
-    var srcNode = document.createElement('source');
-    /* LG's HLS pipeline reads mediaOption from the source element.  Setting
-       video.src afterwards replaces that source and silently drops HLS mode
-       on recent webOS releases, resulting in MEDIA_ERR_SRC_NOT_SUPPORTED. */
-    srcNode.setAttribute('src', url);
-    srcNode.setAttribute('type', typeStr);
     if (isHls) {
-      /* webOS 3+ expects readyState to be reset before a new <source> is
-         attached.  This is intentionally limited to HLS; VOD keeps its
-         proven direct-source path and Modo Fluido remains untouched. */
+      /* LG's HLS pipeline reads mediaOption from the source element. Setting
+         video.src afterwards replaces that source and silently drops HLS mode
+         on recent webOS releases, resulting in MEDIA_ERR_SRC_NOT_SUPPORTED. */
       try { playerVideo.load(); } catch (eHlsReset) { /* ignore */ }
-    }
-    playerVideo.appendChild(srcNode);
-
-    /* Direct src assignment is needed for the legacy URI/MP4 path, but must
-       never override the HLS source and its mediaOption. */
-    if (!isHls) {
+      var srcNode = document.createElement('source');
+      srcNode.setAttribute('src', url);
+      srcNode.setAttribute('type', typeStr);
+      playerVideo.appendChild(srcNode);
+    } else {
+      /* Direct src assignment for VOD and Modo Fluido. Avoid appending a duplicate <source>
+         node, which causes WebKit to fire two parallel connections and aborts the FFmpeg relay. */
       try { playerVideo.src = url; } catch (eSrc) {}
     }
     try { playerVideo.currentTime = 0; } catch (eCt) {}

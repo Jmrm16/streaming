@@ -1,4 +1,4 @@
-﻿<#
+<#
   Instalador de XuperTV para televisores LG webOS 4.
 
   Pensado para gente sin conocimientos tecnicos: se ejecuta con doble clic en
@@ -1155,6 +1155,8 @@ JSON="@@JSON@@"
 LOG="${JSON}.log"
 
 echo ""
+echo "   >> Cerrando instancia previa si esta abierta..."
+luna-send-pub -n 1 -f luna://com.webos.applicationManager/closeByAppId "{\"id\":\"com.webosflux.xuptertv.fidelity\"}" >/dev/null 2>&1
 echo "   >> La TV esta instalando el paquete..."
 luna-send-pub -i -f luna://com.webos.appInstallService/dev/install "$(cat $JSON)" > "$LOG" 2>&1 &
 PID=$!

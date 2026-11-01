@@ -75,16 +75,11 @@ function buildArgs(s, start, audio) {
   var h = splitHeaders(s.headers);
   var args = [
     '-hide_banner', '-loglevel', 'warning', '-nostdin',
-    '-probesize', '2M', '-analyzeduration', '2M'
+    '-probesize', '1M', '-analyzeduration', '1M'
   ];
   if (/^https?:\/\//i.test(s.url)) {   // estas opciones solo existen para entradas HTTP(S)
-    /*
-     * No retry loop here.  On some webOS 4 sets a rejected upstream HTTPS
-     * connection made ffmpeg reconnect continuously, which can exhaust the
-     * TV/router connection table.  A user can simply retry playback; that is
-     * safer than an invisible, unbounded reconnect loop.
-     */
     args.push('-rw_timeout', '15000000');
+    if (/^https:/i.test(s.url)) { args.push('-tls_verify', '0'); }
     if (h.ua) args.push('-user_agent', h.ua);
     if (h.rest) args.push('-headers', h.rest);
   }
@@ -96,7 +91,6 @@ function buildArgs(s, start, audio) {
   );
   if (s.hevc) args.push('-tag:v', 'hvc1');   // hvc1 es la etiqueta que el reproductor nativo acepta bien
   args.push(
-    '-bsf:a', 'aac_adtstoasc',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
     '-f', 'mp4', 'pipe:1'
   );
@@ -110,7 +104,7 @@ function buildArgs(s, start, audio) {
  */
 function resolveForFfmpeg(s, done) {
   var parsed = urlmod.parse(s.url || '');
-  if (parsed.protocol !== 'http:' || !parsed.hostname || /^\d+\.\d+\.\d+\.\d+$/.test(parsed.hostname)) {
+  if (!/^https?:$/i.test(parsed.protocol || '') || !parsed.hostname || /^\d+\.\d+\.\d+\.\d+$/.test(parsed.hostname)) {
     return done(s);
   }
 
