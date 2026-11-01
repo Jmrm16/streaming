@@ -3896,6 +3896,45 @@ function portalServiceCall(method, params, done, customTimeout) {
     else { dnsRow.className = 'dg-row dns bad'; }
     list.appendChild(dnsRow);
 
+    /* ── Codec row ─────────────────────────────────────────────────────── */
+    var codec = report.codec || {};
+    var codecRow = el('div', 'dg-row' + (codec.h264 ? ' ok' : ' bad'));
+    var codecDesc = [
+      'H.264: ' + (codec.h264 || 'no'),
+      'HEVC: '  + (codec.hevc || 'no'),
+      'HLS: '   + (codec.hls  || 'no')
+    ].join('  ');
+    codecRow.appendChild(el('span', 'dg-host', 'Códec'));
+    codecRow.appendChild(el('span', 'dg-local', ''));
+    codecRow.appendChild(el('span', 'dg-state', codec.h264 ? 'Soportado' : 'Sin soporte'));
+    codecRow.appendChild(el('span', 'dg-ip', codecDesc));
+    list.appendChild(codecRow);
+
+    /* ── Layer rows: portal / sesión / live / VOD ───────────────────── */
+    var layers = report.layers || {};
+    var layerDefs = [
+      { key: 'portal',  label: 'Portal' },
+      { key: 'session', label: 'Sesión' },
+      { key: 'live',    label: 'Live CDN' },
+      { key: 'vod',     label: 'VOD CDN' }
+    ];
+    for (var li = 0; li < layerDefs.length; li++) {
+      var ldef = layerDefs[li];
+      var ldata = layers[ldef.key];
+      if (!ldata) { continue; }
+      var lrow = el('div', 'dg-row ' + (ldata.ok ? 'ok' : 'bad'));
+      var ldesc = ldata.error || (ldata.status ? 'HTTP ' + ldata.status : (ldata.ok ? 'OK' : 'Error'));
+      if (ldef.key === 'session') {
+        ldesc = 'userId ' + (ldata.userId || '?') + '  token ' + (ldata.token || '?');
+      }
+      var lms = ldata.ms ? (' ' + ldata.ms + ' ms') : '';
+      lrow.appendChild(el('span', 'dg-host', ldef.label));
+      lrow.appendChild(el('span', 'dg-local', ''));
+      lrow.appendChild(el('span', 'dg-state', ldata.ok ? 'OK' : 'Error'));
+      lrow.appendChild(el('span', 'dg-ip', ldesc + lms));
+      list.appendChild(lrow);
+    }
+
     if (netdiagEnv) {
       var s = report.screen || {};
       var parts = [];
@@ -3918,9 +3957,14 @@ function portalServiceCall(method, params, done, customTimeout) {
 
     portalServiceCall('netdiag', (function () {
       var vp = window.__xuperViewport || {};
+      var vid = playerVideo || document.querySelector('video');
+      function cp(t) { return vid ? (vid.canPlayType(t) || '') : ''; }
       return {
         screenW: vp.w || 0, screenH: vp.h || 0, screenScale: vp.scale || 0,
-        panelW: vp.panelW || 0, panelH: vp.panelH || 0
+        panelW: vp.panelW || 0, panelH: vp.panelH || 0,
+        codecH264: cp('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
+        codecHEVC: cp('video/mp4; codecs="hvc1.1.6.L93.B0"'),
+        codecHLS:  cp('application/x-mpegURL')
       };
     })(), function (error, payload) {
       netdiagState.running = false;
@@ -6433,12 +6477,11 @@ function portalServiceCall(method, params, done, customTimeout) {
     playerVideo.appendChild(srcNode);
 
     if (!isHls) {
-      /* Direct src assignment is needed for legacy webOS media pipelines,
-         but for Modo Fluido relay (:8787/s/) setting both triggers a duplicate
-         connection that terminates the FFmpeg process. */
-      if (url.indexOf(':8787/s/') === -1) {
-        try { playerVideo.src = url; } catch (eSrc) {}
-      }
+      /* Starfish on webOS 3–6 does not reliably start a non-HLS <source>
+         alone.  Keep the source node (for mediaOption) AND assign src, also
+         for the local Fluent relay.  This is the proven 1.6.15 behaviour and
+         prevents the player from staying forever at “Conectando…”. */
+      try { playerVideo.src = url; } catch (eSrc) {}
     }
     try { playerVideo.currentTime = 0; } catch (eCt) {}
 

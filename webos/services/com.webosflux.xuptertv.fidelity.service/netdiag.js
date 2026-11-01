@@ -287,8 +287,119 @@ function run(options, cb) {
   });
 }
 
+
+/* ─── Layer diagnostics: portal, session, live, VOD ─────────────────────── */
+
+/* Quick HEAD/GET to a URL via DoH-resolved IP.  Returns {ok, status, ms, error}. */
+function layerProbe(url, headers, done) {
+  if (!url) { return done({ ok: false, error: 'sin-url' }); }
+  var t0 = now();
+  var finished = false;
+  function finish(v) { if (finished) { return; } finished = true; done(v); }
+
+  var urlmod = require('url');
+  var dnsx2  = require('./dnsx');
+  var https2 = require('https');
+  var http2  = require('http');
+
+  try {
+    var parsed = urlmod.parse(url);
+    var host = parsed.hostname;
+    var secure = parsed.protocol === 'https:';
+
+    function doRequest(ip) {
+      var connectHost = ip || host;
+      var defaultPort = secure ? 443 : 80;
+      var port = parsed.port ? parseInt(parsed.port, 10) : defaultPort;
+      var reqHeaders = { 'User-Agent': 'Ranger/4.9.4-17294ac0', Host: parsed.host || host };
+      for (var k in (headers || {})) {
+        if (Object.prototype.hasOwnProperty.call(headers, k)) { reqHeaders[k] = headers[k]; }
+      }
+      var reqOpts = {
+        hostname: connectHost, servername: host,
+        rejectUnauthorized: false, port: port,
+        path: parsed.path || '/', method: 'HEAD',
+        headers: reqHeaders
+      };
+      var mod = secure ? https2 : http2;
+      var req = mod.request(reqOpts, function (res) {
+        res.resume();
+        res.on('end', function () {
+          finish({ ok: res.statusCode >= 200 && res.statusCode < 500, status: res.statusCode, ms: now() - t0 });
+        });
+      });
+      req.setTimeout(HTTP_TIMEOUT, function () {
+        try { req.abort(); } catch (e) {}
+        finish({ ok: false, error: 'timeout', ms: now() - t0 });
+      });
+      req.on('error', function (err) {
+        finish({ ok: false, error: err.code || err.message, ms: now() - t0 });
+      });
+      req.end();
+    }
+
+    if (!host || dnsx2.isIpv4(host)) { return doRequest(host); }
+    var hit = dnsx2.cached(host);
+    if (hit && hit.ips && hit.ips.length) { return doRequest(hit.ips[0]); }
+    dnsx2.resolve(host, function (err, res) {
+      doRequest((res && res.ips && res.ips.length) ? res.ips[0] : host);
+    });
+  } catch (e) {
+    finish({ ok: false, error: e.message || 'excepción', ms: now() - t0 });
+  }
+}
+
+/* Check whether the session object is fresh (has userId+userToken set). */
+function checkSession(session, done) {
+  if (!session) { return done({ ok: false, error: 'sin-sesion' }); }
+  var hasUser  = session.userId  && String(session.userId).length > 2;
+  var hasToken = session.userToken && String(session.userToken).length > 2;
+  done({
+    ok: !!(hasUser && hasToken),
+    userId:  hasUser  ? '✓' : '✗',
+    token:   hasToken ? '✓' : '✗',
+    ready:   !!session.ready,
+    error:   (!hasUser || !hasToken) ? 'sesion-incompleta' : ''
+  });
+}
+
+/* Run layer probes for portal, live-CDN and VOD-CDN.
+   options = { portalUrl, liveUrl, vodUrl, liveHeaders, vodHeaders, session } */
+function runLayers(options, done) {
+  options = options || {};
+  var tasks = [];
+  var labels = [];
+
+  if (options.portalUrl) {
+    labels.push('portal');
+    tasks.push(function (cb) { layerProbe(options.portalUrl, null, cb); });
+  }
+
+  labels.push('session');
+  tasks.push(function (cb) { checkSession(options.session, cb); });
+
+  if (options.liveUrl) {
+    labels.push('live');
+    tasks.push(function (cb) { layerProbe(options.liveUrl, options.liveHeaders || {}, cb); });
+  }
+
+  if (options.vodUrl) {
+    labels.push('vod');
+    tasks.push(function (cb) { layerProbe(options.vodUrl, options.vodHeaders || {}, cb); });
+  }
+
+  parallel(tasks, function (results) {
+    var layers = {};
+    for (var i = 0; i < labels.length; i++) {
+      layers[labels[i]] = results[i] || { ok: false, error: 'sin-resultado' };
+    }
+    done(null, layers);
+  });
+}
+
 module.exports = {
   run: run,
+  runLayers: runLayers,
   checkHost: checkHost,
   checkProvider: checkProvider
 };
