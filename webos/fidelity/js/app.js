@@ -6913,45 +6913,19 @@ function portalServiceCall(method, params, done, customTimeout) {
      Without this fit pass only the left half of the fixed canvas is painted
      and the right half of the TV remains black. */
   function viewportSize() {
-    var doc = document.documentElement || {};
-    var vw = doc.clientWidth || window.innerWidth || 0;
-    var vh = doc.clientHeight || window.innerHeight || 0;
-    /* A few webOS 3/4 builds report the requested 1920×1080 window through
-       documentElement even when the actual paint viewport is 1280×720.
-       body and visualViewport are independent measurements; use a smaller
-       valid one so the fixed canvas is reduced rather than cropped. */
-    var body = document.body || {};
-    var bodyW = body.clientWidth || 0;
-    var bodyH = body.clientHeight || 0;
-    if (bodyW > 0 && bodyH > 0 && (bodyW < vw || bodyH < vh)) {
-      vw = bodyW;
-      vh = bodyH;
-    }
-    var visual = window.visualViewport;
-    if (visual && visual.width > 0 && visual.height > 0 &&
-        (visual.width < vw || visual.height < vh)) {
-      vw = Math.floor(visual.width);
-      vh = Math.floor(visual.height);
-    }
-    if (!vw || !vh) {
-      vw = window.innerWidth || screen.width || 1920;
-      vh = window.innerHeight || screen.height || 1080;
-    }
-    /* Some webOS builds (mostly 720p and 2K panels) keep the app's declared
-       1920x1080 window size even though the screen can only show 1280 or 1440
-       CSS px, and the set then crops the right/bottom of the canvas.
-       `screen.width` is already in CSS px (Chromium divides by
-       devicePixelRatio), so it can be compared with the viewport directly.
-       Only when the window claims design-canvas size or more: a normal window
-       smaller than 1920x1080 needs no correction. */
-    var panelW = Math.floor(screen.width || screen.availWidth || 0);
-    var panelH = Math.floor(screen.height || screen.availHeight || 0);
-    var panel = null;
-    if (panelW > 0 && panelH > 0) {
-      panel = { w: panelW, h: panelH };
-      if (vw >= 1920 && panelW < vw) { vw = panelW; }
-      if (vh >= 1080 && panelH < vh) { vh = panelH; }
-    }
+    /* webOS TV: window.innerWidth/innerHeight always reflect the CSS viewport
+       allocated by appinfo.json (1920x1080 on FHD; 1280x720 on 720p sets).
+       Do NOT use screen.width, body.clientWidth or visualViewport to clamp
+       this value - those APIs return different coordinate spaces on webOS
+       Chromium 53 and would shrink #app to 0.667 scale on FHD TVs, leaving
+       the right 640px completely black. */
+    var vw = window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 0;
+    var vh = window.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 0;
+    if (!vw || !vh) { vw = 1920; vh = 1080; }
+    /* Keep screen.* for diagnostics only - never use them to resize. */
+    var panelW = Math.floor((screen && screen.width) || 0);
+    var panelH = Math.floor((screen && screen.height) || 0);
+    var panel = (panelW > 0 && panelH > 0) ? { w: panelW, h: panelH } : null;
     return { w: vw, h: vh, panel: panel };
   }
 
