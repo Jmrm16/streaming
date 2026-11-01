@@ -4296,7 +4296,9 @@ function portalServiceCall(method, params, done) {
   function languageMatchesPreference(label, code) {
     var value = String(label || code || '').toLowerCase();
     var wanted = code || 'es';
-    if (wanted === 'es') { return /^(es|spa|esp)|espa/.test(value); }
+    if (wanted === 'es') {
+      return /^(es|spa|esp|lat|cast)|espa|latino|latin|castell/i.test(value);
+    }
     if (wanted === 'pt') { return /^(pt|por)|portu/.test(value); }
     if (wanted === 'en') { return /^(en|eng|ing)|ingl/.test(value); }
     return false;
@@ -4490,7 +4492,8 @@ function portalServiceCall(method, params, done) {
 
   function smoothModeKey(item) {
     if (!item) { return ''; }
-    return item.seriesId || item.id || '';
+    var ep = mediaInfoEpisode(item);
+    return (ep && ep.id) ? ep.id : (item.id || '');
   }
 
   function restoreSmoothMode(item) {
@@ -5390,7 +5393,7 @@ function portalServiceCall(method, params, done) {
 
   function formatAudioLang(code) {
     var c = (code || '').toLowerCase().trim().split(/[-_]/)[0];
-    if (/^(spa|esp|es|castellano|latino)$/.test(c)) return 'Español';
+    if (/^(spa|esp|es|castellano|latino|lat|latam)$/.test(c)) return 'Español';
     if (/^(eng|ing|en)$/.test(c)) return 'Inglés';
     if (/^(jpn|jap|ja)$/.test(c)) return 'Japonés';
     if (/^(kor|cor|ko)$/.test(c)) return 'Coreano';
@@ -6463,12 +6466,14 @@ function portalServiceCall(method, params, done) {
       params.trackIndex = state.trackIndex || 0;
       /* Prefer the Spanish PID like the real app when mediaInfo already
          answered; the relay maps it with ffmpeg -map 0:a:<n>. */
-      var cachedInfo = mediaInfoCache[mediaInfoKey(item)];
+      var ep = state.playerEpisode;
+      var epKey = (ep && ep.id) || (item && item.id) || '';
+      var cachedInfo = mediaInfoCache[epKey] || mediaInfoCache[mediaInfoKey(item)];
       /* Spanish is the default for every episode.  Index 0 is NOT Spanish:
          the portal lists the PIDs in stream order ("por,spa,eng"), so sending
          0 after an episode change made playback start in Portuguese (and the
          FFmpeg relay map the Portuguese PID). */
-      var audioList = (cachedInfo && cachedInfo.audio) || item.streamAudioInfo || '';
+      var audioList = (cachedInfo && cachedInfo.audio) || (ep && ep.streamAudioInfo) || item.streamAudioInfo || '';
       if (vodAudioChosen) {
         vodCurrentAudioTrack = Math.max(0, Number(vodCurrentAudioTrack) || 0);
       } else {
@@ -6476,10 +6481,10 @@ function portalServiceCall(method, params, done) {
       }
       params.audioTrack = vodCurrentAudioTrack || 0;
       if (isSeriesItem(item)) {
-        var ep = state.playerEpisode;
+        var epSeries = state.playerEpisode;
         var seriesRef = item.seasonId || item.id;
-        if (ep && ep.id) {
-          params.contentId = ep.id;
+        if (epSeries && epSeries.id) {
+          params.contentId = epSeries.id;
           params.seriesContentId = seriesRef;
         } else {
           if (!item.episodes || !item.episodes.length) { return done(''); }
@@ -6507,12 +6512,16 @@ function portalServiceCall(method, params, done) {
         }
         item.subtitles = payload.subtitles || [];
         item.streamAudioInfo = payload.audio || item.streamAudioInfo || '';
+        if (state.playerEpisode) { state.playerEpisode.streamAudioInfo = payload.audio || ''; }
         item.isHls = !!payload.isHls;
+        if (!vodAudioChosen && payload.audio) {
+          vodCurrentAudioTrack = preferredAudioIndex(payload.audio);
+        }
         /* resolve already completed startPlayVOD.  Reuse its audio/subtitle
            metadata in the panel instead of requesting the same episode a
            second time when the viewer changes chapters. */
         var resolvedInfo = {
-          audio: item.streamAudioInfo,
+          audio: payload.audio || item.streamAudioInfo,
           subtitles: item.subtitles,
           tracks: payload.availableTracks || [],
           selected: payload.selectedTrack || {},
@@ -6561,8 +6570,10 @@ function portalServiceCall(method, params, done) {
        only requested while the audio PID order is still unknown, because the
        portal lists it in stream order (index 0 is not Spanish) and Modo Fluido
        maps that index inside FFmpeg. */
-    var knownAudio = (it.streamAudioInfo) ||
-      ((mediaInfoCache[mediaInfoKey(it)] || {}).audio) || '';
+    var currentEp = episode || state.playerEpisode;
+    var epKey = (currentEp && currentEp.id) || (it && it.id) || '';
+    var epInfo = epKey ? mediaInfoCache[epKey] : null;
+    var knownAudio = (epInfo && epInfo.audio) || (currentEp && currentEp.streamAudioInfo) || '';
     if (it._portal && !vodAudioChosen && !knownAudio) {
       var started = false;
       var startSeq = resolveSeq;
@@ -6904,13 +6915,13 @@ function portalServiceCall(method, params, done) {
     }
     /* Some webOS builds (mostly 720p and 2K panels) keep the app's declared
        1920x1080 window size even though the screen can only show 1280 or 1440
-       CSS px, and the set then crops the right/bottom of the canvas.  Compare
-       with the physical panel (in CSS px) and never draw wider than it.
+       CSS px, and the set then crops the right/bottom of the canvas.
+       `screen.width` is already in CSS px (Chromium divides by
+       devicePixelRatio), so it can be compared with the viewport directly.
        Only when the window claims design-canvas size or more: a normal window
        smaller than 1920x1080 needs no correction. */
-    var dpr = window.devicePixelRatio || 1;
-    var panelW = Math.floor((screen.width || 0) / dpr);
-    var panelH = Math.floor((screen.height || 0) / dpr);
+    var panelW = Math.floor(screen.width || screen.availWidth || 0);
+    var panelH = Math.floor(screen.height || screen.availHeight || 0);
     var panel = null;
     if (panelW > 0 && panelH > 0) {
       panel = { w: panelW, h: panelH };

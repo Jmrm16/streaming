@@ -273,7 +273,7 @@ function Test-SshOption([string]$opt) {
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $null = & ssh -G -o $opt localhost 2>$null
+        $null = & ssh -G -o $opt 127.0.0.1 2>$null
         $ok = ($LASTEXITCODE -eq 0)
     } catch {
         $ok = $false
@@ -291,7 +291,21 @@ function Get-PubkeyAlgName {
     foreach ($name in @('PubkeyAcceptedAlgorithms', 'PubkeyAcceptedKeyTypes')) {
         if (Test-SshOption ($name + '=ssh-rsa')) { return $name }
     }
-    return ''
+    try {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $ver = (& ssh -V 2>&1 | Out-String)
+        $ErrorActionPreference = $prev
+        if ($ver -match 'OpenSSH[_\s]+(?:for[_\s]+Windows[_\s]+)?([0-9]+)\.([0-9]+)') {
+            $major = [int]$matches[1]
+            $minor = [int]$matches[2]
+            if ($major -gt 8 -or ($major -eq 8 -and $minor -ge 5)) {
+                return 'PubkeyAcceptedAlgorithms'
+            }
+            return 'PubkeyAcceptedKeyTypes'
+        }
+    } catch { }
+    return 'PubkeyAcceptedKeyTypes'
 }
 
 function Get-SshOpts {
@@ -314,7 +328,12 @@ function Get-SshOpts {
     }
     $pubkeyName = Get-PubkeyAlgName
     if ($pubkeyName) {
-        $o += @('-o', ($pubkeyName + '=+ssh-rsa'))
+        $optPlus = $pubkeyName + '=+ssh-rsa'
+        if (Test-SshOption $optPlus) {
+            $o += @('-o', $optPlus)
+        } else {
+            $o += @('-o', ($pubkeyName + '=ssh-rsa'))
+        }
     }
     return $o
 }
