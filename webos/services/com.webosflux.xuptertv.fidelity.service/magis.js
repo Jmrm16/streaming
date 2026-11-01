@@ -177,6 +177,13 @@ function deviceDict() {
 }
 
 function post(path, body, done) {
+  var origDone = done;
+  var settled = false;
+  done = function (err, result) {
+    if (settled) { return; }
+    settled = true;
+    origDone(err, result);
+  };
   var payload;
   try {
     payload = encryptBody(JSON.stringify(body));
@@ -1112,7 +1119,7 @@ function resolveLive(channelCode, done) {
   }
   ensureSession(function (err) {
     if (err) { return done(err); }
-    call('v4/startPlayLive', { channelCode: channelCode, columnId: 0, type: '1' }, function (err2, play) {
+    call('v4/startPlayLive', { channelCode: channelCode, columnId: '76182', type: '1' }, function (err2, play) {
       if (err2) { return done(err2); }
       var addrList = (play && play.liveAddressList) || [];
       var addr = null;
@@ -1131,7 +1138,7 @@ function resolveLive(channelCode, done) {
 
       var bean = slbBean();
       bean.liveCodeList = [channelCode];
-      call('v14/getSlbInfo', bean, function (err3, slb) {
+      call('v15/getSlbInfo', bean, function (err3, slb) {
         if (err3) { return done(err3); }
         var cdns = slb.cdn_list || [];
         var liveCdns = [];

@@ -1199,6 +1199,7 @@ case "$PERMS" in
     ;;
 esac
 
+ls-control scan-services >/dev/null 2>&1
 echo "   >> Abriendo XuperTV en el televisor..."
 luna-send-pub -n 1 -f luna://com.webos.applicationManager/launch "$(cat @@LAUNCH@@)" > /dev/null 2>&1
 exit 0
