@@ -76,26 +76,6 @@ function isCacheFlyIp(ip) {
   return /^66\.225\./.test(ip) || /^205\.234\./.test(ip) || /^167\.99\./.test(ip);
 }
 
-function isCloudflareIp(ip) {
-  if (!ip) { return false; }
-  return /^104\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip) ||
-         /^172\.(6[4-9]|7[0-1])\./.test(ip) ||
-         /^162\.15[89]\./.test(ip) ||
-         /^198\.41\./.test(ip) ||
-         /^190\.93\./.test(ip) ||
-         /^188\.114\./.test(ip);
-}
-
-function apexDomain(host) {
-  if (!host) { return ''; }
-  if (dnsx.isIpv4(host)) { return host; }
-  var parts = host.split('.');
-  if (parts.length >= 2) {
-    return parts.slice(-2).join('.');
-  }
-  return host;
-}
-
 function resolveHostIp(entry, cb) {
   if (!entry) { return cb(''); }
   if (entry.resolvedIp && dnsx.isIpv4(entry.resolvedIp)) {
@@ -173,11 +153,6 @@ function sendSubtitle(req, res, entry) {
     var defaultPort = secure ? 443 : 80;
     var port = parsed.port || defaultPort;
     var servername = host;
-    if (isCacheFlyIp(connectHost)) {
-      servername = 'cachefly.net';
-    } else if (host && !dnsx.isIpv4(host)) {
-      servername = apexDomain(host);
-    }
     var options = {
       hostname: connectHost,
       host: connectHost,
@@ -240,13 +215,11 @@ function mediaRequest(entry, method, extraHeaders, resolvedIp) {
 
   var secure = parsed.protocol === 'https:';
 
-  /* In restrictive jurisdictions (e.g. Chile, Colombia, Peru), carriers inspect unencrypted port 80
-     Host headers to block streams. Both VOD and Live CDNs on CacheFly & Cloudflare support HTTPS on port 443,
-     which encrypts the entire connection, headers, and media packets to bypass carrier DPI. */
+  /* In restrictive jurisdictions (e.g. Chile), carriers inspect unencrypted port 80
+     Host headers to block streams. VOD CDNs on CacheFly support HTTPS on port 443,
+     which encrypts the entire connection and circumvents DPI. */
   var isCacheFly = isCacheFlyIp(connectHost) || /swzablvpm|kyalbhxgw|m3x8o50te|qnrgmzpcw|faolmbghu/i.test(host || '');
-  var isCf = isCloudflareIp(connectHost) || /rh6ngfv34|xdt3cdevc|nhwggf5gg|cbg2rcca2|hetvomaug|cjrxhutoy|uhfoadysw|lpcogatry|sxcrwendu/i.test(host || '');
-
-  if (isCacheFly || isCf || (entry.url && (/\.(m3u8|ts|mp4)(\?|$)/i.test(entry.url) || /\/live\/|\/vod\//i.test(entry.url)))) {
+  if (isCacheFly) {
     secure = true;
   }
 
@@ -265,11 +238,7 @@ function mediaRequest(entry, method, extraHeaders, resolvedIp) {
 
   var servername = host;
   if (isCacheFly) {
-    /* Mask SNI with benign global CDN domain */
     servername = 'cachefly.net';
-  } else if (isCf || (host && !dnsx.isIpv4(host))) {
-    /* Mask full subdomain so carrier DPI filters matching the exact blocked name cannot match */
-    servername = apexDomain(host);
   }
 
   return {

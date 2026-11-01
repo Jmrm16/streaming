@@ -6421,19 +6421,24 @@ function portalServiceCall(method, params, done, customTimeout) {
       try { playerVideo.mediaOption = null; } catch (eClearOpt) {}
     }
 
+    var srcNode = document.createElement('source');
+    srcNode.setAttribute('src', url);
+    srcNode.setAttribute('type', typeStr);
     if (isHls) {
       /* LG's HLS pipeline reads mediaOption from the source element. Setting
          video.src afterwards replaces that source and silently drops HLS mode
          on recent webOS releases, resulting in MEDIA_ERR_SRC_NOT_SUPPORTED. */
       try { playerVideo.load(); } catch (eHlsReset) { /* ignore */ }
-      var srcNode = document.createElement('source');
-      srcNode.setAttribute('src', url);
-      srcNode.setAttribute('type', typeStr);
-      playerVideo.appendChild(srcNode);
-    } else {
-      /* Direct src assignment for VOD and Modo Fluido. Avoid appending a duplicate <source>
-         node, which causes WebKit to fire two parallel connections and aborts the FFmpeg relay. */
-      try { playerVideo.src = url; } catch (eSrc) {}
+    }
+    playerVideo.appendChild(srcNode);
+
+    if (!isHls) {
+      /* Direct src assignment is needed for legacy webOS media pipelines,
+         but for Modo Fluido relay (:8787/s/) setting both triggers a duplicate
+         connection that terminates the FFmpeg process. */
+      if (url.indexOf(':8787/s/') === -1) {
+        try { playerVideo.src = url; } catch (eSrc) {}
+      }
     }
     try { playerVideo.currentTime = 0; } catch (eCt) {}
 
@@ -6911,6 +6916,23 @@ function portalServiceCall(method, params, done, customTimeout) {
     var doc = document.documentElement || {};
     var vw = doc.clientWidth || window.innerWidth || 0;
     var vh = doc.clientHeight || window.innerHeight || 0;
+    /* A few webOS 3/4 builds report the requested 1920×1080 window through
+       documentElement even when the actual paint viewport is 1280×720.
+       body and visualViewport are independent measurements; use a smaller
+       valid one so the fixed canvas is reduced rather than cropped. */
+    var body = document.body || {};
+    var bodyW = body.clientWidth || 0;
+    var bodyH = body.clientHeight || 0;
+    if (bodyW > 0 && bodyH > 0 && (bodyW < vw || bodyH < vh)) {
+      vw = bodyW;
+      vh = bodyH;
+    }
+    var visual = window.visualViewport;
+    if (visual && visual.width > 0 && visual.height > 0 &&
+        (visual.width < vw || visual.height < vh)) {
+      vw = Math.floor(visual.width);
+      vh = Math.floor(visual.height);
+    }
     if (!vw || !vh) {
       vw = window.innerWidth || screen.width || 1920;
       vh = window.innerHeight || screen.height || 1080;

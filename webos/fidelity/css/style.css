@@ -30,7 +30,12 @@ html, body {
 img { border: 0; display: block; }
 div, section, span { outline: none; }
 #app {
-  position: relative;
+  /* The app is a fixed 1920×1080 design canvas.  Absolute positioning keeps
+     its unscaled layout box from contributing a 1920px document width on
+     720p sets, which otherwise clips the transformed right/bottom edges. */
+  position: absolute;
+  left: 0;
+  top: 0;
   width: 1920px;
   height: 1080px;
   overflow: hidden;
