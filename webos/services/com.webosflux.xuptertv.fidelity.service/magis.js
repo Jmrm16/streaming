@@ -1152,7 +1152,7 @@ function resolveLive(channelCode, done) {
           return done(new Error('el portal no expuso CDN de vivo'));
         }
         var chosen = liveCdns[0];
-        var liveUrl = 'http://' + chosen.cflHost + '/live/' + playCode + '.m3u8';
+        var liveUrl = 'https://' + chosen.cflHost + '/live/' + playCode + '.m3u8';
         var tokenMatch = chosen.authBase.match(/token=([0-9a-fA-F]{32})/);
         var token = tokenMatch ? tokenMatch[1] : '';
         var moment = Math.trunc(Date.now());
