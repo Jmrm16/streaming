@@ -3845,6 +3845,7 @@ div, section, span { outline: none; }
   background: #d21525;
   box-shadow: 0 0 0 3px #ffffff inset;
 }
+.dg-report-btn { background: #313741; }
 .dg-summary {
   font-size: 24px;
   line-height: 31px;
@@ -3877,6 +3878,18 @@ div, section, span { outline: none; }
 .dg-ip { width: 390px; }
 
 .dg-list { overflow: hidden; }
+.dg-report {
+  height: 450px;
+  padding: 16px 22px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  font-family: monospace;
+  font-size: 22px;
+  line-height: 31px;
+  color: #e6edf5;
+  background: rgba(255,255,255,.045);
+  border-left: 3px solid #d21525;
+}
 .dg-row {
   height: 52px;
   line-height: 52px;

@@ -1,4 +1,4 @@
-<#
+﻿<#
   Instalador de XuperTV para televisores LG webOS 4.
 
   Pensado para gente sin conocimientos tecnicos: se ejecuta con doble clic en
@@ -1148,6 +1148,7 @@ APP="@@APPDIR@@"
 SVC="@@SVCDIR@@"
 EXPECT="@@VERSION@@"
 JSON="@@JSON@@"
+APPID="@@APPID@@"
 # En Developer Mode el usuario prisoner puede ejecutar la instalacion, pero
 # algunas TVs montan /tmp como solo lectura para ese usuario. El JSON vive en
 # /media/developer/temp, que es la carpeta que acabamos de escribir por SFTP;
@@ -1156,7 +1157,7 @@ LOG="${JSON}.log"
 
 echo ""
 echo "   >> Cerrando instancia previa si esta abierta..."
-luna-send-pub -n 1 -f luna://com.webos.applicationManager/closeByAppId "{\"id\":\"com.webosflux.xuptertv.fidelity\"}" >/dev/null 2>&1
+luna-send-pub -n 1 -f luna://com.webos.applicationManager/closeByAppId "{\"id\":\"$APPID\"}" >/dev/null 2>&1
 echo "   >> La TV esta instalando el paquete..."
 luna-send-pub -i -f luna://com.webos.appInstallService/dev/install "$(cat $JSON)" > "$LOG" 2>&1 &
 PID=$!
@@ -1176,8 +1177,7 @@ kill $PID 2>/dev/null
 if [ "$V" != "$EXPECT" ]; then
   if grep -q '"downgrade"[[:space:]]*:[[:space:]]*true' "$LOG" 2>/dev/null; then
     echo "   >> La TV rechazo el paquete como una version anterior."
-    echo "   >> Esto ocurre cuando webOS compara 1.5.12 como menor que 1.5.9."
-    echo "   >> Usa un paquete con version mayor (por ejemplo 1.6.0) o desinstala la version previa."
+    echo "   >> Comprueba la version instalada o elimina la version previa."
   fi
   echo "   >> La TV no confirmo la instalacion (encontrada: ${V:-ninguna})"
   echo "   ---- respuesta del televisor ----"
@@ -1205,7 +1205,7 @@ luna-send-pub -n 1 -f luna://com.webos.applicationManager/launch "$(cat @@LAUNCH
 exit 0
 '@
 
-$remoteScript = $remoteScript.Replace('@@APPDIR@@', $AppDir).Replace('@@SVCDIR@@', $SvcDir).Replace('@@VERSION@@', $expected).Replace('@@JSON@@', $installJsonPath).Replace('@@LAUNCH@@', $launchJsonPath)
+$remoteScript = $remoteScript.Replace('@@APPDIR@@', $AppDir).Replace('@@SVCDIR@@', $SvcDir).Replace('@@VERSION@@', $expected).Replace('@@JSON@@', $installJsonPath).Replace('@@APPID@@', $AppId).Replace('@@LAUNCH@@', $launchJsonPath)
 $remoteScript = $remoteScript -replace "`r`n", "`n"
 
 $tmp = Join-Path $env:TEMP ('xuper-inst-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))

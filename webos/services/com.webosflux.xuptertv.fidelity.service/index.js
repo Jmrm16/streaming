@@ -138,25 +138,30 @@ function resolveStream(message, forceRelay) {
     if (useSmoothMode && !relay.available()) {
       return fail(message, new Error('Modo Fluido no disponible: ffmpeg no es ejecutable en esta TV'));
     }
+
+    /* Keep the proven Fluent path single-hop: FFmpeg consumes the resolved
+       portal stream itself and emits fragmented MP4 on :8787.  Sending the
+       same stream through proxy -> FFmpeg adds a second local HTTP consumer;
+       on webOS it can leave both waiting for the other side and the player
+       remains permanently at "Conectando…".  The proxy is still started for
+       subtitle URLs only. */
+    if (useSmoothMode) {
+      var relayUrl = relay.register(stream, { hevc: isHevc, audio: Number(payload.audioTrack) || 0 });
+      console.log('[xuper-service] routing stream via direct ffmpeg relay: ' + relayUrl);
+      stream.proxyPath = relayUrl;
+      stream.mime = 'video/mp4';
+      stream.isRelay = true;
+      stream.isHls = false;
+      proxy.start(function (perr) {
+        if (perr) { return fail(message, perr); }
+        respond(message, null, attachSubtitles(stream));
+      });
+      return;
+    }
+
     var streamHost = (urlmod.parse(stream.url || '').hostname) || '';
     dnsx.resolve(streamHost, function (dnsErr, dnsRes) {
       var resolvedIp = (dnsRes && dnsRes.ips && dnsRes.ips[0]) || '';
-
-      if (useSmoothMode) {
-        proxy.start(function (perr, port) {
-          if (perr) { return fail(message, perr); }
-          var token = proxy.add(stream.url, stream.headers, stream.duration, resolvedIp);
-          var loopbackUrl = proxy.baseUrl() + '/media/' + token + '/stream.ts';
-          var relayUrl = relay.register({ url: loopbackUrl, headers: {} }, { hevc: isHevc, audio: Number(payload.audioTrack) || 0 });
-          console.log('[xuper-service] routing stream via ffmpeg relay: ' + relayUrl + ' (source via loopback proxy: ' + loopbackUrl + ')');
-          stream.proxyPath = relayUrl;
-          stream.mime = 'video/mp4';
-          stream.isRelay = true;
-          stream.isHls = false;
-          respond(message, null, attachSubtitles(stream));
-        });
-        return;
-      }
 
       proxy.start(function (perr, port) {
         if (perr) { return fail(message, perr); }

@@ -3850,7 +3850,7 @@ function portalServiceCall(method, params, done, customTimeout) {
      Reads only: it asks the service for the local DNS answer and the DoH answer
      of every portal/CDN host and shows where the connection breaks.  The
      bypass itself lives in the service (dnsx.js) and needs no user action. */
-  var netdiagState = { running: false, report: null, error: null };
+  var netdiagState = { running: false, report: null, error: null, runId: 0 };
   var netdiagEnv = null;
 
   function netdiagStateText(host) {
@@ -3892,6 +3892,8 @@ function portalServiceCall(method, params, done, customTimeout) {
         return { cls: 'warn', text: 'Un servidor de vídeo no respondió (suele rotar). El resto del catálogo sí responde: vuelve a analizar.' };
       case 'incompleto':
         return { cls: 'warn', text: 'La prueba no terminó: la TV no recibió respuesta de ningún servidor a tiempo. Vuelve a analizar; si se repite, apaga y enciende la TV.' };
+      case 'servicio-sin-respuesta':
+        return { cls: 'bad', text: 'El servicio de fondo no respondió. El reporte indica si fue el servicio completo o solo el diagnóstico.' };
       default:
         return { cls: '', text: 'Sin resultado todavía.' };
     }
@@ -3923,26 +3925,32 @@ function portalServiceCall(method, params, done, customTimeout) {
       if (providers[p].reachable) { okProviders.push(providers[p].ip); }
       else { badProviders.push(providers[p].ip); }
     }
+    var providersKnown = providers.length > 0;
     var dnsRow = el('div', 'dg-row dns');
     dnsRow.appendChild(el('span', 'dg-host', 'DNS seguro (DoH)'));
-    dnsRow.appendChild(el('span', 'dg-local', okProviders.length + '/' + providers.length + ' disponibles'));
-    dnsRow.appendChild(el('span', 'dg-state', okProviders.length ? 'Correcto' : 'Bloqueado'));
+    dnsRow.appendChild(el('span', 'dg-local', providersKnown ? (okProviders.length + '/' + providers.length + ' disponibles') : 'sin datos'));
+    dnsRow.appendChild(el('span', 'dg-state', providersKnown ? (okProviders.length ? 'Correcto' : 'Bloqueado') : 'No evaluado'));
     dnsRow.appendChild(el('span', 'dg-ip', okProviders.join(', ')));
-    if (okProviders.length) { dnsRow.className = 'dg-row dns ok'; }
+    if (!providersKnown) { dnsRow.className = 'dg-row dns warn'; }
+    else if (okProviders.length) { dnsRow.className = 'dg-row dns ok'; }
     else { dnsRow.className = 'dg-row dns bad'; }
     list.appendChild(dnsRow);
 
     /* ── Codec row ─────────────────────────────────────────────────────── */
     var codec = report.codec || {};
-    var codecRow = el('div', 'dg-row' + (codec.h264 ? ' ok' : ' bad'));
+    /* canPlayType() is unreliable on several Starfish/webOS builds: it may
+       return an empty string even when native playback works. It is evidence
+       about the browser API only, never a verdict about the TV hardware. */
+    var codecKnown = !!(codec.h264 || codec.hevc || codec.hls);
+    var codecRow = el('div', 'dg-row' + (codecKnown ? ' ok' : ' warn'));
     var codecDesc = [
-      'H.264: ' + (codec.h264 || 'no'),
-      'HEVC: '  + (codec.hevc || 'no'),
-      'HLS: '   + (codec.hls  || 'no')
+      'H.264: ' + (codec.h264 || 'no informado'),
+      'HEVC: '  + (codec.hevc || 'no informado'),
+      'HLS: '   + (codec.hls  || 'no informado')
     ].join('  ');
     codecRow.appendChild(el('span', 'dg-host', 'Códec'));
     codecRow.appendChild(el('span', 'dg-local', ''));
-    codecRow.appendChild(el('span', 'dg-state', codec.h264 ? 'Soportado' : 'Sin soporte'));
+    codecRow.appendChild(el('span', 'dg-state', codecKnown ? 'Informado' : 'No confirmado'));
     codecRow.appendChild(el('span', 'dg-ip', codecDesc));
     list.appendChild(codecRow);
 
@@ -4009,8 +4017,82 @@ function portalServiceCall(method, params, done, customTimeout) {
     }
   }
 
+  function reportSafeText(value) {
+    /* A support photo must never expose a playable URL, signed query, token or
+       request header. Keep only a short, human-readable error classification. */
+    var text = String(value == null ? '' : value);
+    text = text.replace(/https?:\/\/[^\s"']+/ig, '[URL OCULTA]');
+    text = text.replace(/(token|signature|authorization|cookie|key)=?[^\s,&]*/ig, '$1=[OCULTO]');
+    text = text.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ');
+    return text.slice(0, 150);
+  }
+
+  function layerReportState(layer) {
+    if (!layer) { return 'sin datos'; }
+    if (layer.ok) { return layer.status ? ('OK (HTTP ' + layer.status + ')') : 'OK'; }
+    if (layer.timeout) { return 'sin respuesta'; }
+    return 'error' + (layer.error ? (': ' + reportSafeText(layer.error)) : '');
+  }
+
+  function buildSupportReport(report) {
+    var lines = [];
+    var env = report.screen || {};
+    var layers = report.layers || {};
+    var hosts = report.hosts || [];
+    lines.push('REPORTE DE SOPORTE XUPERTV');
+    lines.push('Versión: ' + (report.version || 'desconocida'));
+    lines.push('Pantalla: ' + ((env.w && env.h) ? (env.w + '×' + env.h) : 'sin datos') +
+      ((env.panelW && env.panelH) ? (' | panel ' + env.panelW + '×' + env.panelH) : '') +
+      (env.scale ? (' | escala ' + env.scale) : ''));
+    lines.push('Red: ' + (report.verdict || 'sin resultado') + (report.partial ? ' (parcial)' : ''));
+    if (report.pending) { lines.push('Diagnóstico: sin respuesta / detenido para generar este reporte'); }
+    if (report.serviceError) { lines.push('Servicio: ' + reportSafeText(report.serviceError)); }
+    lines.push('Portal: ' + layerReportState(layers.portal));
+    lines.push('Sesión: ' + layerReportState(layers.session));
+    lines.push('TV en vivo: ' + layerReportState(layers.live));
+    lines.push('Películas/series: ' + layerReportState(layers.vod));
+    lines.push('Reproductor: ' + (state.playerMode || 'sin reproducción') +
+      ' | modo ' + (state.streamMode || 'normal') +
+      (state.streamError ? (' | error ' + reportSafeText(state.streamError)) : ''));
+    for (var i = 0; i < hosts.length && i < 5; i++) {
+      lines.push('Host ' + (i + 1) + ': ' + reportSafeText(hosts[i].host) +
+        ' — ' + reportSafeText(hosts[i].verdict || 'sin datos'));
+    }
+    lines.push('');
+    lines.push('Privacidad: este reporte no incluye enlaces, tokens, cabeceras ni historial.');
+    lines.push('Toma una foto de esta pantalla y envíala al soporte.');
+    return lines.join('\n');
+  }
+
+  function showSupportReport(summary, list) {
+    if (!netdiagState.report) {
+      /* A frozen service must not prevent a user from contacting support.
+         Stop only this UI run and make a report from the known local facts. */
+      netdiagState.runId++;
+      netdiagState.running = false;
+      var vp = window.__xuperViewport || {};
+      netdiagState.report = {
+        version: (document.querySelector('.welcome-version') || {}).textContent || 'desconocida',
+        verdict: 'sin respuesta', partial: true, pending: true,
+        screen: { w: vp.w || 0, h: vp.h || 0, scale: vp.scale || 0,
+          panelW: vp.panelW || 0, panelH: vp.panelH || 0 },
+        layers: {}, hosts: []
+      };
+    }
+    clear(list);
+    var report = el('div', 'dg-report', buildSupportReport(netdiagState.report));
+    list.appendChild(report);
+    summary.className = 'dg-summary ok';
+    summary.textContent = 'Reporte listo. Toma una foto de esta pantalla y envíala al soporte.';
+  }
+
   function runNetdiag(button, summary, list) {
-    if (netdiagState.running) { return; }
+    /* Settings can be rebuilt while a slow TV still has a diagnostic request
+       open. Give the new visible panel its own run and ignore the old reply;
+       otherwise the reply paints an already-detached panel and viewers see
+       an apparently empty Diagnóstico screen. */
+    var runId = netdiagState.runId + 1;
+    netdiagState.runId = runId;
     netdiagState.running = true;
     netdiagState.error = null;
     button.textContent = 'Analizando…';
@@ -4021,18 +4103,50 @@ function portalServiceCall(method, params, done, customTimeout) {
        and "nothing happened" is the report we keep getting. */
     list.appendChild(el('div', 'dg-row', 'Analizando…'));
 
+    function localFailure(reason) {
+      if (netdiagState.runId !== runId || !netdiagState.running) { return; }
+      netdiagState.running = false;
+      /* Ignore the late callback from the request that just timed out. */
+      netdiagState.runId++;
+      netdiagState.report = {
+        version: (document.querySelector('.welcome-version') || {}).textContent || 'desconocida',
+        verdict: 'servicio-sin-respuesta', partial: true, serviceError: reason,
+        screen: (function () {
+          var vp = window.__xuperViewport || {};
+          return { w: vp.w || 0, h: vp.h || 0, scale: vp.scale || 0,
+            panelW: vp.panelW || 0, panelH: vp.panelH || 0 };
+        })(),
+        layers: {}, hosts: [], providers: []
+      };
+      button.textContent = 'Analizar de nuevo';
+      renderNetdiag(summary, list, netdiagState.report);
+    }
+
+    /* First prove that Luna can reach our service. This is deliberately tiny
+       and local: it distinguishes a missing/blocked service from a network
+       diagnostic that itself is slow, instead of leaving a blank spinner. */
+    var pingDone = false;
+    var pingTimer = setTimeout(function () {
+      if (!pingDone) { pingDone = true; localFailure('ping no respondió en 7 segundos'); }
+    }, 7000);
+    portalServiceCall('ping', {}, function (pingError, pingPayload) {
+      if (pingDone) { return; }
+      pingDone = true;
+      clearTimeout(pingTimer);
+      if (pingError || !pingPayload) {
+        localFailure('ping falló: ' + reportSafeText(pingError || 'sin respuesta'));
+      }
+    }, 6500);
+
     /* Two safety nets: one explains a slow network, the other gives the button
        back if the service never answers at all. */
     var slowTimer = setTimeout(function () {
-      if (!netdiagState.running) { return; }
+      if (!netdiagState.running || netdiagState.runId !== runId) { return; }
       summary.textContent = 'Analizando… tu red está respondiendo lento, espera un momento.';
     }, 9000);
     var guardTimer = setTimeout(function () {
-      if (!netdiagState.running) { return; }
-      netdiagState.running = false;
-      button.textContent = 'Analizar de nuevo';
-      summary.className = 'dg-summary bad';
-      summary.textContent = 'La prueba no respondió. Apaga la TV del todo (10 segundos) y vuelve a intentarlo; si sigue igual, reinstala la app con el instalador.';
+      if (!netdiagState.running || netdiagState.runId !== runId) { return; }
+      localFailure('ping respondió, pero netdiag no devolvió resultado en 32 segundos');
     }, 32000);
 
     portalServiceCall('netdiag', (function () {
@@ -4053,6 +4167,7 @@ function portalServiceCall(method, params, done, customTimeout) {
         vodHeaders: (lastCdnProbe.vod && lastCdnProbe.vod.headers) || {}
       };
     })(), function (error, payload) {
+      if (netdiagState.runId !== runId) { return; }
       clearTimeout(slowTimer);
       clearTimeout(guardTimer);
       netdiagState.running = false;
@@ -4087,8 +4202,10 @@ function portalServiceCall(method, params, done, customTimeout) {
 
     var button = el('div', 'dg-btn focusable', 'Analizar red');
     abs(button, 52, 242, 330, 66);
+    var reportButton = el('div', 'dg-btn dg-report-btn focusable', 'Generar reporte');
+    abs(reportButton, 400, 242, 330, 66);
     var summary = el('div', 'dg-summary', 'Pulsa "Analizar red" para empezar.');
-    abs(summary, 402, 242, 1024, 66);
+    abs(summary, 750, 242, 676, 66);
 
     var head = el('div', 'dg-head');
     abs(head, 52, 336, 1380, 40);
@@ -4111,14 +4228,19 @@ function portalServiceCall(method, params, done, customTimeout) {
     abs(foot, 52, 872, 1380, 150);
 
     button._activate = function () { runNetdiag(button, summary, list); };
+    reportButton._activate = function () { showSupportReport(summary, list); };
     /* Opening the panel runs the test once: the people who need it are not
        going to press a button they do not understand. */
     p._ensureDiag = function () {
-      if (netdiagState.running || netdiagState.report) { return; }
+      if (netdiagState.report) {
+        renderNetdiag(summary, list, netdiagState.report);
+        return;
+      }
       runNetdiag(button, summary, list);
     };
 
     p.appendChild(button);
+    p.appendChild(reportButton);
     p.appendChild(summary);
     p.appendChild(head);
     p.appendChild(list);
@@ -7048,18 +7170,24 @@ function portalServiceCall(method, params, done, customTimeout) {
      Without this fit pass only the left half of the fixed canvas is painted
      and the right half of the TV remains black. */
   function viewportSize() {
-    /* webOS TV: window.innerWidth/innerHeight always reflect the CSS viewport
-       allocated by appinfo.json (1920x1080 on FHD; 1280x720 on 720p sets).
-       Do NOT use screen.width, body.clientWidth or visualViewport to clamp
-       this value - those APIs return different coordinate spaces on webOS
-       Chromium 53 and would shrink #app to 0.667 scale on FHD TVs, leaving
-       the right 640px completely black. */
+    /* Most webOS builds report the CSS viewport here. Some 2K/4K firmware
+       reports a legacy 1280×720 inner viewport while compositing to its full
+       physical 1920/3840 panel; using that value alone paints the left part
+       of the TV and leaves the right side black. */
     var vw = window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 0;
     var vh = window.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 0;
     if (!vw || !vh) { vw = 1920; vh = 1080; }
-    /* Keep screen.* for diagnostics only - never use them to resize. */
     var panelW = Math.floor((screen && screen.width) || 0);
     var panelH = Math.floor((screen && screen.height) || 0);
+    var cssRatio = vw / vh;
+    var panelRatio = panelW && panelH ? panelW / panelH : 0;
+    /* Only trust screen.* when it is a larger, same-shape panel. This keeps
+       720p TVs at their true 1280×720 CSS size while fixing scaled UHD sets. */
+    if (panelW >= vw * 1.25 && panelH >= vh * 1.25 &&
+        Math.abs(cssRatio - panelRatio) < 0.03) {
+      vw = panelW;
+      vh = panelH;
+    }
     var panel = (panelW > 0 && panelH > 0) ? { w: panelW, h: panelH } : null;
     return { w: vw, h: vh, panel: panel };
   }

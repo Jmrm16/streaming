@@ -87,7 +87,10 @@ function buildArgs(s, start, audio) {
   args.push(
     '-i', s.url,
     '-map', '0:v:0', '-map', '0:a:' + audio + '?',
-    '-c', 'copy'
+    '-c', 'copy',
+    // El portal entrega AAC dentro de TS como ADTS. MP4/fMP4 exige el Audio
+    // Specific Config, que este filtro extrae sin recodificar el audio.
+    '-bsf:a', 'aac_adtstoasc'
   );
   if (s.hevc) args.push('-tag:v', 'hvc1');   // hvc1 es la etiqueta que el reproductor nativo acepta bien
   args.push(
