@@ -7249,6 +7249,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     });
     buildSearch();
     startServiceKeepAlive();
+    portalServiceCall('prewarm', {}, function () {});
     startWelcome();
     loadVodCatalog();
     loadLiveChannels();

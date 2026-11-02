@@ -17,6 +17,13 @@ var dnsx = require('./dnsx');
 var netdiag = require('./netdiag');
 var urlmod = require('url');
 
+try {
+  var httpsMod = require('https');
+  var httpMod = require('http');
+  if (httpsMod.globalAgent) { httpsMod.globalAgent.maxSockets = 32; }
+  if (httpMod.globalAgent) { httpMod.globalAgent.maxSockets = 32; }
+} catch (eAgent) { /* ignore */ }
+
 var service = new Service(pkg.name);
 
 /* Prevent unexpected network errors or aborts from terminating the service */
@@ -235,7 +242,7 @@ service.register('resolveLive', function (message) {
       var resolvedIp = (dnsRes && dnsRes.ips && dnsRes.ips[0]) || '';
       proxy.start(function (perr) {
         if (perr) { return fail(message, perr); }
-        var token = proxy.add(stream.url, stream.headers, 0, resolvedIp);
+        var token = proxy.add(stream.url, stream.headers, 0, resolvedIp, stream.backupUrls);
         stream.proxyPath = proxy.baseUrl() + '/media/' + token + '/stream.m3u8';
         stream.isHls = true;
         respond(message, null, stream);
@@ -294,33 +301,35 @@ service.register('netdiag', function (message) {
       panelH: Number(payload.panelH) || 0
     };
   }
-  /* Layer options: portal ping, session validity, live/VOD CDN probe */
-  var sess = magis.session || {};
-  var portalHost = (magis.constants && magis.constants.HOSTS && magis.constants.HOSTS[0]) || '';
-  var portalUrl  = portalHost ? ('https://' + portalHost + '/api/portalCore/v8/active') : '';
-  var layerOpts = {
-    portalUrl:   portalUrl,
-    session:     { userId: sess.userId || '', userToken: sess.userToken || '', ready: !!sess.ready },
-    liveUrl:     payload.liveUrl  || '',
-    liveHeaders: payload.liveHeaders || {},
-    vodUrl:      payload.vodUrl   || '',
-    vodHeaders:  payload.vodHeaders  || {}
-  };
+  /* Layer options: ensure session is validated before reporting */
+  magis.ensureSession(function (sessErr) {
+    var sess = magis.session || {};
+    var portalHost = (magis.constants && magis.constants.HOSTS && magis.constants.HOSTS[0]) || '';
+    var portalUrl  = portalHost ? ('https://' + portalHost + '/api/portalCore/v8/active') : '';
+    var layerOpts = {
+      portalUrl:   portalUrl,
+      session:     { userId: sess.userId || '', userToken: sess.userToken || '', ready: !!sess.ready, error: sessErr ? (sessErr.message || 'error') : '' },
+      liveUrl:     payload.liveUrl  || '',
+      liveHeaders: payload.liveHeaders || {},
+      vodUrl:      payload.vodUrl   || '',
+      vodHeaders:  payload.vodHeaders  || {}
+    };
 
-  netdiag.run({ hosts: hosts, screen: screen }, function (err, report) {
-    if (err) { return fail(message, err); }
-    report.version = pkg.version;
+    netdiag.run({ hosts: hosts, screen: screen }, function (err, report) {
+      if (err) { return fail(message, err); }
+      report.version = pkg.version;
 
-    /* Run layer checks in parallel with the DNS report and merge */
-    netdiag.runLayers(layerOpts, function (lerr, layers) {
-      report.layers = layers || {};
-      /* Codec info forwarded from the browser page */
-      report.codec = {
-        h264: payload.codecH264 || '',
-        hevc: payload.codecHEVC || '',
-        hls:  payload.codecHLS  || ''
-      };
-      respond(message, null, report);
+      /* Run layer checks in parallel with the DNS report and merge */
+      netdiag.runLayers(layerOpts, function (lerr, layers) {
+        report.layers = layers || {};
+        /* Codec info forwarded from the browser page */
+        report.codec = {
+          h264: payload.codecH264 || '',
+          hevc: payload.codecHEVC || '',
+          hls:  payload.codecHLS  || ''
+        };
+        respond(message, null, report);
+      });
     });
   });
 });

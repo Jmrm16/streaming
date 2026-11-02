@@ -102,10 +102,12 @@ function resolveHostIp(entry, cb) {
   });
 }
 
-function add(target, headers, duration, resolvedIp) {
+function add(target, headers, duration, resolvedIp, backupUrls) {
   var token = crypto.randomBytes(12).toString('hex');
   var entry = {
     url: target,
+    backupUrls: Array.isArray(backupUrls) ? backupUrls : [],
+    backupIndex: 0,
     headers: headers || {},
     duration: Number(duration) || 0,
     contentLength: 0,
@@ -488,13 +490,21 @@ function forward(req, res, entry, token) {
       cleanup();
     });
 
-    upstream.on('error', function () {
+    upstream.on('error', function (uErr) {
       if (entry && entry.url) {
         var h = urlmod.parse(entry.url).hostname;
         var hit = dnsx.cached(h);
         if (hit && hit.ips && hit.ips.length > 1) {
           entry.resolvedIp = dnsx.dial(h, hit.ips);
         }
+      }
+      if (!res.headersSent && entry && entry.backupUrls && entry.backupIndex < entry.backupUrls.length) {
+        var nextUrl = entry.backupUrls[entry.backupIndex++];
+        console.log('[proxy] upstream falló (' + (uErr && (uErr.code || uErr.message)) + '), reintentando con CDN alternativa: ' + nextUrl);
+        entry.url = nextUrl;
+        entry.resolvedIp = '';
+        cleanup();
+        return forward(req, res, entry, token);
       }
       if (!res.headersSent) {
         try {

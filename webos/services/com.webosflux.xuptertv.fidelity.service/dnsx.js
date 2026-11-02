@@ -22,6 +22,12 @@ var dns = require('dns');
 var https = require('https');
 var net = require('net');
 
+/* webOS 3 ships Node.js 0.12 where default maxSockets is 5.
+   Allowing 32 parallel sockets ensures our multi-DoH pool races without queueing. */
+try {
+  if (https.globalAgent) { https.globalAgent.maxSockets = 32; }
+} catch (eAgent) { /* ignore */ }
+
 var CACHE_MS = 10 * 60 * 1000;
 var SYSTEM_CACHE_MS = 60 * 1000;
 var DOH_TIMEOUT = 5000;

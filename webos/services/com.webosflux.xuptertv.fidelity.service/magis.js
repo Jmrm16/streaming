@@ -1203,8 +1203,13 @@ function resolveLive(channelCode, done) {
         var moment = Math.trunc(Date.now());
         var sign2 = signO3(token, moment);
         var authHeader = chosen.authBase + '&sign2_method=sign_o3&instance=0&start_moment=' + moment + '&sign2=' + sign2;
+        var backupUrls = [];
+        for (var b = 1; b < liveCdns.length; b++) {
+          backupUrls.push('http://' + liveCdns[b].cflHost + '/live/' + playCode + '.m3u8');
+        }
         var stream = {
           url: liveUrl,
+          backupUrls: backupUrls,
           mime: 'application/x-mpegurl',
           headers: {
             'Content-Auth': authHeader,

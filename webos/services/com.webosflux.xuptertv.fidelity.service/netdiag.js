@@ -22,7 +22,13 @@
 'use strict';
 
 var https = require('https');
+var http = require('http');
 var dnsx = require('./dnsx');
+
+try {
+  if (https.globalAgent) { https.globalAgent.maxSockets = 32; }
+  if (http.globalAgent) { http.globalAgent.maxSockets = 32; }
+} catch (eAgent) { /* ignore */ }
 
 var TCP_TIMEOUT = 3000;
 var HTTP_TIMEOUT = 4000;
@@ -384,8 +390,8 @@ function layerProbe(url, headers, done) {
     var host = parsed.hostname;
     var secure = parsed.protocol === 'https:';
 
-    function doRequest(ip) {
-      var connectHost = ip || host;
+    function doRequest(ipList, ipIndex) {
+      var connectHost = (ipList && ipList[ipIndex]) || host;
       var defaultPort = secure ? 443 : 80;
       var port = parsed.port ? parseInt(parsed.port, 10) : defaultPort;
       var reqHeaders = { 'User-Agent': 'Ranger/4.9.4-17294ac0', Host: parsed.host || host };
@@ -410,16 +416,20 @@ function layerProbe(url, headers, done) {
         finish({ ok: false, error: 'timeout', ms: now() - t0 });
       });
       req.on('error', function (err) {
+        if (ipList && (ipIndex + 1) < ipList.length) {
+          return doRequest(ipList, ipIndex + 1);
+        }
         finish({ ok: false, error: err.code || err.message, ms: now() - t0 });
       });
       req.end();
     }
 
-    if (!host || dnsx2.isIpv4(host)) { return doRequest(host); }
+    if (!host || dnsx2.isIpv4(host)) { return doRequest([host], 0); }
     var hit = dnsx2.cached(host);
-    if (hit && hit.ips && hit.ips.length) { return doRequest(hit.ips[0]); }
+    if (hit && hit.ips && hit.ips.length) { return doRequest(hit.ips, 0); }
     dnsx2.resolve(host, function (err, res) {
-      doRequest((res && res.ips && res.ips.length) ? res.ips[0] : host);
+      var list = (res && res.ips && res.ips.length) ? res.ips : [host];
+      doRequest(list, 0);
     });
   } catch (e) {
     finish({ ok: false, error: e.message || 'excepción', ms: now() - t0 });
@@ -436,7 +446,7 @@ function checkSession(session, done) {
     userId:  hasUser  ? '✓' : '✗',
     token:   hasToken ? '✓' : '✗',
     ready:   !!session.ready,
-    error:   (!hasUser || !hasToken) ? 'sesion-incompleta' : ''
+    error:   (!hasUser || !hasToken) ? (session.error || 'sesion-incompleta') : ''
   });
 }
 
