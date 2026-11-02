@@ -4125,10 +4125,12 @@ function portalServiceCall(method, params, done, customTimeout) {
     /* First prove that Luna can reach our service. This is deliberately tiny
        and local: it distinguishes a missing/blocked service from a network
        diagnostic that itself is slow, instead of leaving a blank spinner. */
+    /* Allow up to 25 seconds for the Node.js service to cold-boot on slower
+       dual-core TVs (webOS 3.5 / 2017 models like LJ550 need 8-12 seconds). */
     var pingDone = false;
     var pingTimer = setTimeout(function () {
-      if (!pingDone) { pingDone = true; localFailure('ping no respondió en 7 segundos'); }
-    }, 7000);
+      if (!pingDone) { pingDone = true; localFailure('ping no respondió en 25 segundos (el servicio no arrancó)'); }
+    }, 25000);
     portalServiceCall('ping', {}, function (pingError, pingPayload) {
       if (pingDone) { return; }
       pingDone = true;
@@ -4136,7 +4138,7 @@ function portalServiceCall(method, params, done, customTimeout) {
       if (pingError || !pingPayload) {
         localFailure('ping falló: ' + reportSafeText(pingError || 'sin respuesta'));
       }
-    }, 6500);
+    }, 24000);
 
     /* Two safety nets: one explains a slow network, the other gives the button
        back if the service never answers at all. */
@@ -7181,9 +7183,10 @@ function portalServiceCall(method, params, done, customTimeout) {
     var panelH = Math.floor((screen && screen.height) || 0);
     var cssRatio = vw / vh;
     var panelRatio = panelW && panelH ? panelW / panelH : 0;
-    /* Only trust screen.* when it is a larger, same-shape panel. This keeps
-       720p TVs at their true 1280×720 CSS size while fixing scaled UHD sets. */
-    if (panelW >= vw * 1.25 && panelH >= vh * 1.25 &&
+    /* Only trust screen.* when it is a true UHD/4K panel (>= 2560).
+       Never override an HD/720p viewport (1280×720) with a virtual 1920 panel,
+       which would force scale=1.0 and crop 640px on the right and 360px on the bottom. */
+    if (panelW >= 2560 && panelW >= vw * 1.25 && panelH >= vh * 1.25 &&
         Math.abs(cssRatio - panelRatio) < 0.03) {
       vw = panelW;
       vh = panelH;
