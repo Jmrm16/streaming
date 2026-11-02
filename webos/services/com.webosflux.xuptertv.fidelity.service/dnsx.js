@@ -28,14 +28,37 @@ var DOH_TIMEOUT = 5000;
 var PROBE_TIMEOUT = 4000;
 
 /* Resolvers are addressed by IP so reaching them never depends on the DNS we
-   are trying to bypass.  SNI/Host carry the real certificate name. */
+   are trying to bypass.  SNI/Host carry the real certificate name.
+   Multiple independent global providers (Cloudflare, Google, AdGuard, AliDNS,
+   DNS.SB, NextDNS) prevent regional or ISP-level blocks on any single provider. */
 var PROVIDERS = [
+  // Cloudflare Anycast
   { ip: '1.1.1.1', sni: 'cloudflare-dns.com', path: '/dns-query' },
   { ip: '1.0.0.1', sni: 'cloudflare-dns.com', path: '/dns-query' },
+  { ip: '1.1.1.2', sni: 'security.cloudflare-dns.com', path: '/dns-query' },
+  { ip: '1.0.0.2', sni: 'security.cloudflare-dns.com', path: '/dns-query' },
+
+  // Google Public DNS Anycast
   { ip: '8.8.8.8', sni: 'dns.google', path: '/resolve' },
   { ip: '8.8.4.4', sni: 'dns.google', path: '/resolve' },
+
+  // AdGuard DNS (standard & unfiltered)
   { ip: '94.140.14.14', sni: 'dns.adguard-dns.com', path: '/resolve' },
-  { ip: '94.140.15.15', sni: 'dns.adguard-dns.com', path: '/resolve' }
+  { ip: '94.140.15.15', sni: 'dns.adguard-dns.com', path: '/resolve' },
+  { ip: '94.140.14.140', sni: 'unfiltered.adguard-dns.com', path: '/resolve' },
+  { ip: '94.140.14.141', sni: 'unfiltered.adguard-dns.com', path: '/resolve' },
+
+  // AliDNS / Alibaba Cloud Anycast (independent Asian/global infrastructure)
+  { ip: '223.5.5.5', sni: 'dns.alidns.com', path: '/resolve' },
+  { ip: '223.6.6.6', sni: 'dns.alidns.com', path: '/resolve' },
+
+  // DNS.SB Anycast (independent European/global privacy infrastructure)
+  { ip: '185.222.222.222', sni: 'doh.dns.sb', path: '/dns-query' },
+  { ip: '45.11.45.11', sni: 'doh.dns.sb', path: '/dns-query' },
+
+  // NextDNS Anycast
+  { ip: '45.90.28.0', sni: 'dns.nextdns.io', path: '/dns-query' },
+  { ip: '45.90.30.0', sni: 'dns.nextdns.io', path: '/dns-query' }
 ];
 
 var cache = {};        // host -> { ips:[], at, ttl, source }
