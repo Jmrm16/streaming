@@ -485,13 +485,44 @@ function queryString(params) {
   return parts.join('&');
 }
 
+/* ls-hubd refuses a call when the app is missing from the service ACL, which
+   happens when the installed manifest is stale after an update.  "Denied
+   method netdiag for category /" means nothing to a viewer, so translate it
+   into the two things that actually fix it and keep the raw text in brackets
+   for whoever supports the TV. */
+var SERVICE_BLOCKED_HINT = 'La TV tiene bloqueado el servicio de XuperTV. ' +
+  'Desenchufa la TV 10 segundos y vuelve a abrir la app; si sigue igual, ' +
+  'reinstala con el instalador.';
+function describeServiceError(text) {
+  var raw = String(text == null ? '' : text);
+  if (/denied|permission|not permitted/i.test(raw)) {
+    return SERVICE_BLOCKED_HINT + ' (' + raw + ')';
+  }
+  return raw;
+}
+
+/* The network test can only judge the carrier by touching the real CDN, so the
+   page remembers the last raw CDN URLs the portal handed out.  Loopback proxy
+   URLs are useless here: they always answer, even when the carrier drops the
+   upstream connection. */
+var lastCdnProbe = { live: null, vod: null };
+function rememberCdnProbe(kind, payload) {
+  try {
+    if (!payload) { return; }
+    var url = payload.url || '';
+    if (!/^https?:\/\//i.test(url)) { return; }
+    if (/^https?:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(url)) { return; }
+    lastCdnProbe[kind] = { url: url, headers: payload.headers || {} };
+  } catch (eProbe) { /* ignore */ }
+}
+
 function portalServiceCall(method, params, done, customTimeout) {
   var serviceId = vodApi.serviceId || 'com.webosflux.xuptertv.fidelity.service';
   var settled = false;
   function finish(error, payload) {
     if (settled) { return; }
     settled = true;
-    done(error, payload);
+    done(error ? describeServiceError(error) : error, payload);
   }
   /* webOSTV.js defines webOS.service.request even in a plain browser; without
      the native bridge it only reports an error, so the desktop harness must
@@ -2051,6 +2082,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     var params = ch.streamUrl ? { streamUrl: ch.streamUrl } : { channelCode: ch.channelCode };
     portalServiceCall('resolveLive', params, function (err, payload) {
       if (mySeq !== livePreviewSeq || state.screen !== 'home' || state.tab !== 0) { return; }
+      if (!err && payload) { rememberCdnProbe('live', payload); }
       var url = !err && payload && payload.returnValue !== false && (payload.proxyPath || payload.url);
       if (!url) {
         liveMain.classList.remove('is-preview-loading');
@@ -3918,10 +3950,14 @@ function portalServiceCall(method, params, done, customTimeout) {
       { key: 'live',    label: 'Live CDN' },
       { key: 'vod',     label: 'VOD CDN' }
     ];
+    var liveFail = false;
+    var vodFail = false;
     for (var li = 0; li < layerDefs.length; li++) {
       var ldef = layerDefs[li];
       var ldata = layers[ldef.key];
       if (!ldata) { continue; }
+      if (ldef.key === 'live' && !ldata.ok) { liveFail = true; }
+      if (ldef.key === 'vod' && !ldata.ok) { vodFail = true; }
       var lrow = el('div', 'dg-row ' + (ldata.ok ? 'ok' : 'bad'));
       var ldesc = ldata.error || (ldata.status ? 'HTTP ' + ldata.status : (ldata.ok ? 'OK' : 'Error'));
       if (ldef.key === 'session') {
@@ -3933,6 +3969,23 @@ function portalServiceCall(method, params, done, customTimeout) {
       lrow.appendChild(el('span', 'dg-state', ldata.ok ? 'OK' : 'Error'));
       lrow.appendChild(el('span', 'dg-ip', ldesc + lms));
       list.appendChild(lrow);
+    }
+
+    /* A green DNS test with dead media CDNs is the classic carrier block:
+       the operator answers DNS but drops the video hosts by IP or TLS SNI.
+       Without this override the viewer reads "todo bien" and still sees a
+       black screen, which is exactly the report we get from Chile/Colombia. */
+    if (summaryInfo.cls === 'ok' && (liveFail || vodFail)) {
+      var broken = (liveFail && vodFail) ? 'los canales en vivo y las películas'
+        : (liveFail ? 'los canales en vivo' : 'las películas');
+      summaryInfo = {
+        cls: 'bad',
+        text: 'El DNS responde bien, pero ' + broken + ' no se pueden abrir: ' +
+          'tu operador bloquea las direcciones de vídeo (bloqueo por IP/SNI). ' +
+          'Ese bloqueo no se arregla desde la app; hace falta una VPN en el router.'
+      };
+      summary.textContent = summaryInfo.text;
+      summary.className = 'dg-summary ' + summaryInfo.cls;
     }
 
     if (netdiagEnv) {
@@ -3964,7 +4017,13 @@ function portalServiceCall(method, params, done, customTimeout) {
         panelW: vp.panelW || 0, panelH: vp.panelH || 0,
         codecH264: cp('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
         codecHEVC: cp('video/mp4; codecs="hvc1.1.6.L93.B0"'),
-        codecHLS:  cp('application/x-mpegURL')
+        codecHLS:  cp('application/x-mpegURL'),
+        /* Last real CDN URLs so the service can prove whether the carrier
+           drops live/VOD by IP or SNI even when DNS looks perfect. */
+        liveUrl: (lastCdnProbe.live && lastCdnProbe.live.url) || '',
+        liveHeaders: (lastCdnProbe.live && lastCdnProbe.live.headers) || {},
+        vodUrl: (lastCdnProbe.vod && lastCdnProbe.vod.url) || '',
+        vodHeaders: (lastCdnProbe.vod && lastCdnProbe.vod.headers) || {}
       };
     })(), function (error, payload) {
       netdiagState.running = false;
@@ -3974,7 +4033,9 @@ function portalServiceCall(method, params, done, customTimeout) {
         netdiagState.error = error || 'sin respuesta';
         summary.className = 'dg-summary bad';
         var errMsg = String(error || '');
-        if (/exist|not found|no disponible/i.test(errMsg)) {
+        if (/denied|permission|not permitted|bloqueado el servicio/i.test(errMsg)) {
+          summary.textContent = SERVICE_BLOCKED_HINT;
+        } else if (/exist|not found|no disponible/i.test(errMsg)) {
           summary.textContent = 'El servicio de fondo no está instalado en la TV. Reinstala la app usando el instalador .bat';
         } else if (/timeout|tiempo|espera/i.test(errMsg)) {
           summary.textContent = 'Tiempo de espera agotado. La conexión es muy lenta o el DNS de tu operador no responde.';
@@ -6552,6 +6613,7 @@ function portalServiceCall(method, params, done, customTimeout) {
           setPlayerStatus(state.streamError);
           return done('');
         }
+        rememberCdnProbe('vod', payload);
         item.streamMime = payload.mime || '';
         item.streamCodec = payload.codec || '';
         if (payload.duration > 0) {
@@ -6745,6 +6807,7 @@ function portalServiceCall(method, params, done, customTimeout) {
           setPlayerStatus(state.streamError);
           return;
         }
+        rememberCdnProbe('live', payload);
         var streamUrl = payload.proxyPath || payload.url;
         if (!streamUrl) {
           state.streamError = 'Señal no disponible';

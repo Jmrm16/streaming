@@ -103,7 +103,33 @@ const server = http.createServer((req, res) => {
           panelH: Number(u.searchParams.get("panelH") || 0)
         }
       : null;
-    return netdiag.run({ hosts, screen }, (err, report) => done(err, report));
+    // Mirrors the Luna route in index.js so the desktop harness exercises the
+    // same layer probes (portal/session/live/VOD) and codec rows.
+    const jsonParam = (name) => {
+      try { return JSON.parse(u.searchParams.get(name) || "{}") || {}; } catch { return {}; }
+    };
+    const portalHost = (magis.constants.HOSTS || [])[0] || "";
+    const sess = magis.session || {};
+    const layerOpts = {
+      portalUrl: portalHost ? `https://${portalHost}/api/portalCore/v8/active` : "",
+      session: { userId: sess.userId || "", userToken: sess.userToken || "", ready: !!sess.ready },
+      liveUrl: u.searchParams.get("liveUrl") || "",
+      liveHeaders: jsonParam("liveHeaders"),
+      vodUrl: u.searchParams.get("vodUrl") || "",
+      vodHeaders: jsonParam("vodHeaders"),
+    };
+    return netdiag.run({ hosts, screen }, (err, report) => {
+      if (err) return done(err);
+      netdiag.runLayers(layerOpts, (lerr, layers) => {
+        report.layers = layers || {};
+        report.codec = {
+          h264: u.searchParams.get("codecH264") || "",
+          hevc: u.searchParams.get("codecHEVC") || "",
+          hls: u.searchParams.get("codecHLS") || "",
+        };
+        done(null, report);
+      });
+    });
   }
   json(res, 404, { returnValue: false, errorText: "not found" });
 });

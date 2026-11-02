@@ -1112,6 +1112,45 @@ function fetchM3u(urlStr, done) {
    trips every time the viewer returns to a channel. */
 var liveResolveCache = {};
 var LIVE_RESOLVE_CACHE_MS = 120000;
+
+/* Tries each attempt in order and stops at the first one that returns data.
+   Portal builds differ per account: some require the live column id and the
+   v15 SLB endpoint, older ones only answer columnId 0 / v14.  Calling the
+   wrong form returns error 1, so live TV must never depend on a single guess. */
+function firstCall(attempts, done) {
+  var i = 0;
+  function next(lastErr) {
+    if (i >= attempts.length) {
+      return done(lastErr || new Error('el portal no respondió'));
+    }
+    var attempt = attempts[i++];
+    call(attempt.path, attempt.bean, function (err, data) {
+      if (err) { return next(err); }
+      done(null, data);
+    });
+  }
+  next(null);
+}
+
+function liveCdnsOf(slb) {
+  var cdns = (slb && slb.cdn_list) || [];
+  var list = [];
+  for (var c = 0; c < cdns.length; c++) {
+    var cdn = cdns[c];
+    if (!cdn || cdn.tag !== 'live') continue;
+    var urls = cdn.url_list || [];
+    for (var u = 0; u < urls.length; u++) {
+      var entry = urls[u];
+      var urlStr = (entry && entry.url) || '';
+      if (entry.sign_type === 'cfl' || urlStr.indexOf('sign_type=cfl') !== -1) {
+        var bh = bareHost(cdn.main_addr);
+        if (bh) list.push({ cflHost: bh, authBase: urlStr });
+      }
+    }
+  }
+  return list;
+}
+
 function resolveLive(channelCode, done) {
   var cached = liveResolveCache[channelCode];
   if (cached && (Date.now() - cached.at) < LIVE_RESOLVE_CACHE_MS) {
@@ -1119,7 +1158,10 @@ function resolveLive(channelCode, done) {
   }
   ensureSession(function (err) {
     if (err) { return done(err); }
-    call('v4/startPlayLive', { channelCode: channelCode, columnId: '76182', type: '1' }, function (err2, play) {
+    firstCall([
+      { path: 'v4/startPlayLive', bean: { channelCode: channelCode, columnId: '76182', type: '1' } },
+      { path: 'v4/startPlayLive', bean: { channelCode: channelCode, columnId: 0, type: '1' } }
+    ], function (err2, play) {
       if (err2) { return done(err2); }
       var addrList = (play && play.liveAddressList) || [];
       var addr = null;
@@ -1138,26 +1180,22 @@ function resolveLive(channelCode, done) {
 
       var bean = slbBean();
       bean.liveCodeList = [channelCode];
-      call('v15/getSlbInfo', bean, function (err3, slb) {
-        if (err3) { return done(err3); }
-        var cdns = slb.cdn_list || [];
-        var liveCdns = [];
-        for (var c = 0; c < cdns.length; c++) {
-          var cdn = cdns[c];
-          if (cdn.tag !== 'live') continue;
-          var urls = cdn.url_list || [];
-          for (var u = 0; u < urls.length; u++) {
-            var entry = urls[u];
-            var urlStr = entry.url || '';
-            if (entry.sign_type === 'cfl' || urlStr.indexOf('sign_type=cfl') !== -1) {
-              var bh = bareHost(cdn.main_addr);
-              if (bh) liveCdns.push({ cflHost: bh, authBase: urlStr });
-            }
-          }
-        }
-        if (!liveCdns.length) {
+      var slbPaths = ['v15/getSlbInfo', 'v14/getSlbInfo'];
+      var slbIndex = 0;
+
+      function trySlb(lastSlbErr) {
+        if (slbIndex >= slbPaths.length) {
           return done(new Error('el portal no expuso CDN de vivo'));
         }
+        call(slbPaths[slbIndex++], bean, function (err3, slb) {
+          if (err3) { return trySlb(err3); }
+          var liveCdns = liveCdnsOf(slb);
+          if (!liveCdns.length) { return trySlb(new Error('CDN de vivo vacía')); }
+          useCdns(liveCdns);
+        });
+      }
+
+      function useCdns(liveCdns) {
         var chosen = liveCdns[0];
         var liveUrl = 'http://' + chosen.cflHost + '/live/' + playCode + '.m3u8';
         var tokenMatch = chosen.authBase.match(/token=([0-9a-fA-F]{32})/);
@@ -1180,7 +1218,9 @@ function resolveLive(channelCode, done) {
         };
         liveResolveCache[channelCode] = { at: Date.now(), stream: stream };
         done(null, stream);
-      });
+      }
+
+      trySlb(null);
     });
   });
 }
