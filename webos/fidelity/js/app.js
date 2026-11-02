@@ -519,11 +519,17 @@ function rememberCdnProbe(kind, payload) {
 function portalServiceCall(method, params, done, customTimeout) {
   var serviceId = vodApi.serviceId || 'com.webosflux.xuptertv.fidelity.service';
   var settled = false;
+  var timeoutMs = customTimeout || parseInt(vodApi.timeoutMs, 10) || 20000;
+  var callTimer = null;
   function finish(error, payload) {
     if (settled) { return; }
     settled = true;
+    if (callTimer) { clearTimeout(callTimer); callTimer = null; }
     done(error ? describeServiceError(error) : error, payload);
   }
+  callTimer = setTimeout(function () {
+    finish('El servicio de la TV no respondió en ' + Math.round(timeoutMs / 1000) + ' s. Desenchufa la TV de la corriente 10 segundos y vuelve a abrir la app.', null);
+  }, timeoutMs + 1000);
   /* webOSTV.js defines webOS.service.request even in a plain browser; without
      the native bridge it only reports an error, so the desktop harness must
      skip the Luna branch entirely. */
@@ -800,10 +806,11 @@ function portalServiceCall(method, params, done, customTimeout) {
         }
         var wait = item._detailWait || [];
         item._detailWait = [];
+        var hadWaiters = wait.length > 0;
         for (var i = 0; i < wait.length; i++) { wait[i](item); }
         if (state.detail === item && state.screen === 'detail') {
           buildDetail(item);
-          if (!playerVideo || !playerVideo.src || playerVideo.paused) {
+          if (!hadWaiters && (!playerVideo || !playerVideo.src || playerVideo.paused)) {
             startPlayerVideo(item, state.detailEpisode);
           }
         }
@@ -1407,7 +1414,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     if (state.screen === 'player') {
       if (isPlay) {
         if (playerVideo && playerVideo.paused) {
-          try { playerVideo.play(); } catch (ePlay) {}
+          resumePlayerPlayback();
           showOsdIcon('none');
           showInfobar();
         }
@@ -1583,8 +1590,7 @@ function portalServiceCall(method, params, done, customTimeout) {
         /* OK retries the failed stream, but only from the video surface: with
            the channel panel open it must activate the focused row/pill, or a
            dead channel made every category unfilterable. */
-        var retry = playerVideo.play();
-        if (retry && retry.catch) { retry.catch(function () {}); }
+        resumePlayerPlayback();
         state.streamError = '';
         setPlayerStatus('');
       } else if (state.screen === 'player' && state.playerMode === 'vod') {
@@ -4429,10 +4435,7 @@ function portalServiceCall(method, params, done, customTimeout) {
   function togglePlayerPlayPause() {
     if (!playerVideo) { return; }
     if (playerVideo.paused) {
-      try {
-        var p = playerVideo.play();
-        if (p && p.catch) { p.catch(function () {}); }
-      } catch (eP) {}
+      resumePlayerPlayback();
       showOsdIcon('none');
       showInfobar();
     } else {
@@ -4519,6 +4522,10 @@ function portalServiceCall(method, params, done, customTimeout) {
   var vodCurrentAudioTrack = 0;
   /* Once the user picks a language we stop auto-selecting the preferred one. */
   var vodAudioChosen = false;
+  /* Older Starfish builds can report MEDIA_ERR_SRC_NOT_SUPPORTED while they
+     apply a native audio PID.  It is not a failed movie and must never turn
+     Normal (Directo) into Modo Fluido. */
+  var audioTrackSwitchUntil = 0;
   var vodCurrentSubtitle = null;
   var vodSubActive = false;
   /* True once the user flips the switch or picks a language; from then on the
@@ -4757,6 +4764,13 @@ function portalServiceCall(method, params, done, customTimeout) {
 
   function smoothModeKey(item) {
     if (!item) { return ''; }
+    /* A manual mode is a series preference while chapters are playing.  The
+       previous key used the current episode id, so selecting Fluido in E1
+       silently reverted to Normal in E2 and could leave its resolver waiting
+       on an incompatible direct pipeline. */
+    if (isSeriesItem(item)) {
+      return 'series:' + (item.seriesContentId || item.seriesId || item.seasonId || item.id || '');
+    }
     var ep = mediaInfoEpisode(item);
     return (ep && ep.id) ? ep.id : (item.id || '');
   }
@@ -5707,6 +5721,7 @@ function portalServiceCall(method, params, done, customTimeout) {
       if (selectNativeAudioTrack(trackIndex)) {
         vodCurrentAudioTrack = trackIndex;
         vodAudioChosen = true;
+        audioTrackSwitchUntil = Date.now() + 5000;
         setPlayerStatus('Idioma cambiado');
       } else {
         setPlayerStatus('Esta TV no permite cambiar audio en Normal. Usa Modo Fluido para esa pista.');
@@ -6310,6 +6325,28 @@ function portalServiceCall(method, params, done, customTimeout) {
   var resolveSeq = 0;
   var relayBaseUrl = '';
   var relayStartOffset = 0;
+  /* A fragmented MP4 relay is a one-way HTTP stream.  Several older webOS
+     players do not resume that socket after a long pause; opening its local
+     URL again at the same offset is the reliable native resume operation. */
+  var relayPaused = false;
+
+  function resumePlayerPlayback() {
+    if (!playerVideo) { return; }
+    if (relayPaused && relayBaseUrl && state.playerMode === 'vod') {
+      var base = relayBaseUrl;
+      var position = Math.max(0, Math.floor(relayStartOffset + (playerVideo.currentTime || 0)));
+      relayPaused = false;
+      var resumeUrl = base + '?start=' + position;
+      if (vodCurrentAudioTrack) { resumeUrl += '&a=' + vodCurrentAudioTrack; }
+      setPlayerStatus('Reanudando vídeo…');
+      playUrl(resumeUrl);
+      return;
+    }
+    try {
+      var p = playerVideo.play();
+      if (p && p.catch) { p.catch(function () {}); }
+    } catch (ePlay) { /* native player rejected resume */ }
+  }
 
   /* Accumulated seek delta + timer for debouncing rapid seek keypresses.
      webOS Starfish fires a full setPreload/dispatchBufferingStart cycle
@@ -6441,6 +6478,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     /* Cancel any pending seek */
     if (seekTimer) { clearTimeout(seekTimer); seekTimer = null; seekPending = 0; }
     releaseRelaySeek();
+    relayPaused = false;
     relayBaseUrl = '';
     relayStartOffset = 0;
     /* Increment generation so any in-flight resolve() callback is ignored */
@@ -6510,6 +6548,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     playOptions = playOptions || {};
     var useNativeHlsFallback = !!playOptions.nativeHls;
     stopPlayerVideo();
+    relayPaused = false;
     lastPlayingUrl = url;
     var mOrigin = /^(http:\/\/127\.0\.0\.1:\d+)/.exec(url);
     if (mOrigin) { lastProxyOrigin = mOrigin[1]; }
@@ -6548,6 +6587,16 @@ function portalServiceCall(method, params, done, customTimeout) {
             playUrl(url, { nativeHls: true });
           }
         }, 0);
+        return;
+      }
+      /* A manual language change on the direct pipeline must preserve Normal
+         mode.  Do not mistake the transient native-track error for an
+         unsupported stream and silently restart through the FFmpeg relay. */
+      if (code === 4 && state.playerMode === 'vod' && state.streamMode === 'normal' &&
+          audioTrackSwitchUntil && Date.now() < audioTrackSwitchUntil) {
+        audioTrackSwitchUntil = 0;
+        state.streamError = 'No fue posible cambiar el idioma en reproducción Normal';
+        setPlayerStatus(state.streamError);
         return;
       }
       /* Some portal VOD files are rejected by a TV's direct TS pipeline even
@@ -6641,6 +6690,7 @@ function portalServiceCall(method, params, done, customTimeout) {
           durationToSeconds((state.playerEpisode && state.playerEpisode.duration) || (state.playerItem && state.playerItem.duration) || 0);
         rememberWatchProgress(pausePosition, pauseDuration, true);
         showOsdIcon('pause');
+        if (relayBaseUrl) { relayPaused = true; }
       }
     };
     playerVideo.onplay = function () {

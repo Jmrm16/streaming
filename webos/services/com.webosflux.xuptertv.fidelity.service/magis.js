@@ -25,16 +25,27 @@ var dnsx = require('./dnsx');
 
 /* --------------------------------------------------------------- constants */
 var KEY_HEX = 'e7af1ed7de1ffddd7bd3fe37ebdffde9ef3fe1ae39edfeb8';
-var HOSTS = ['osuhk.m3x8o50te.com', 'oogoy.f30c96w8.com'];
+var HOSTS = [
+  'ftmrmy.jdfey0cd.com',
+  'fuxok.nguvmqhpk.com',
+  'eajmnp.hcgv1dt8.com',
+  'mptec.dhkrxuzcy.com',
+  'hinumz.a878kkoyc.com',
+  'krdwvd.swcaw7qx.com',
+  'osuhk.m3x8o50te.com',
+  'oogoy.f30c96w8.com'
+];
 var PORTAL_CODE = 'masnew';
 var APP_ID = 'com.android.msandroid';
 var APK_VERSION = '49902';
-var SPKG_VER = '2025-08-07 05:40:11_36_16_';
+var SPKG_VER = '2024-09-10 06:25:30_33_13_';
 var APK_VER_HEADER = '43404';
 var USER_AGENT = 'okhttp/3.12.12';
 var CONTENT_TYPE = 'application/json;charset=utf-8';
 var SNTOKEN_SALT = 'ntFT65w6itH!lHCPw7D=@qnsFC5adD28';
 var FIXED_MAC = '02:00:00:00:00:00';
+var FIXED_RESERVE1 = '583442714b345572434a4d5769637461545a735936413d3d';
+var FIXED_DRM_ID = '0iSGEyv2EqiS/nqI/I3hqdu12irw5Q3/uqrWvRFx9bM=';
 var UA_CDN = 'Ranger/4.9.4-17294ac0';
 
 var RATE_MS = 450;          // portal pacing (observed safe value)
@@ -64,7 +75,7 @@ var ROOT_CATEGORY = {
 var DEVICE_FIXED = {
   loginType: '2', appLanguage: 'en', hardwareInfo: 'ranchu',
   model: 'sdk_gphone64_arm64', product: 'sdk_gphone64_arm64', cpu: 'arm64-v8a',
-  B29: '', reserve1: '', deviceToken: '', drmId: '', sdkVer: 36
+  B29: '', reserve1: FIXED_RESERVE1, deviceToken: '', drmId: FIXED_DRM_ID, sdkVer: 33
 };
 
 var FINGERPRINT_FIXED = {
@@ -286,12 +297,12 @@ function call(path, bean, opts, done) {
       body.userId = session.userId;
       body.userToken = session.userToken;
     }
-    for (k in bean) {
-      if (Object.prototype.hasOwnProperty.call(bean, k)) { body[k] = bean[k]; }
-    }
     var dev = deviceDict();
     for (k in dev) {
       if (Object.prototype.hasOwnProperty.call(dev, k)) { body[k] = dev[k]; }
+    }
+    for (k in bean) {
+      if (Object.prototype.hasOwnProperty.call(bean, k)) { body[k] = bean[k]; }
     }
     post(path, body, function (err, data) {
       release();
@@ -589,7 +600,7 @@ function slbBean() {
   return {
     hasPay: '0', userIdentity: '1', type: 'merge', appVer: APK_VERSION, lang: 'es',
     encMediaSupported: 1, liveCodeList: ['masnew_live'], appParams: '',
-    reserve1: FIXED_MAC, pipFlag: '0'
+    reserve1: FIXED_RESERVE1, pipFlag: '0'
   };
 }
 
@@ -627,12 +638,34 @@ function vodCdns(slb) {
       }
     }
   }
+  // Secondary fallback: if no CacheFly CDN found, accept any free VOD CDN
+  if (!out.length) {
+    for (var j = 0; j < list.length; j++) {
+      var cdn2 = list[j];
+      if (!cdn2 || trim(cdn2.tag) !== 'vod') { continue; }
+      var urls2 = cdn2.url_list || [];
+      for (var u2 = 0; u2 < urls2.length; u2++) {
+        var entry2 = urls2[u2];
+        var url2 = trim(entry2 && entry2.url);
+        if (url2 && (trim(entry2 && entry2.tag) === 'free' || url2.indexOf('tag=free') !== -1)) {
+          var bases2 = [withScheme(cdn2.main_addr)];
+          var spare2 = trim(cdn2.spared_addr);
+          if (spare2 && bases2.indexOf(withScheme(spare2)) === -1) { bases2.push(withScheme(spare2)); }
+          out.push({ bases: bases2, auth: url2 });
+          break;
+        }
+      }
+    }
+  }
   return out;
 }
 
 function getSlb(done) {
   if (slbCache && Date.now() < slbCache.at + SLB_TTL) { return done(null, slbCache.slb); }
-  call('v14/getSlbInfo', slbBean(), function (err, slb) {
+  firstCall([
+    { path: 'v15/getSlbInfo', bean: slbBean() },
+    { path: 'v14/getSlbInfo', bean: slbBean() }
+  ], function (err, slb) {
     if (err) { return done(err); }
     if (!vodCdns(slb).length) { return done(new Error('el portal no expuso CDN de vod libre')); }
     slbCache = { at: Date.now(), slb: slb };
@@ -998,7 +1031,7 @@ function getLiveChannels(columnId, pageNum, pageSize, done) {
         if (!poster && c.posterList && c.posterList.length) {
           poster = text(c.posterList[0].fileUrl);
         }
-        out.push({
+        var chItem = {
           channelCode: c.channelCode,
           index: c.channelNumber || out.length + 1,
           name: text(c.name || c.alias || ('Canal ' + (out.length + 1))),
@@ -1009,13 +1042,16 @@ function getLiveChannels(columnId, pageNum, pageSize, done) {
           next: '',
           time: '',
           liveAddressList: c.liveAddressList || []
-        });
+        };
+        out.push(chItem);
+        liveChannelCache[c.channelCode] = { at: Date.now(), channel: chItem };
       }
       done(null, out, list.length >= pageSize);
     });
   });
 }
 
+var liveChannelCache = {};
 var liveCategoriesCache = null;
 function getLiveCategories(done) {
   if (liveCategoriesCache && liveCategoriesCache.length) {
@@ -1135,6 +1171,15 @@ function firstCall(attempts, done) {
 function liveCdnsOf(slb) {
   var cdns = (slb && slb.cdn_list) || [];
   var list = [];
+  var seen = {};
+  function addEntry(host, auth) {
+    var bh = bareHost(host);
+    if (bh && !seen[bh]) {
+      seen[bh] = true;
+      list.push({ cflHost: bh, authBase: auth });
+    }
+  }
+  // 1st pass: prioritize cfl / CacheFly CDNs
   for (var c = 0; c < cdns.length; c++) {
     var cdn = cdns[c];
     if (!cdn || cdn.tag !== 'live') continue;
@@ -1143,8 +1188,22 @@ function liveCdnsOf(slb) {
       var entry = urls[u];
       var urlStr = (entry && entry.url) || '';
       if (entry.sign_type === 'cfl' || urlStr.indexOf('sign_type=cfl') !== -1) {
-        var bh = bareHost(cdn.main_addr);
-        if (bh) list.push({ cflHost: bh, authBase: urlStr });
+        addEntry(cdn.main_addr, urlStr);
+        if (cdn.spared_addr) addEntry(cdn.spared_addr, urlStr);
+      }
+    }
+  }
+  // 2nd pass: fallback to any live CDN if cfl wasn't present or list is short
+  for (var c2 = 0; c2 < cdns.length; c2++) {
+    var cdn2 = cdns[c2];
+    if (!cdn2 || cdn2.tag !== 'live') continue;
+    var urls2 = cdn2.url_list || [];
+    for (var u2 = 0; u2 < urls2.length; u2++) {
+      var entry2 = urls2[u2];
+      var urlStr2 = (entry2 && entry2.url) || '';
+      if (urlStr2 && urlStr2.indexOf('token=') !== -1) {
+        addEntry(cdn2.main_addr, urlStr2);
+        if (cdn2.spared_addr) addEntry(cdn2.spared_addr, urlStr2);
       }
     }
   }
@@ -1158,28 +1217,37 @@ function resolveLive(channelCode, done) {
   }
   ensureSession(function (err) {
     if (err) { return done(err); }
-    firstCall([
-      { path: 'v4/startPlayLive', bean: { channelCode: channelCode, columnId: '76182', type: '1' } },
-      { path: 'v4/startPlayLive', bean: { channelCode: channelCode, columnId: 0, type: '1' } }
-    ], function (err2, play) {
-      if (err2) { return done(err2); }
-      var addrList = (play && play.liveAddressList) || [];
-      var addr = null;
-      for (var a = 0; a < addrList.length; a++) {
-        if (addrList[a] && addrList[a].playCode && addrList[a].license) {
-          addr = addrList[a];
-          break;
+
+    function getStreamAddr(cb) {
+      firstCall([
+        { path: 'v4/startPlayLive', bean: { channelCode: channelCode, type: '1' } },
+        { path: 'v4/startPlayLive', bean: { channelCode: channelCode, columnId: '76182', type: '1' } },
+        { path: 'v4/startPlayLive', bean: { channelCode: channelCode, columnId: 0, type: '1' } }
+      ], function (err2, play) {
+        if (err2) { return cb(err2); }
+        var addrList = (play && play.liveAddressList) || [];
+        var addr = null;
+        for (var a = 0; a < addrList.length; a++) {
+          if (addrList[a] && addrList[a].playCode && addrList[a].license) {
+            addr = addrList[a];
+            break;
+          }
         }
-      }
-      if (!addr && addrList[0]) { addr = addrList[0]; }
-      if (!addr || !addr.license) {
-        return done(new Error('el portal no devolvió licencia para el canal'));
-      }
+        if (!addr && addrList[0]) { addr = addrList[0]; }
+        if (!addr || !addr.license) {
+          return cb(new Error('el portal no devolvió licencia para el canal'));
+        }
+        cb(null, addr);
+      });
+    }
+
+    getStreamAddr(function (err2, addr) {
+      if (err2) { return done(err2); }
       var playCode = addr.playCode || channelCode;
       var license = addr.license;
 
       var bean = slbBean();
-      bean.liveCodeList = [channelCode];
+      bean.liveCodeList = ['masnew_live'];
       var slbPaths = ['v15/getSlbInfo', 'v14/getSlbInfo'];
       var slbIndex = 0;
 
@@ -1200,7 +1268,7 @@ function resolveLive(channelCode, done) {
         var liveUrl = 'http://' + chosen.cflHost + '/live/' + playCode + '.m3u8';
         var tokenMatch = chosen.authBase.match(/token=([0-9a-fA-F]{32})/);
         var token = tokenMatch ? tokenMatch[1] : '';
-        var moment = Math.trunc(Date.now());
+        var moment = Math.floor(Date.now());
         var sign2 = signO3(token, moment);
         var authHeader = chosen.authBase + '&sign2_method=sign_o3&instance=0&start_moment=' + moment + '&sign2=' + sign2;
         var backupUrls = [];
@@ -1219,7 +1287,7 @@ function resolveLive(channelCode, done) {
             'App-Version': '49902',
             'X-Buffer': '0'
           },
-          name: text(play.name)
+          name: text((addr && addr.name) || (liveChannelCache[channelCode] && liveChannelCache[channelCode].channel && liveChannelCache[channelCode].channel.name) || channelCode)
         };
         liveResolveCache[channelCode] = { at: Date.now(), stream: stream };
         done(null, stream);

@@ -566,7 +566,9 @@ function handler(req, res) {
     forward(req, res, {
       url: childUrl,
       headers: hlsEntry.headers,
-      duration: 0
+      duration: 0,
+      backupUrls: hlsEntry.backupUrls,
+      backupIndex: hlsEntry.backupIndex
     }, hls[1]);
     return;
   }

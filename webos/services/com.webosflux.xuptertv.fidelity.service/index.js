@@ -301,7 +301,42 @@ service.register('netdiag', function (message) {
       panelH: Number(payload.panelH) || 0
     };
   }
-  /* Layer options: ensure session is validated before reporting */
+  var reportData = null;
+  var layersData = null;
+  var settled = false;
+
+  function finish() {
+    if (settled || !reportData || !layersData) { return; }
+    settled = true;
+    reportData.version = pkg.version;
+    reportData.layers = layersData;
+    /* Codec info forwarded from the browser page */
+    reportData.codec = {
+      h264: payload.codecH264 || '',
+      hevc: payload.codecHEVC || '',
+      hls:  payload.codecHLS  || ''
+    };
+    respond(message, null, reportData);
+  }
+
+  /* 1. Run DNS and host reachability check */
+  netdiag.run({ hosts: hosts, screen: screen }, function (err, report) {
+    reportData = (err || !report) ? { verdict: 'incompleto', hosts: [], providers: [] } : report;
+    finish();
+  });
+
+  /* 2. Run session and layer check in parallel with 9s deadline */
+  var layerTimer = setTimeout(function () {
+    if (!layersData) {
+      var s = magis.session || {};
+      layersData = {
+        portal:  { ok: false, error: 'tiempo agotado' },
+        session: { userId: s.userId ? '✓' : '?', token: s.userToken ? '✓' : '?', ready: !!s.ready, error: 'tiempo agotado' }
+      };
+      finish();
+    }
+  }, 9000);
+
   magis.ensureSession(function (sessErr) {
     var sess = magis.session || {};
     var portalHost = (magis.constants && magis.constants.HOSTS && magis.constants.HOSTS[0]) || '';
@@ -315,21 +350,10 @@ service.register('netdiag', function (message) {
       vodHeaders:  payload.vodHeaders  || {}
     };
 
-    netdiag.run({ hosts: hosts, screen: screen }, function (err, report) {
-      if (err) { return fail(message, err); }
-      report.version = pkg.version;
-
-      /* Run layer checks in parallel with the DNS report and merge */
-      netdiag.runLayers(layerOpts, function (lerr, layers) {
-        report.layers = layers || {};
-        /* Codec info forwarded from the browser page */
-        report.codec = {
-          h264: payload.codecH264 || '',
-          hevc: payload.codecHEVC || '',
-          hls:  payload.codecHLS  || ''
-        };
-        respond(message, null, report);
-      });
+    netdiag.runLayers(layerOpts, function (lerr, layers) {
+      clearTimeout(layerTimer);
+      layersData = layers || {};
+      finish();
     });
   });
 });
