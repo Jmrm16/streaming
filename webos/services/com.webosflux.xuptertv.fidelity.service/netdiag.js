@@ -27,6 +27,12 @@ var dnsx = require('./dnsx');
 var TCP_TIMEOUT = 3000;
 var HTTP_TIMEOUT = 4000;
 var MAX_HOSTS = 4;
+/* The whole report must fit in the Luna timeout plus a wide margin, even on a
+   TV whose resolver never answers. */
+var HOST_DEADLINE = 9000;
+var PROVIDER_DEADLINE = 4000;
+var GLOBAL_DEADLINE = 14000;
+var LAYER_DEADLINE = 5000;
 
 function now() { return Date.now(); }
 
@@ -44,6 +50,28 @@ function parallel(tasks, done) {
       if (pending === 0) { done(results); }
     });
   });
+}
+
+/* Hard cap for a single probe.  On webOS 4 the platform DNS stub (dns.lookup)
+   can stay pending for ever when the ISP resolver is silent, and then the
+   whole report never comes back: the viewer presses "Analizar red" and nothing
+   ever appears.  Every task must answer, even if the answer is "no sé". */
+function withDeadline(task, ms, fallback) {
+  return function (cb) {
+    var settled = false;
+    var timer = setTimeout(function () {
+      if (settled) { return; }
+      settled = true;
+      cb(fallback());
+    }, ms);
+    if (timer && typeof timer.unref === 'function') { timer.unref(); }
+    task(function (value) {
+      if (settled) { return; }
+      settled = true;
+      clearTimeout(timer);
+      cb(value);
+    });
+  };
 }
 
 /* TCP: does the address accept a connection at all? */
@@ -209,20 +237,35 @@ function checkProvider(provider, done) {
 }
 
 function verdictOf(hosts, providers) {
+  /* Entries that hit the deadline carry no information: counting them as a
+     block would tell the viewer that the carrier is blocking when the truth is
+     that the TV never answered. */
+  var knownProviders = [];
+  var i;
+  for (i = 0; i < providers.length; i++) {
+    if (providers[i] && !providers[i].timeout) { knownProviders.push(providers[i]); }
+  }
+  var knownHosts = [];
+  for (i = 0; i < hosts.length; i++) {
+    if (hosts[i] && hosts[i].verdict !== 'sin-tiempo') { knownHosts.push(hosts[i]); }
+  }
+  if (!knownProviders.length || !knownHosts.length) { return 'incompleto'; }
+
   var reachable = 0;
   var anyDoh = false;
   var anyMismatch = false;
   var anyLocalFail = false;
   var anyTcpFail = false;
   var tcpFailCount = 0;
-  for (var i = 0; i < providers.length; i++) {
-    if (providers[i].reachable) { reachable++; }
+  for (i = 0; i < knownProviders.length; i++) {
+    if (knownProviders[i].reachable) { reachable++; }
   }
-  for (var j = 0; j < hosts.length; j++) {
-    if (hosts[j].doh.ok) { anyDoh = true; }
-    if (hosts[j].mismatch) { anyMismatch = true; }
-    if (hosts[j].verdict === 'dns-local-falla') { anyLocalFail = true; }
-    if (hosts[j].verdict === 'sin-tcp' || hosts[j].verdict === 'tls-falla') {
+  for (var j = 0; j < knownHosts.length; j++) {
+    var host = knownHosts[j];
+    if (host.doh && host.doh.ok) { anyDoh = true; }
+    if (host.mismatch) { anyMismatch = true; }
+    if (host.verdict === 'dns-local-falla') { anyLocalFail = true; }
+    if (host.verdict === 'sin-tcp' || host.verdict === 'tls-falla') {
       anyTcpFail = true;
       tcpFailCount++;
     }
@@ -230,7 +273,7 @@ function verdictOf(hosts, providers) {
   if (!reachable) { return 'doh-bloqueado'; }
   /* A rotating CDN always leaves one address cold; only a total failure means
      the network cannot reach the service at all. */
-  if (anyTcpFail && tcpFailCount >= hosts.length) { return 'sin-salida'; }
+  if (anyTcpFail && tcpFailCount >= knownHosts.length) { return 'sin-salida'; }
   if (anyMismatch) { return 'dns-distinto'; }
   /* The ISP resolver answered nothing at all: that is a DNS block even when
      DoH saves the day, and the viewer must be told so. */
@@ -252,19 +295,41 @@ function run(options, cb) {
 
   var t0 = now();
   var hostTasks = hosts.map(function (host) {
-    return function (done) { checkHost(host, done); };
+    return withDeadline(function (done) { checkHost(host, done); }, HOST_DEADLINE, function () {
+      return {
+        host: host,
+        timeout: true,
+        verdict: 'sin-tiempo',
+        system: { ok: false, ips: [], ms: HOST_DEADLINE, error: 'sin respuesta' },
+        doh: { ok: false, ips: [], ms: HOST_DEADLINE, error: 'sin respuesta' },
+        mismatch: false,
+        tcp443: null,
+        http: null
+      };
+    });
   });
   var providerTasks = dnsx.providers.map(function (provider) {
-    return function (done) { checkProvider(provider, done); };
+    return withDeadline(function (done) { checkProvider(provider, done); }, PROVIDER_DEADLINE, function () {
+      return {
+        ip: provider.ip,
+        sni: provider.sni,
+        reachable: false,
+        timeout: true,
+        ms: PROVIDER_DEADLINE,
+        error: 'sin respuesta'
+      };
+    });
   });
 
+  var finished = false;
   var pending = 2;
   var provResults = [];
   var hostResults = [];
 
-  function checkDone() {
-    pending--;
-    if (pending > 0) { return; }
+  function finish(partial) {
+    if (finished) { return; }
+    finished = true;
+    clearTimeout(globalTimer);
     cb(null, {
       at: now(),
       tookMs: now() - t0,
@@ -273,8 +338,20 @@ function run(options, cb) {
       providers: provResults,
       hosts: hostResults,
       cache: dnsx.summary(),
-      screen: options.screen || null
+      screen: options.screen || null,
+      partial: !!partial
     });
+  }
+
+  /* Last resort: answer with whatever arrived.  A report that never comes back
+     leaves the panel empty, which is exactly what some TVs report. */
+  var globalTimer = setTimeout(function () { finish(true); }, GLOBAL_DEADLINE);
+  if (globalTimer && typeof globalTimer.unref === 'function') { globalTimer.unref(); }
+
+  function checkDone() {
+    pending--;
+    if (pending > 0) { return; }
+    finish(false);
   }
 
   parallel(providerTasks, function (providers) {
@@ -370,9 +447,15 @@ function runLayers(options, done) {
   var tasks = [];
   var labels = [];
 
+  function probe(url, headers) {
+    return withDeadline(function (cb) { layerProbe(url, headers || {}, cb); }, LAYER_DEADLINE, function () {
+      return { ok: false, timeout: true, error: 'sin respuesta', ms: LAYER_DEADLINE };
+    });
+  }
+
   if (options.portalUrl) {
     labels.push('portal');
-    tasks.push(function (cb) { layerProbe(options.portalUrl, null, cb); });
+    tasks.push(probe(options.portalUrl, null));
   }
 
   labels.push('session');
@@ -380,18 +463,18 @@ function runLayers(options, done) {
 
   if (options.liveUrl) {
     labels.push('live');
-    tasks.push(function (cb) { layerProbe(options.liveUrl, options.liveHeaders || {}, cb); });
+    tasks.push(probe(options.liveUrl, options.liveHeaders || {}));
   }
 
   if (options.vodUrl) {
     labels.push('vod');
-    tasks.push(function (cb) { layerProbe(options.vodUrl, options.vodHeaders || {}, cb); });
+    tasks.push(probe(options.vodUrl, options.vodHeaders || {}));
   }
 
   parallel(tasks, function (results) {
     var layers = {};
     for (var i = 0; i < labels.length; i++) {
-      layers[labels[i]] = results[i] || { ok: false, error: 'sin-resultado' };
+      layers[labels[i]] = results[i] || { ok: false, timeout: true, error: 'sin-resultado' };
     }
     done(null, layers);
   });
@@ -401,5 +484,6 @@ module.exports = {
   run: run,
   runLayers: runLayers,
   checkHost: checkHost,
-  checkProvider: checkProvider
+  checkProvider: checkProvider,
+  verdictOf: verdictOf
 };

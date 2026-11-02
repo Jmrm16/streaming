@@ -3861,6 +3861,7 @@ function portalServiceCall(method, params, done, customTimeout) {
       case 'dns-local-falla': return 'Bloqueado';
       case 'sin-tcp': return 'Sin conexión';
       case 'tls-falla': return 'HTTPS falla';
+      case 'sin-tiempo': return 'Sin respuesta';
       default: return 'Sin datos';
     }
   }
@@ -3868,7 +3869,8 @@ function portalServiceCall(method, params, done, customTimeout) {
   function netdiagStateClass(host) {
     if (!host) { return ''; }
     if (host.verdict === 'ok') { return 'ok'; }
-    if (host.verdict === 'dns-distinto' || host.verdict === 'dns-local-falla') { return 'warn'; }
+    if (host.verdict === 'dns-distinto' || host.verdict === 'dns-local-falla' ||
+        host.verdict === 'sin-tiempo' || host.timeout) { return 'warn'; }
     return 'bad';
   }
 
@@ -3888,6 +3890,8 @@ function portalServiceCall(method, params, done, customTimeout) {
         return { cls: 'bad', text: 'Los servidores no aceptan la conexión desde esta red.' };
       case 'algun-servidor':
         return { cls: 'warn', text: 'Un servidor de vídeo no respondió (suele rotar). El resto del catálogo sí responde: vuelve a analizar.' };
+      case 'incompleto':
+        return { cls: 'warn', text: 'La prueba no terminó: la TV no recibió respuesta de ningún servidor a tiempo. Vuelve a analizar; si se repite, apaga y enciende la TV.' };
       default:
         return { cls: '', text: 'Sin resultado todavía.' };
     }
@@ -3956,9 +3960,11 @@ function portalServiceCall(method, params, done, customTimeout) {
       var ldef = layerDefs[li];
       var ldata = layers[ldef.key];
       if (!ldata) { continue; }
-      if (ldef.key === 'live' && !ldata.ok) { liveFail = true; }
-      if (ldef.key === 'vod' && !ldata.ok) { vodFail = true; }
-      var lrow = el('div', 'dg-row ' + (ldata.ok ? 'ok' : 'bad'));
+      /* A probe that hit the deadline proves nothing about the carrier: it must
+         not be reported as a block, only as "no answer". */
+      if (ldef.key === 'live' && !ldata.ok && !ldata.timeout) { liveFail = true; }
+      if (ldef.key === 'vod' && !ldata.ok && !ldata.timeout) { vodFail = true; }
+      var lrow = el('div', 'dg-row ' + (ldata.ok ? 'ok' : (ldata.timeout ? 'warn' : 'bad')));
       var ldesc = ldata.error || (ldata.status ? 'HTTP ' + ldata.status : (ldata.ok ? 'OK' : 'Error'));
       if (ldef.key === 'session') {
         ldesc = 'userId ' + (ldata.userId || '?') + '  token ' + (ldata.token || '?');
@@ -3966,7 +3972,7 @@ function portalServiceCall(method, params, done, customTimeout) {
       var lms = ldata.ms ? (' ' + ldata.ms + ' ms') : '';
       lrow.appendChild(el('span', 'dg-host', ldef.label));
       lrow.appendChild(el('span', 'dg-local', ''));
-      lrow.appendChild(el('span', 'dg-state', ldata.ok ? 'OK' : 'Error'));
+      lrow.appendChild(el('span', 'dg-state', ldata.ok ? 'OK' : (ldata.timeout ? 'Sin respuesta' : 'Error')));
       lrow.appendChild(el('span', 'dg-ip', ldesc + lms));
       list.appendChild(lrow);
     }
@@ -3988,6 +3994,10 @@ function portalServiceCall(method, params, done, customTimeout) {
       summary.className = 'dg-summary ' + summaryInfo.cls;
     }
 
+    if (report.partial && summaryInfo.cls !== 'bad') {
+      summary.textContent += ' (La prueba no terminó a tiempo: vuelve a analizar.)';
+    }
+
     if (netdiagEnv) {
       var s = report.screen || {};
       var parts = [];
@@ -4007,6 +4017,23 @@ function portalServiceCall(method, params, done, customTimeout) {
     summary.className = 'dg-summary';
     summary.textContent = 'Consultando el DNS del televisor, el DNS seguro y los servidores…';
     clear(list);
+    /* The list must never look empty while the test runs: some TVs take a while
+       and "nothing happened" is the report we keep getting. */
+    list.appendChild(el('div', 'dg-row', 'Analizando…'));
+
+    /* Two safety nets: one explains a slow network, the other gives the button
+       back if the service never answers at all. */
+    var slowTimer = setTimeout(function () {
+      if (!netdiagState.running) { return; }
+      summary.textContent = 'Analizando… tu red está respondiendo lento, espera un momento.';
+    }, 9000);
+    var guardTimer = setTimeout(function () {
+      if (!netdiagState.running) { return; }
+      netdiagState.running = false;
+      button.textContent = 'Analizar de nuevo';
+      summary.className = 'dg-summary bad';
+      summary.textContent = 'La prueba no respondió. Apaga la TV del todo (10 segundos) y vuelve a intentarlo; si sigue igual, reinstala la app con el instalador.';
+    }, 32000);
 
     portalServiceCall('netdiag', (function () {
       var vp = window.__xuperViewport || {};
@@ -4026,6 +4053,8 @@ function portalServiceCall(method, params, done, customTimeout) {
         vodHeaders: (lastCdnProbe.vod && lastCdnProbe.vod.headers) || {}
       };
     })(), function (error, payload) {
+      clearTimeout(slowTimer);
+      clearTimeout(guardTimer);
       netdiagState.running = false;
       button.textContent = 'Analizar de nuevo';
       if (button.parentNode && button.parentNode.className.indexOf('is-active') !== -1) { setFocus(button); }
