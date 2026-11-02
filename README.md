@@ -9,7 +9,7 @@ con relay FFmpeg integrado.
 ![webOS 4](https://img.shields.io/badge/webOS-4.x-a50034?style=flat-square&logo=lg&logoColor=white)
 ![Chromium 53](https://img.shields.io/badge/Chromium-53-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
 ![1920x1080](https://img.shields.io/badge/render-1920%C3%971080-0b7285?style=flat-square)
-![versión](https://img.shields.io/badge/IPK-1.5.9-c91923?style=flat-square)
+![versión](https://img.shields.io/badge/IPK-1.6.16-c91923?style=flat-square)
 ![licencia](https://img.shields.io/badge/c%C3%B3digo-MIT-2ea44f?style=flat-square)
 
 [Instalación](#instalación-en-el-televisor) ·
@@ -41,7 +41,7 @@ misma disposición, mismos recursos gráficos, mismo mando a distancia.
 |---|---|
 | **Probado en** | LG 43LM6300PDB · webOS 4.10.2-29 · 1920×1080 |
 | **ID de paquete** | `com.webosflux.xuptertv.fidelity` |
-| **Versión actual** | `1.5.9` |
+| **Versión actual** | `1.6.16` |
 | **Runtime** | Chromium 53 (web app) + Node antiguo del TV (servicio) |
 | **Dependencias en el TV** | ninguna: FFmpeg viaja dentro del IPK |
 
@@ -55,6 +55,7 @@ misma disposición, mismos recursos gráficos, mismo mando a distancia.
 | Audio y subtítulos reales del portal | ✅ selector en el panel y en «Ajuste de reproducir» |
 | Series: temporadas y episodios | ✅ navegador tipo Netflix dentro del reproductor |
 | «Modo fluido» (relay FFmpeg local) | ✅ para HEVC/TS; por título, no se filtra entre películas |
+| DNS bloqueado por la operadora | ✅ DNS seguro (DoH) + diagnóstico en Ajustes |
 | Modo desarrollador / instalación por IPK | ✅ |
 | Comparación píxel a píxel con Android TV | ⚠️ pendiente de referencias verificables |
 | DRM, geobloqueo, control parental del portal | ❌ fuera de alcance (no se elude nada) |
@@ -163,7 +164,7 @@ ares-device-info --device tv
 ### 2. Instalar el IPK
 
 ```bash
-ares-install --device tv dist/com.webosflux.xuptertv.fidelity_1.5.9_all.ipk
+ares-install --device tv dist/com.webosflux.xuptertv.fidelity_1.6.16_all.ipk
 ares-launch  --device tv com.webosflux.xuptertv.fidelity
 ```
 
@@ -172,7 +173,7 @@ webOS 4: el `ls`/`md5` posterior al upload no responde), usa el instalador
 directo por SSH + Luna que incluye el repo:
 
 ```bash
-TV_HOST=192.168.1.50 TV_PASS=tu_clave node tools/tv_deploy.mjs dist/com.webosflux.xuptertv.fidelity_1.5.9_all.ipk
+TV_HOST=192.168.1.50 TV_PASS=tu_clave node tools/tv_deploy.mjs dist/com.webosflux.xuptertv.fidelity_1.6.16_all.ipk
 ```
 
 `tv_deploy.mjs` sube el IPK por SFTP a `/media/developer/temp/` y llama a
@@ -210,16 +211,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-ipk.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/setup-ffmpeg.ps1 2>/dev/null || \
   tar -xJf tools/vendor/ffmpeg-7.0.2-armhf-static.tar.xz -C /tmp
 ares-package webos/fidelity webos/services/com.webosflux.xuptertv.fidelity.service -o dist -e shots -e '*.md'
-python3 tools/fix_ipk_modes.py dist/com.webosflux.xuptertv.fidelity_1.5.9_all.ipk
+python3 tools/fix_ipk_modes.py dist/com.webosflux.xuptertv.fidelity_1.6.16_all.ipk
 ```
 
-Salida de referencia (build 1.5.9):
+Salida de referencia (build 1.6.16):
 
 | Dato | Valor |
 |---|---|
-| Archivo | `dist/com.webosflux.xuptertv.fidelity_1.5.9_all.ipk` |
-| Tamaño | 22 458 886 bytes (21,4 MiB) |
-| SHA-256 | `4C2690A2E450252DC7E4FEDF727B7CDA12B29DAA04CC6168FA4AA6BAD2A6352A` |
+| Archivo | `dist/com.webosflux.xuptertv.fidelity_1.6.16_all.ipk` |
+| Tamaño | 22 469 306 bytes (21,4 MiB) |
+| SHA-256 | `174DC8E9DB58D760EB704BFC13D26BEF7A8663D009746B9F56445C38910D957D` |
 
 El IPK incluye la web app, el servicio Luna, `ffmpeg` (31,8 MB) y
 `ffmpeg-LICENSE.txt`. Por eso pesa ~22 MB: es una instalación de un solo paso,
@@ -328,6 +329,36 @@ Contrato que **no se debe romper** al tocar la app (está descrito en
 [`AGENTS.md`](AGENTS.md)): Normal usa el proxy directo; Modo Fluido usa
 obligatoriamente `resolveSmooth` y una URL local `127.0.0.1:8787/s/<token>.mp4`.
 
+## Bloqueos de operador (DNS) y diagnóstico de red
+
+En países como Chile las operadoras bloquean el servicio envenenando el DNS:
+el televisor pregunta por el dominio del portal/CDN y recibe una dirección
+muerta, así que el vídeo falla aunque los servidores estén funcionando. No es
+una VPN ni un bloqueo de puerto, es la respuesta DNS.
+
+El servicio incluye `dnsx.js`, un resolutor **DNS-over-HTTPS**:
+
+- Pregunta a Cloudflare (`1.1.1.1`, `1.0.0.1`), Google (`8.8.8.8`,
+  `8.8.4.4`) y AdGuard (`94.140.14.14`, `94.140.15.15`) **por IP**, con el
+  `Host`/SNI correcto, así que el DNS de la operadora nunca participa.
+- Se consultan los seis a la vez y gana el primero que responde; si ninguno
+  responde en 5 s se usa el DNS del televisor (el comportamiento anterior) y
+  se deja de insistir durante 5 minutos.
+- El resultado se guarda en caché 10 minutos y se usa para el portal, las
+  semillas y el proxy de vídeo (`lookup` en las peticiones HTTP/HTTPS), que
+  sigue enviando el nombre real para SNI y `Host`.
+
+En **Ajustes → Diagnóstico** la app muestra, por cada dominio, lo que dice el
+DNS del televisor, lo que dice el DNS seguro, y si la conexión TCP/HTTPS
+funciona. Los estados posibles son: *Correcto*, *DNS alterado* (la operadora
+intercepta el nombre pero la app conecta por la dirección real), *Bloqueado*
+(el DNS del televisor no resuelve nada y el DNS seguro lo esquiva), *Sin
+conexión* (no hay salida a internet) y *DNS seguro bloqueado*. Un CDN rotativo
+que no conteste en ese instante se muestra como aviso ámbar, no como fallo
+total. La última línea del panel resume
+`Pantalla · panel · escala · versión`, útil para diagnosticar recortes de
+interfaz con una simple foto.
+
 ## Estructura del repositorio
 
 ```
@@ -376,7 +407,10 @@ webosflux/
 | Síntoma | Causa y solución |
 |---|---|
 | `ares-install` termina con error tras subir | `ls`/`md5` posterior al upload falla en webOS 4. Usa `node tools/tv_deploy.mjs <ipk>`. |
+| `Bad configuration option: pubkeyacceptedalgorithms` al instalar | Windows 10 20H2 trae OpenSSH 8.1 (solo entiende `PubkeyAcceptedKeyTypes`) y se estaba usando un `instalar-tv.ps1` viejo. El instalador actual detecta el nombre válido con `ssh -G`; extrae el ZIP completo en una carpeta limpia. |
+| La interfaz se ve recortada en TV 720p, 2K o 4K | La app escala el lienzo de 1920×1080 al viewport real y, si el panel es menor que la ventana, se ajusta al panel. Revisa **Ajustes → Imagen → Relación de aspecto → Solo escaneo**. Para un modelo concreto, envía una foto de **Ajustes → Diagnóstico** (incluye `Pantalla · panel · escala`). |
 | «No se pudo abrir el stream» en todos los canales | El servicio no está corriendo o el portal no responde. Comprueba `node tools/tv_luna.mjs luna://com.webosflux.xuptertv.fidelity.service/ping`. |
+| «No se pudo abrir el stream (código 4)» en un país con bloqueos | Abre **Ajustes → Diagnóstico**: si algún dominio dice *DNS alterado*, la operadora envenena el DNS y la app ya usa el DNS seguro. Reinstala la versión 1.6.16 o superior si ese menú no existe. |
 | El Modo fluido no arranca | `ffmpeg` sin permiso de ejecución (paso 3) o relay ocupado; mira los logs del servicio. |
 | Pantalla en negro al abrir la app | IPK antiguo o instalación a medias: reinstala la versión actual y lanza con `ares-launch`. |
 | Los canales no filtran / no se puede ir a las categorías | Versión < 1.5.9. En 1.5.9 el rail conserva el foco y **Arriba** abre el selector de las 38 categorías. |

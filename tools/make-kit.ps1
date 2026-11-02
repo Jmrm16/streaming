@@ -87,7 +87,8 @@ QUE HACER
      reinicio y apunta la IP y la clave que muestra.
   3. Doble clic en INSTALAR-XUPERTV.bat
   4. Escribe la IP cuando te la pida.
-  5. Escribe la clave de la TV UNA vez (no se ve al escribir).
+  5. Escribe la clave de la TV UNA vez (no se ve al escribir). En ese PC,
+     el instalador la recuerda cifrada para las próximas actualizaciones.
      Si tu TV tiene "KEY SERVER" en ON no pasa nada: el instalador
      usa la llave de la TV y lo indica en pantalla.
   6. Espera a que diga "LISTO". La app se abre sola en la TV.
@@ -100,6 +101,15 @@ SI ALGO FALLA
     - el PC y la TV no estan en la misma red,
     - la IP cambio,
     - o la clave caduco (el Modo Desarrollador dura 50 horas).
+
+  Si te sale "Bad configuration option: pubkeyacceptedalgorithms": estabas
+  usando un instalador viejo en un Windows con OpenSSH antiguo. Esta version
+  se adapta sola; extrae el ZIP completo en una carpeta limpia y repite.
+
+  Si la imagen de la app se sale de la pantalla, revisa en la TV
+  Ajustes - Imagen - Relacion de aspecto - Solo escaneo (Just Scan). Si sigue
+  igual, entra en la app a Ajustes - Diagnostico y manda una foto de esa
+  pantalla: la ultima linea indica el tamano de pantalla que la TV entrego.
 
 IMPORTANTE
   No ejecutes el instalador desde dentro del ZIP: extrae la carpeta

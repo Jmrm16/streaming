@@ -10,6 +10,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const svcDir = path.resolve(__dirname, "..", "webos", "services", "com.webosflux.xuptertv.fidelity.service");
 const magis = require(path.join(svcDir, "magis.js"));
 const proxy = require(path.join(svcDir, "proxy.js"));
+const dnsx = require(path.join(svcDir, "dnsx.js"));
+const netdiag = require(path.join(svcDir, "netdiag.js"));
 
 const PORT = Number(process.argv[2] || 8910);
 
@@ -82,6 +84,50 @@ const server = http.createServer((req, res) => {
         stream.proxyPath = proxy.baseUrl() + "/media/" + proxy.add(stream.url, stream.headers, 0) + "/stream.m3u8";
         stream.isHls = true;
         done(null, stream);
+      });
+    });
+  }
+  if (u.pathname === "/netdiag") {
+    const hosts = (magis.constants.HOSTS || []).slice(0);
+    dnsx.summary().forEach((entry) => {
+      if (entry && entry.host && hosts.indexOf(entry.host) === -1) hosts.push(entry.host);
+    });
+    const screenW = Number(u.searchParams.get("screenW") || 0);
+    const screenH = Number(u.searchParams.get("screenH") || 0);
+    const screen = (screenW > 0 && screenH > 0)
+      ? {
+          w: screenW,
+          h: screenH,
+          scale: Number(u.searchParams.get("screenScale") || 0),
+          panelW: Number(u.searchParams.get("panelW") || 0),
+          panelH: Number(u.searchParams.get("panelH") || 0)
+        }
+      : null;
+    // Mirrors the Luna route in index.js so the desktop harness exercises the
+    // same layer probes (portal/session/live/VOD) and codec rows.
+    const jsonParam = (name) => {
+      try { return JSON.parse(u.searchParams.get(name) || "{}") || {}; } catch { return {}; }
+    };
+    const portalHost = (magis.constants.HOSTS || [])[0] || "";
+    const sess = magis.session || {};
+    const layerOpts = {
+      portalUrl: portalHost ? `https://${portalHost}/api/portalCore/v8/active` : "",
+      session: { userId: sess.userId || "", userToken: sess.userToken || "", ready: !!sess.ready },
+      liveUrl: u.searchParams.get("liveUrl") || "",
+      liveHeaders: jsonParam("liveHeaders"),
+      vodUrl: u.searchParams.get("vodUrl") || "",
+      vodHeaders: jsonParam("vodHeaders"),
+    };
+    return netdiag.run({ hosts, screen }, (err, report) => {
+      if (err) return done(err);
+      netdiag.runLayers(layerOpts, (lerr, layers) => {
+        report.layers = layers || {};
+        report.codec = {
+          h264: u.searchParams.get("codecH264") || "",
+          hevc: u.searchParams.get("codecHEVC") || "",
+          hls: u.searchParams.get("codecHLS") || "",
+        };
+        done(null, report);
       });
     });
   }

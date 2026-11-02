@@ -485,14 +485,51 @@ function queryString(params) {
   return parts.join('&');
 }
 
-function portalServiceCall(method, params, done) {
+/* ls-hubd refuses a call when the app is missing from the service ACL, which
+   happens when the installed manifest is stale after an update.  "Denied
+   method netdiag for category /" means nothing to a viewer, so translate it
+   into the two things that actually fix it and keep the raw text in brackets
+   for whoever supports the TV. */
+var SERVICE_BLOCKED_HINT = 'La TV tiene bloqueado el servicio de XuperTV. ' +
+  'Desenchufa la TV 10 segundos y vuelve a abrir la app; si sigue igual, ' +
+  'reinstala con el instalador.';
+function describeServiceError(text) {
+  var raw = String(text == null ? '' : text);
+  if (/denied|permission|not permitted/i.test(raw)) {
+    return SERVICE_BLOCKED_HINT + ' (' + raw + ')';
+  }
+  return raw;
+}
+
+/* The network test can only judge the carrier by touching the real CDN, so the
+   page remembers the last raw CDN URLs the portal handed out.  Loopback proxy
+   URLs are useless here: they always answer, even when the carrier drops the
+   upstream connection. */
+var lastCdnProbe = { live: null, vod: null };
+function rememberCdnProbe(kind, payload) {
+  try {
+    if (!payload) { return; }
+    var url = payload.url || '';
+    if (!/^https?:\/\//i.test(url)) { return; }
+    if (/^https?:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(url)) { return; }
+    lastCdnProbe[kind] = { url: url, headers: payload.headers || {} };
+  } catch (eProbe) { /* ignore */ }
+}
+
+function portalServiceCall(method, params, done, customTimeout) {
   var serviceId = vodApi.serviceId || 'com.webosflux.xuptertv.fidelity.service';
   var settled = false;
+  var timeoutMs = customTimeout || parseInt(vodApi.timeoutMs, 10) || 20000;
+  var callTimer = null;
   function finish(error, payload) {
     if (settled) { return; }
     settled = true;
-    done(error, payload);
+    if (callTimer) { clearTimeout(callTimer); callTimer = null; }
+    done(error ? describeServiceError(error) : error, payload);
   }
+  callTimer = setTimeout(function () {
+    finish('El servicio de la TV no respondió en ' + Math.round(timeoutMs / 1000) + ' s. Desenchufa la TV de la corriente 10 segundos y vuelve a abrir la app.', null);
+  }, timeoutMs + 1000);
   /* webOSTV.js defines webOS.service.request even in a plain browser; without
      the native bridge it only reports an error, so the desktop harness must
      skip the Luna branch entirely. */
@@ -501,7 +538,7 @@ function portalServiceCall(method, params, done) {
       window.webOS.service.request('luna://' + serviceId, {
         method: method,
         parameters: params || {},
-        timeout: parseInt(vodApi.timeoutMs, 10) || 20000,
+        timeout: customTimeout || parseInt(vodApi.timeoutMs, 10) || 20000,
         onSuccess: function (payload) { finish(null, payload); },
         onFailure: function (error) {
           finish((error && error.errorText) || 'Error del servicio XuperTV', null);
@@ -769,10 +806,11 @@ function portalServiceCall(method, params, done) {
         }
         var wait = item._detailWait || [];
         item._detailWait = [];
+        var hadWaiters = wait.length > 0;
         for (var i = 0; i < wait.length; i++) { wait[i](item); }
         if (state.detail === item && state.screen === 'detail') {
           buildDetail(item);
-          if (!playerVideo || !playerVideo.src || playerVideo.paused) {
+          if (!hadWaiters && (!playerVideo || !playerVideo.src || playerVideo.paused)) {
             startPlayerVideo(item, state.detailEpisode);
           }
         }
@@ -843,6 +881,7 @@ function portalServiceCall(method, params, done) {
     { id: 'share', label: 'Compartir APP' },
     { id: 'parent', label: 'Bloqueo' },
     { id: 'playback', label: 'Configuración global' },
+    { id: 'netdiag', label: 'Diagnóstico' },
     { id: 'feedback', label: 'Ayuda y Feedback' },
     { id: 'about', label: 'Sobre nosotros' }
   ];
@@ -853,6 +892,7 @@ function portalServiceCall(method, params, done) {
     share: '<svg viewBox="0 0 32 32"><circle cx="8" cy="16" r="3"/><circle cx="24" cy="7" r="3"/><circle cx="24" cy="25" r="3"/><path d="M10.6 14.5l10.8-6M10.6 17.5l10.8 6"/></svg>',
     parent: '<svg viewBox="0 0 32 32"><rect x="7" y="14" width="18" height="14" rx="2"/><path d="M11 14V10a5 5 0 0 1 10 0v4"/><path d="M16 19v4"/></svg>',
     playback: '<svg viewBox="0 0 32 32"><rect x="4" y="6" width="24" height="20" rx="3"/><path d="M13 11l8 5-8 5z"/></svg>',
+    netdiag: '<svg viewBox="0 0 32 32"><path d="M3 13a19 19 0 0 1 26 0"/><path d="M8 18a12 12 0 0 1 16 0"/><path d="M13 23a6 6 0 0 1 6 0"/><circle cx="16" cy="27.5" r="1.2"/></svg>',
     feedback: '<svg viewBox="0 0 32 32"><path d="M6 4h15l5 5v19H6z"/><path d="M20 4v6h6M10 16h12M10 21h8"/></svg>',
     about: '<svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="12"/><path d="M16 14v8M16 10h.1"/></svg>'
   };
@@ -958,9 +998,6 @@ function portalServiceCall(method, params, done) {
 
   var homeBuilt = false;
   var pagesEl, pages = [], tabEls = [], notifyEl;
-  /* Novelas lives in the portal search index rather than in the six fixed
-     home roots. Keep its small result set separate from the main catalogue. */
-  var novelPortalItems = null, novelPortalLoading = false;
   var liveRows = [], liveInfoText, liveMain, liveFocus, liveList;
   var detailLeft, detailPlayer, detailButtons, detailBottom;
   var searchKeyboard, searchHot, searchResults, searchEmpty, searchHotGrid,
@@ -1377,7 +1414,7 @@ function portalServiceCall(method, params, done) {
     if (state.screen === 'player') {
       if (isPlay) {
         if (playerVideo && playerVideo.paused) {
-          try { playerVideo.play(); } catch (ePlay) {}
+          resumePlayerPlayback();
           showOsdIcon('none');
           showInfobar();
         }
@@ -1553,8 +1590,7 @@ function portalServiceCall(method, params, done) {
         /* OK retries the failed stream, but only from the video surface: with
            the channel panel open it must activate the focused row/pill, or a
            dead channel made every category unfilterable. */
-        var retry = playerVideo.play();
-        if (retry && retry.catch) { retry.catch(function () {}); }
+        resumePlayerPlayback();
         state.streamError = '';
         setPlayerStatus('');
       } else if (state.screen === 'player' && state.playerMode === 'vod') {
@@ -2052,6 +2088,7 @@ function portalServiceCall(method, params, done) {
     var params = ch.streamUrl ? { streamUrl: ch.streamUrl } : { channelCode: ch.channelCode };
     portalServiceCall('resolveLive', params, function (err, payload) {
       if (mySeq !== livePreviewSeq || state.screen !== 'home' || state.tab !== 0) { return; }
+      if (!err && payload) { rememberCdnProbe('live', payload); }
       var url = !err && payload && payload.returnValue !== false && (payload.proxyPath || payload.url);
       if (!url) {
         liveMain.classList.remove('is-preview-loading');
@@ -2655,7 +2692,7 @@ function portalServiceCall(method, params, done) {
     for (var i = 0; i < VOD.length; i++) {
       var item = VOD[i];
       var text = norm([
-        item.category || '', item.kind || '', item.title || '', item.alias || '',
+        item.row || '', item.category || '', item.kind || '', item.title || '', item.alias || '',
         item.genres && item.genres.join ? item.genres.join(' ') : (item.genres || '')
       ].join(' '));
       if (text.indexOf('novela') !== -1 || text.indexOf('telenovela') !== -1) {
@@ -2666,45 +2703,25 @@ function portalServiceCall(method, params, done) {
   }
 
   function buildNovelsPage(page) {
-    var all = novelPortalItems || novelCatalogItems();
+    /* The portal already includes its novela rows in the loaded home roots.
+       Filter those exact records only: no synthetic catalog and no secondary
+       query that could return a different host/list.
+
+       Keep the six featured tiles above, but do not remove those titles from
+       the catalogue below.  The portal currently delivers ten items in its
+       official "Telenovelas" row; slicing at six made "Más novelas" look as
+       if the category only had four titles. */
+    var all = novelCatalogItems();
     if (!all.length) {
-      var empty = el('div', 'catalog-empty', novelPortalLoading ?
-        'Cargando novelas del portal…' : 'No se encontraron novelas en el catálogo.');
+      var empty = el('div', 'catalog-empty', 'No se encontraron novelas en el catálogo actual.');
       abs(empty, 192, 170, 1500, 80);
       page.appendChild(empty);
     } else {
       var items = all.slice(0, 6);
       var real = !!(items[0] && items[0]._portal);
       bentoPage(page, items, { titles: real, dots: real ? 3 : 2, shade: real });
-      if (all.length > 6) { appendCatalogGrid(page, all.slice(6), 860, 'Más novelas'); }
+      appendCatalogGrid(page, all, 860, 'Más novelas');
     }
-    loadNovelsFromPortal();
-  }
-
-  function loadNovelsFromPortal() {
-    if (novelPortalItems || novelPortalLoading || vodApi.mode !== 'portal') { return; }
-    novelPortalLoading = true;
-    portalServiceCall('search', { value: 'novela' }, function (error, payload) {
-      novelPortalLoading = false;
-      if (!error && payload && payload.returnValue !== false && payload.items && payload.items.length) {
-        novelPortalItems = [];
-        for (var i = 0; i < payload.items.length; i++) {
-          var item = normalizeVod(payload.items[i], i + 1);
-          item._portal = true;
-          novelPortalItems.push(item);
-        }
-      } else {
-        /* Avoid sending the same request each time the viewer moves through
-           the rail. A later app launch will ask the portal again. */
-        novelPortalItems = novelCatalogItems();
-      }
-      var novelPage = pages[6];
-      if (novelPage && pagesBuilt[6]) {
-        clear(novelPage);
-        buildNovelsPage(novelPage);
-        schedulePosterMemoryPass();
-      }
-    });
   }
 
   /* KIDS: hero 831x534 + 2x2 grid 413x222 on the right, a subtitle line and a
@@ -3483,6 +3500,7 @@ function portalServiceCall(method, params, done) {
     settingsPanels.history = buildHistoryPanel();
     settingsPanels.share = buildSharePanel();
     settingsPanels.playback = buildPlaybackPanel();
+    settingsPanels.netdiag = buildNetdiagPanel();
     settingsPanels.parent = buildParentPanel();
     settingsPanels.feedback = buildFeedbackPanel();
     settingsPanels.about = buildAboutPanel();
@@ -3511,6 +3529,8 @@ function portalServiceCall(method, params, done) {
       var refreshedHistory = buildHistoryPanel();
       settingsRight.replaceChild(refreshedHistory, settingsPanels.history);
       settingsPanels.history = refreshedHistory;
+    } else if (activeId === 'netdiag' && settingsPanels.netdiag && settingsPanels.netdiag._ensureDiag) {
+      settingsPanels.netdiag._ensureDiag();
     }
     for (var i = 0; i < settingsItems.length; i++) {
       settingsItems[i].classList.toggle('is-selected', i === index);
@@ -3832,6 +3852,411 @@ function portalServiceCall(method, params, done) {
     return p;
   }
 
+  /* ------------------------------------------------------- network diagnostics
+     Reads only: it asks the service for the local DNS answer and the DoH answer
+     of every portal/CDN host and shows where the connection breaks.  The
+     bypass itself lives in the service (dnsx.js) and needs no user action. */
+  var netdiagState = { running: false, report: null, error: null, runId: 0 };
+  var netdiagEnv = null;
+
+  function netdiagStateText(host) {
+    if (!host) { return 'Sin datos'; }
+    switch (host.verdict) {
+      case 'ok': return 'Correcto';
+      case 'dns-distinto': return 'DNS alterado';
+      case 'dns-local-falla': return 'Bloqueado';
+      case 'sin-tcp': return 'Sin conexión';
+      case 'tls-falla': return 'HTTPS falla';
+      case 'sin-tiempo': return 'Sin respuesta';
+      default: return 'Sin datos';
+    }
+  }
+
+  function netdiagStateClass(host) {
+    if (!host) { return ''; }
+    if (host.verdict === 'ok') { return 'ok'; }
+    if (host.verdict === 'dns-distinto' || host.verdict === 'dns-local-falla' ||
+        host.verdict === 'sin-tiempo' || host.timeout) { return 'warn'; }
+    return 'bad';
+  }
+
+  function netdiagSummary(verdict) {
+    switch (verdict) {
+      case 'ok':
+        return { cls: 'ok', text: 'La conexión está bien: el catálogo y los servidores de vídeo responden.' };
+      case 'dns-distinto':
+        return { cls: 'warn', text: 'Tu operador devuelve direcciones distintas a las reales (bloqueo por DNS). La app ya las esquiva sola.' };
+      case 'dns-local-falla':
+        return { cls: 'warn', text: 'Tu operador bloquea el DNS del televisor (no devuelve estos dominios). La app ya lo esquiva con su DNS seguro.' };
+      case 'doh-sin-respuesta':
+        return { cls: 'bad', text: 'El DNS seguro no devolvió respuesta. Revisa la conexión del televisor.' };
+      case 'doh-bloqueado':
+        return { cls: 'bad', text: 'La red bloquea el DNS seguro (Cloudflare y Google por HTTPS).' };
+      case 'sin-salida':
+        return { cls: 'bad', text: 'Los servidores no aceptan la conexión desde esta red.' };
+      case 'algun-servidor':
+        return { cls: 'warn', text: 'Un servidor de vídeo no respondió (suele rotar). El resto del catálogo sí responde: vuelve a analizar.' };
+      case 'incompleto':
+        return { cls: 'warn', text: 'La prueba no terminó: la TV no recibió respuesta de ningún servidor a tiempo. Vuelve a analizar; si se repite, apaga y enciende la TV.' };
+      case 'servicio-sin-respuesta':
+        return { cls: 'bad', text: 'El servicio de fondo no respondió. El reporte indica si fue el servicio completo o solo el diagnóstico.' };
+      default:
+        return { cls: '', text: 'Sin resultado todavía.' };
+    }
+  }
+
+  function renderNetdiag(summary, list, report) {
+    clear(list);
+    var summaryInfo = netdiagSummary(report.verdict);
+    summary.textContent = summaryInfo.text;
+    summary.className = 'dg-summary' + (summaryInfo.cls ? ' ' + summaryInfo.cls : '');
+
+    var hosts = report.hosts || [];
+    for (var i = 0; i < hosts.length; i++) {
+      var host = hosts[i];
+      var row = el('div', 'dg-row ' + netdiagStateClass(host));
+      var ips = (host.doh && host.doh.ok && host.doh.ips.length) ? host.doh.ips : (host.system.ips || []);
+      var local = (host.system && host.system.ok) ? host.system.ips.join(', ') : 'sin respuesta';
+      row.appendChild(el('span', 'dg-host', host.host));
+      row.appendChild(el('span', 'dg-local', local));
+      row.appendChild(el('span', 'dg-state', netdiagStateText(host)));
+      row.appendChild(el('span', 'dg-ip', ips.join(', ')));
+      list.appendChild(row);
+    }
+
+    var providers = report.providers || [];
+    var okProviders = [];
+    var badProviders = [];
+    for (var p = 0; p < providers.length; p++) {
+      if (providers[p].reachable) { okProviders.push(providers[p].ip); }
+      else { badProviders.push(providers[p].ip); }
+    }
+    var providersKnown = providers.length > 0;
+    var dnsRow = el('div', 'dg-row dns');
+    dnsRow.appendChild(el('span', 'dg-host', 'DNS seguro (DoH)'));
+    dnsRow.appendChild(el('span', 'dg-local', providersKnown ? (okProviders.length + '/' + providers.length + ' disponibles') : 'sin datos'));
+    dnsRow.appendChild(el('span', 'dg-state', providersKnown ? (okProviders.length ? 'Correcto' : 'Bloqueado') : 'No evaluado'));
+    dnsRow.appendChild(el('span', 'dg-ip', okProviders.join(', ')));
+    if (!providersKnown) { dnsRow.className = 'dg-row dns warn'; }
+    else if (okProviders.length) { dnsRow.className = 'dg-row dns ok'; }
+    else { dnsRow.className = 'dg-row dns bad'; }
+    list.appendChild(dnsRow);
+
+    /* ── Codec row ─────────────────────────────────────────────────────── */
+    var codec = report.codec || {};
+    /* canPlayType() is unreliable on several Starfish/webOS builds: it may
+       return an empty string even when native playback works. It is evidence
+       about the browser API only, never a verdict about the TV hardware. */
+    var codecKnown = !!(codec.h264 || codec.hevc || codec.hls);
+    var codecRow = el('div', 'dg-row' + (codecKnown ? ' ok' : ' warn'));
+    var codecDesc = [
+      'H.264: ' + (codec.h264 || 'no informado'),
+      'HEVC: '  + (codec.hevc || 'no informado'),
+      'HLS: '   + (codec.hls  || 'no informado')
+    ].join('  ');
+    codecRow.appendChild(el('span', 'dg-host', 'Códec'));
+    codecRow.appendChild(el('span', 'dg-local', ''));
+    codecRow.appendChild(el('span', 'dg-state', codecKnown ? 'Informado' : 'No confirmado'));
+    codecRow.appendChild(el('span', 'dg-ip', codecDesc));
+    list.appendChild(codecRow);
+
+    /* ── Layer rows: portal / sesión / live / VOD ───────────────────── */
+    var layers = report.layers || {};
+    var layerDefs = [
+      { key: 'portal',  label: 'Portal' },
+      { key: 'session', label: 'Sesión' },
+      { key: 'live',    label: 'Live CDN' },
+      { key: 'vod',     label: 'VOD CDN' }
+    ];
+    var liveFail = false;
+    var vodFail = false;
+    for (var li = 0; li < layerDefs.length; li++) {
+      var ldef = layerDefs[li];
+      var ldata = layers[ldef.key];
+      if (!ldata) { continue; }
+      /* A probe that hit the deadline proves nothing about the carrier: it must
+         not be reported as a block, only as "no answer". */
+      if (ldef.key === 'live' && !ldata.ok && !ldata.timeout) { liveFail = true; }
+      if (ldef.key === 'vod' && !ldata.ok && !ldata.timeout) { vodFail = true; }
+      var lrow = el('div', 'dg-row ' + (ldata.ok ? 'ok' : (ldata.timeout ? 'warn' : 'bad')));
+      var ldesc = ldata.error || (ldata.status ? 'HTTP ' + ldata.status : (ldata.ok ? 'OK' : 'Error'));
+      if (ldef.key === 'session') {
+        ldesc = 'userId ' + (ldata.userId || '?') + '  token ' + (ldata.token || '?');
+      }
+      var lms = ldata.ms ? (' ' + ldata.ms + ' ms') : '';
+      lrow.appendChild(el('span', 'dg-host', ldef.label));
+      lrow.appendChild(el('span', 'dg-local', ''));
+      lrow.appendChild(el('span', 'dg-state', ldata.ok ? 'OK' : (ldata.timeout ? 'Sin respuesta' : 'Error')));
+      lrow.appendChild(el('span', 'dg-ip', ldesc + lms));
+      list.appendChild(lrow);
+    }
+
+    /* A green DNS test with dead media CDNs is the classic carrier block:
+       the operator answers DNS but drops the video hosts by IP or TLS SNI.
+       Without this override the viewer reads "todo bien" and still sees a
+       black screen, which is exactly the report we get from Chile/Colombia. */
+    if (summaryInfo.cls === 'ok' && (liveFail || vodFail)) {
+      var broken = (liveFail && vodFail) ? 'los canales en vivo y las películas'
+        : (liveFail ? 'los canales en vivo' : 'las películas');
+      summaryInfo = {
+        cls: 'bad',
+        text: 'El DNS responde bien, pero ' + broken + ' no se pueden abrir: ' +
+          'tu operador bloquea las direcciones de vídeo (bloqueo por IP/SNI). ' +
+          'Ese bloqueo no se arregla desde la app; hace falta una VPN en el router.'
+      };
+      summary.textContent = summaryInfo.text;
+      summary.className = 'dg-summary ' + summaryInfo.cls;
+    }
+
+    if (report.partial && summaryInfo.cls !== 'bad') {
+      summary.textContent += ' (La prueba no terminó a tiempo: vuelve a analizar.)';
+    }
+
+    if (netdiagEnv) {
+      var s = report.screen || {};
+      var parts = [];
+      if (s.w && s.h) { parts.push('Pantalla ' + s.w + '×' + s.h); }
+      if (s.panelW && s.panelH) { parts.push('panel ' + s.panelW + '×' + s.panelH); }
+      if (s.scale) { parts.push('escala ' + (Math.round(s.scale * 100) / 100)); }
+      if (report.version) { parts.push('versión ' + report.version); }
+      netdiagEnv.textContent = parts.join(' · ');
+    }
+  }
+
+  function reportSafeText(value) {
+    /* A support photo must never expose a playable URL, signed query, token or
+       request header. Keep only a short, human-readable error classification. */
+    var text = String(value == null ? '' : value);
+    text = text.replace(/https?:\/\/[^\s"']+/ig, '[URL OCULTA]');
+    text = text.replace(/(token|signature|authorization|cookie|key)=?[^\s,&]*/ig, '$1=[OCULTO]');
+    text = text.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ');
+    return text.slice(0, 150);
+  }
+
+  function layerReportState(layer) {
+    if (!layer) { return 'sin datos'; }
+    if (layer.ok) { return layer.status ? ('OK (HTTP ' + layer.status + ')') : 'OK'; }
+    if (layer.timeout) { return 'sin respuesta'; }
+    return 'error' + (layer.error ? (': ' + reportSafeText(layer.error)) : '');
+  }
+
+  function buildSupportReport(report) {
+    var lines = [];
+    var env = report.screen || {};
+    var layers = report.layers || {};
+    var hosts = report.hosts || [];
+    lines.push('REPORTE DE SOPORTE XUPERTV');
+    lines.push('Versión: ' + (report.version || 'desconocida'));
+    lines.push('Pantalla: ' + ((env.w && env.h) ? (env.w + '×' + env.h) : 'sin datos') +
+      ((env.panelW && env.panelH) ? (' | panel ' + env.panelW + '×' + env.panelH) : '') +
+      (env.scale ? (' | escala ' + env.scale) : ''));
+    lines.push('Red: ' + (report.verdict || 'sin resultado') + (report.partial ? ' (parcial)' : ''));
+    if (report.pending) { lines.push('Diagnóstico: sin respuesta / detenido para generar este reporte'); }
+    if (report.serviceError) { lines.push('Servicio: ' + reportSafeText(report.serviceError)); }
+    lines.push('Portal: ' + layerReportState(layers.portal));
+    lines.push('Sesión: ' + layerReportState(layers.session));
+    lines.push('TV en vivo: ' + layerReportState(layers.live));
+    lines.push('Películas/series: ' + layerReportState(layers.vod));
+    lines.push('Reproductor: ' + (state.playerMode || 'sin reproducción') +
+      ' | modo ' + (state.streamMode || 'normal') +
+      (state.streamError ? (' | error ' + reportSafeText(state.streamError)) : ''));
+    for (var i = 0; i < hosts.length && i < 5; i++) {
+      lines.push('Host ' + (i + 1) + ': ' + reportSafeText(hosts[i].host) +
+        ' — ' + reportSafeText(hosts[i].verdict || 'sin datos'));
+    }
+    lines.push('');
+    lines.push('Privacidad: este reporte no incluye enlaces, tokens, cabeceras ni historial.');
+    lines.push('Toma una foto de esta pantalla y envíala al soporte.');
+    return lines.join('\n');
+  }
+
+  function showSupportReport(summary, list) {
+    if (!netdiagState.report) {
+      /* A frozen service must not prevent a user from contacting support.
+         Stop only this UI run and make a report from the known local facts. */
+      netdiagState.runId++;
+      netdiagState.running = false;
+      var vp = window.__xuperViewport || {};
+      netdiagState.report = {
+        version: (document.querySelector('.welcome-version') || {}).textContent || 'desconocida',
+        verdict: 'sin respuesta', partial: true, pending: true,
+        screen: { w: vp.w || 0, h: vp.h || 0, scale: vp.scale || 0,
+          panelW: vp.panelW || 0, panelH: vp.panelH || 0 },
+        layers: {}, hosts: []
+      };
+    }
+    clear(list);
+    var report = el('div', 'dg-report', buildSupportReport(netdiagState.report));
+    list.appendChild(report);
+    summary.className = 'dg-summary ok';
+    summary.textContent = 'Reporte listo. Toma una foto de esta pantalla y envíala al soporte.';
+  }
+
+  function runNetdiag(button, summary, list) {
+    /* Settings can be rebuilt while a slow TV still has a diagnostic request
+       open. Give the new visible panel its own run and ignore the old reply;
+       otherwise the reply paints an already-detached panel and viewers see
+       an apparently empty Diagnóstico screen. */
+    var runId = netdiagState.runId + 1;
+    netdiagState.runId = runId;
+    netdiagState.running = true;
+    netdiagState.error = null;
+    button.textContent = 'Analizando…';
+    summary.className = 'dg-summary';
+    summary.textContent = 'Consultando el DNS del televisor, el DNS seguro y los servidores…';
+    clear(list);
+    /* The list must never look empty while the test runs: some TVs take a while
+       and "nothing happened" is the report we keep getting. */
+    list.appendChild(el('div', 'dg-row', 'Analizando…'));
+
+    function localFailure(reason) {
+      if (netdiagState.runId !== runId || !netdiagState.running) { return; }
+      netdiagState.running = false;
+      /* Ignore the late callback from the request that just timed out. */
+      netdiagState.runId++;
+      netdiagState.report = {
+        version: (document.querySelector('.welcome-version') || {}).textContent || 'desconocida',
+        verdict: 'servicio-sin-respuesta', partial: true, serviceError: reason,
+        screen: (function () {
+          var vp = window.__xuperViewport || {};
+          return { w: vp.w || 0, h: vp.h || 0, scale: vp.scale || 0,
+            panelW: vp.panelW || 0, panelH: vp.panelH || 0 };
+        })(),
+        layers: {}, hosts: [], providers: []
+      };
+      button.textContent = 'Analizar de nuevo';
+      renderNetdiag(summary, list, netdiagState.report);
+    }
+
+    /* First prove that Luna can reach our service. This is deliberately tiny
+       and local: it distinguishes a missing/blocked service from a network
+       diagnostic that itself is slow, instead of leaving a blank spinner. */
+    /* Allow up to 25 seconds for the Node.js service to cold-boot on slower
+       dual-core TVs (webOS 3.5 / 2017 models like LJ550 need 8-12 seconds). */
+    var pingDone = false;
+    var pingTimer = setTimeout(function () {
+      if (!pingDone) { pingDone = true; localFailure('ping no respondió en 25 segundos (el servicio no arrancó)'); }
+    }, 25000);
+    portalServiceCall('ping', {}, function (pingError, pingPayload) {
+      if (pingDone) { return; }
+      pingDone = true;
+      clearTimeout(pingTimer);
+      if (pingError || !pingPayload) {
+        localFailure('ping falló: ' + reportSafeText(pingError || 'sin respuesta'));
+      }
+    }, 24000);
+
+    /* Two safety nets: one explains a slow network, the other gives the button
+       back if the service never answers at all. */
+    var slowTimer = setTimeout(function () {
+      if (!netdiagState.running || netdiagState.runId !== runId) { return; }
+      summary.textContent = 'Analizando… tu red está respondiendo lento, espera un momento.';
+    }, 9000);
+    var guardTimer = setTimeout(function () {
+      if (!netdiagState.running || netdiagState.runId !== runId) { return; }
+      localFailure('ping respondió, pero netdiag no devolvió resultado en 32 segundos');
+    }, 32000);
+
+    portalServiceCall('netdiag', (function () {
+      var vp = window.__xuperViewport || {};
+      var vid = playerVideo || document.querySelector('video');
+      function cp(t) { return vid ? (vid.canPlayType(t) || '') : ''; }
+      return {
+        screenW: vp.w || 0, screenH: vp.h || 0, screenScale: vp.scale || 0,
+        panelW: vp.panelW || 0, panelH: vp.panelH || 0,
+        codecH264: cp('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
+        codecHEVC: cp('video/mp4; codecs="hvc1.1.6.L93.B0"'),
+        codecHLS:  cp('application/x-mpegURL'),
+        /* Last real CDN URLs so the service can prove whether the carrier
+           drops live/VOD by IP or SNI even when DNS looks perfect. */
+        liveUrl: (lastCdnProbe.live && lastCdnProbe.live.url) || '',
+        liveHeaders: (lastCdnProbe.live && lastCdnProbe.live.headers) || {},
+        vodUrl: (lastCdnProbe.vod && lastCdnProbe.vod.url) || '',
+        vodHeaders: (lastCdnProbe.vod && lastCdnProbe.vod.headers) || {}
+      };
+    })(), function (error, payload) {
+      if (netdiagState.runId !== runId) { return; }
+      clearTimeout(slowTimer);
+      clearTimeout(guardTimer);
+      netdiagState.running = false;
+      button.textContent = 'Analizar de nuevo';
+      if (button.parentNode && button.parentNode.className.indexOf('is-active') !== -1) { setFocus(button); }
+      if (error || !payload) {
+        netdiagState.error = error || 'sin respuesta';
+        summary.className = 'dg-summary bad';
+        var errMsg = String(error || '');
+        if (/denied|permission|not permitted|bloqueado el servicio/i.test(errMsg)) {
+          summary.textContent = SERVICE_BLOCKED_HINT;
+        } else if (/exist|not found|no disponible/i.test(errMsg)) {
+          summary.textContent = 'El servicio de fondo no está instalado en la TV. Reinstala la app usando el instalador .bat';
+        } else if (/timeout|tiempo|espera/i.test(errMsg)) {
+          summary.textContent = 'Tiempo de espera agotado. La conexión es muy lenta o el DNS de tu operador no responde.';
+        } else {
+          summary.textContent = 'No se pudo ejecutar la prueba (' + (errMsg || 'el servicio no respondió') + ').';
+        }
+        return;
+      }
+      netdiagState.report = payload;
+      renderNetdiag(summary, list, payload);
+    }, 45000);
+  }
+
+  function buildNetdiagPanel() {
+    var p = panelBase('Diagnóstico de red');
+    p.appendChild(el('div', 'dg-note',
+      'Comprueba si tu operador de internet está bloqueando los servidores de XuperTV. ' +
+      'La app ya usa un DNS seguro (DNS-over-HTTPS) para evitarlo; esta prueba solo lo muestra.'));
+    p.appendChild(abs(el('div', 'sp-hr'), 0, 216, 1478, 1));
+
+    var button = el('div', 'dg-btn focusable', 'Analizar red');
+    abs(button, 52, 242, 330, 66);
+    var reportButton = el('div', 'dg-btn dg-report-btn focusable', 'Generar reporte');
+    abs(reportButton, 400, 242, 330, 66);
+    var summary = el('div', 'dg-summary', 'Pulsa "Analizar red" para empezar.');
+    abs(summary, 750, 242, 676, 66);
+
+    var head = el('div', 'dg-head');
+    abs(head, 52, 336, 1380, 40);
+    head.appendChild(el('span', 'dg-host', 'Dominio'));
+    head.appendChild(el('span', 'dg-local', 'DNS del televisor'));
+    head.appendChild(el('span', 'dg-state', 'Estado'));
+    head.appendChild(el('span', 'dg-ip', 'Dirección real (DNS seguro)'));
+
+    var list = el('div', 'dg-list');
+    abs(list, 52, 378, 1380, 450);
+
+    var envLine = el('div', 'dg-env', '');
+    abs(envLine, 52, 832, 1380, 32);
+    netdiagEnv = envLine;
+
+    var foot = el('div', 'dg-foot',
+      'Si el estado dice "Bloqueado", tu operador está interceptando el nombre del servidor, pero la app ya conecta por la dirección real. ' +
+      'El reproductor Normal y el Modo Fluido usan este mismo DNS seguro. ' +
+      'Si el vídeo sigue sin abrir con la conexión en verde, el bloqueo es por dirección: hace falta un túnel (VPN local).');
+    abs(foot, 52, 872, 1380, 150);
+
+    button._activate = function () { runNetdiag(button, summary, list); };
+    reportButton._activate = function () { showSupportReport(summary, list); };
+    /* Opening the panel runs the test once: the people who need it are not
+       going to press a button they do not understand. */
+    p._ensureDiag = function () {
+      if (netdiagState.report) {
+        renderNetdiag(summary, list, netdiagState.report);
+        return;
+      }
+      runNetdiag(button, summary, list);
+    };
+
+    p.appendChild(button);
+    p.appendChild(reportButton);
+    p.appendChild(summary);
+    p.appendChild(head);
+    p.appendChild(list);
+    p.appendChild(envLine);
+    p.appendChild(foot);
+    return p;
+  }
+
   function buildPendingPanel(title, text) {
     var p = el('div', 'settings-panel');
     p.appendChild(el('div', 'sp-title', title));
@@ -4010,10 +4435,7 @@ function portalServiceCall(method, params, done) {
   function togglePlayerPlayPause() {
     if (!playerVideo) { return; }
     if (playerVideo.paused) {
-      try {
-        var p = playerVideo.play();
-        if (p && p.catch) { p.catch(function () {}); }
-      } catch (eP) {}
+      resumePlayerPlayback();
       showOsdIcon('none');
       showInfobar();
     } else {
@@ -4100,6 +4522,10 @@ function portalServiceCall(method, params, done) {
   var vodCurrentAudioTrack = 0;
   /* Once the user picks a language we stop auto-selecting the preferred one. */
   var vodAudioChosen = false;
+  /* Older Starfish builds can report MEDIA_ERR_SRC_NOT_SUPPORTED while they
+     apply a native audio PID.  It is not a failed movie and must never turn
+     Normal (Directo) into Modo Fluido. */
+  var audioTrackSwitchUntil = 0;
   var vodCurrentSubtitle = null;
   var vodSubActive = false;
   /* True once the user flips the switch or picks a language; from then on the
@@ -4142,7 +4568,9 @@ function portalServiceCall(method, params, done) {
   function languageMatchesPreference(label, code) {
     var value = String(label || code || '').toLowerCase();
     var wanted = code || 'es';
-    if (wanted === 'es') { return /^(es|spa|esp)|espa/.test(value); }
+    if (wanted === 'es') {
+      return /^(es|spa|esp|lat|cast)|espa|latino|latin|castell/i.test(value);
+    }
     if (wanted === 'pt') { return /^(pt|por)|portu/.test(value); }
     if (wanted === 'en') { return /^(en|eng|ing)|ingl/.test(value); }
     return false;
@@ -4336,7 +4764,15 @@ function portalServiceCall(method, params, done) {
 
   function smoothModeKey(item) {
     if (!item) { return ''; }
-    return item.seriesId || item.id || '';
+    /* A manual mode is a series preference while chapters are playing.  The
+       previous key used the current episode id, so selecting Fluido in E1
+       silently reverted to Normal in E2 and could leave its resolver waiting
+       on an incompatible direct pipeline. */
+    if (isSeriesItem(item)) {
+      return 'series:' + (item.seriesContentId || item.seriesId || item.seasonId || item.id || '');
+    }
+    var ep = mediaInfoEpisode(item);
+    return (ep && ep.id) ? ep.id : (item.id || '');
   }
 
   function restoreSmoothMode(item) {
@@ -4665,7 +5101,10 @@ function portalServiceCall(method, params, done) {
       state.playerEpisodeRange = Math.floor(currentIndex / 20);
     }
     var range = ranges[state.playerEpisodeRange] || ranges[0];
-    var numberRow = el('div', 'psv-episode-numbers');
+    /* reveal() only follows .scrollable containers.  Without this class the
+       d-pad could focus episode 16+ outside the visible row, making a
+       20-episode page look capped around fifteen entries. */
+    var numberRow = el('div', 'psv-episode-numbers scrollable');
     for (var i = range.start; i < range.end; i++) {
       (function (ep, idx) {
         var label = idx === currentIndex ? '▶' : String(ep.number !== undefined && ep.number !== null ? ep.number : idx + 1);
@@ -4675,7 +5114,7 @@ function portalServiceCall(method, params, done) {
       })(episodes[i], i);
     }
     psvEpisodesRow.appendChild(numberRow);
-    var rangeRow = el('div', 'psv-episode-ranges');
+    var rangeRow = el('div', 'psv-episode-ranges scrollable');
     for (var r = 0; r < ranges.length; r++) {
       (function (idx, part) {
         var btn = el('button', 'psv-range-btn focusable' + (idx === state.playerEpisodeRange ? ' is-selected' : ''),
@@ -5233,7 +5672,7 @@ function portalServiceCall(method, params, done) {
 
   function formatAudioLang(code) {
     var c = (code || '').toLowerCase().trim().split(/[-_]/)[0];
-    if (/^(spa|esp|es|castellano|latino)$/.test(c)) return 'Español';
+    if (/^(spa|esp|es|castellano|latino|lat|latam)$/.test(c)) return 'Español';
     if (/^(eng|ing|en)$/.test(c)) return 'Inglés';
     if (/^(jpn|jap|ja)$/.test(c)) return 'Japonés';
     if (/^(kor|cor|ko)$/.test(c)) return 'Coreano';
@@ -5245,21 +5684,58 @@ function portalServiceCall(method, params, done) {
     return c ? (c.charAt(0).toUpperCase() + c.slice(1)) : 'Pista';
   }
 
+  /* A direct MP4/TS source must stay direct when the viewer selects an audio
+     language.  Some webOS media pipelines expose the native AudioTrackList;
+     in that case the change is immediate and does not need FFmpeg.  Older
+     sets expose no writable list, so we leave the existing source untouched
+     instead of silently changing the player to Modo Fluido. */
+  function selectNativeAudioTrack(trackIndex) {
+    if (!playerVideo) { return false; }
+    var tracks;
+    try { tracks = playerVideo.audioTracks; } catch (eTracks) { return false; }
+    if (!tracks || !tracks.length || !(trackIndex >= 0 && trackIndex < tracks.length)) {
+      return false;
+    }
+    try {
+      for (var i = 0; i < tracks.length; i++) {
+        tracks[i].enabled = (i === trackIndex);
+      }
+      return true;
+    } catch (eSelect) {
+      return false;
+    }
+  }
+
   function switchAudioTrack(trackIndex) {
+    /* On the detail screen the choice is only remembered for the next play. */
+    if (state.screen !== 'player' || !playerVideo) {
+      vodCurrentAudioTrack = trackIndex;
+      vodAudioChosen = true;
+      return;
+    }
+    /* Normal (Directo) must never be converted to Fluido merely by opening
+       the audio selector.  Use the native track list when webOS provides it.
+       A TV without that API keeps its playing source and clearly tells the
+       viewer that a remux is required for per-track selection. */
+    if (state.streamMode !== 'relay' && state.streamMode !== 'smooth') {
+      if (selectNativeAudioTrack(trackIndex)) {
+        vodCurrentAudioTrack = trackIndex;
+        vodAudioChosen = true;
+        audioTrackSwitchUntil = Date.now() + 5000;
+        setPlayerStatus('Idioma cambiado');
+      } else {
+        setPlayerStatus('Esta TV no permite cambiar audio en Normal. Usa Modo Fluido para esa pista.');
+      }
+      return;
+    }
     vodCurrentAudioTrack = trackIndex;
     vodAudioChosen = true;
-    /* On the detail screen the choice is only remembered for the next play. */
-    if (state.screen !== 'player' || !playerVideo) { return; }
     /* HTML5 cannot pick a PID inside a TS/MP4, so the FFmpeg relay maps it
-       with -map 0:a:<n>.  A direct stream has to move to the relay. */
+       with -map 0:a:<n>. */
     if (relayBaseUrl) {
       var curSec = relayStartOffset + (playerVideo.currentTime || 0);
       playUrl(relayBaseUrl + '?start=' + Math.floor(curSec) + '&a=' + trackIndex);
       return;
-    }
-    if (state.streamMode !== 'relay' && state.streamMode !== 'smooth') {
-      state.streamMode = 'relay';
-      renderPlaySettingPlayerOptions();
     }
     restartCurrentPlayback();
   }
@@ -5849,6 +6325,28 @@ function portalServiceCall(method, params, done) {
   var resolveSeq = 0;
   var relayBaseUrl = '';
   var relayStartOffset = 0;
+  /* A fragmented MP4 relay is a one-way HTTP stream.  Several older webOS
+     players do not resume that socket after a long pause; opening its local
+     URL again at the same offset is the reliable native resume operation. */
+  var relayPaused = false;
+
+  function resumePlayerPlayback() {
+    if (!playerVideo) { return; }
+    if (relayPaused && relayBaseUrl && state.playerMode === 'vod') {
+      var base = relayBaseUrl;
+      var position = Math.max(0, Math.floor(relayStartOffset + (playerVideo.currentTime || 0)));
+      relayPaused = false;
+      var resumeUrl = base + '?start=' + position;
+      if (vodCurrentAudioTrack) { resumeUrl += '&a=' + vodCurrentAudioTrack; }
+      setPlayerStatus('Reanudando vídeo…');
+      playUrl(resumeUrl);
+      return;
+    }
+    try {
+      var p = playerVideo.play();
+      if (p && p.catch) { p.catch(function () {}); }
+    } catch (ePlay) { /* native player rejected resume */ }
+  }
 
   /* Accumulated seek delta + timer for debouncing rapid seek keypresses.
      webOS Starfish fires a full setPreload/dispatchBufferingStart cycle
@@ -5980,6 +6478,7 @@ function portalServiceCall(method, params, done) {
     /* Cancel any pending seek */
     if (seekTimer) { clearTimeout(seekTimer); seekTimer = null; seekPending = 0; }
     releaseRelaySeek();
+    relayPaused = false;
     relayBaseUrl = '';
     relayStartOffset = 0;
     /* Increment generation so any in-flight resolve() callback is ignored */
@@ -6049,6 +6548,7 @@ function portalServiceCall(method, params, done) {
     playOptions = playOptions || {};
     var useNativeHlsFallback = !!playOptions.nativeHls;
     stopPlayerVideo();
+    relayPaused = false;
     lastPlayingUrl = url;
     var mOrigin = /^(http:\/\/127\.0\.0\.1:\d+)/.exec(url);
     if (mOrigin) { lastProxyOrigin = mOrigin[1]; }
@@ -6089,15 +6589,28 @@ function portalServiceCall(method, params, done) {
         }, 0);
         return;
       }
+      /* A manual language change on the direct pipeline must preserve Normal
+         mode.  Do not mistake the transient native-track error for an
+         unsupported stream and silently restart through the FFmpeg relay. */
+      if (code === 4 && state.playerMode === 'vod' && state.streamMode === 'normal' &&
+          audioTrackSwitchUntil && Date.now() < audioTrackSwitchUntil) {
+        audioTrackSwitchUntil = 0;
+        state.streamError = 'No fue posible cambiar el idioma en reproducción Normal';
+        setPlayerStatus(state.streamError);
+        return;
+      }
       /* Some portal VOD files are rejected by a TV's direct TS pipeline even
          though the same HEVC/AAC content plays when remuxed as fragmented MP4.
-         Retry once through the protected Modo Fluido route, never in a loop. */
+         Retry once through the protected Modo Fluido route, never in a loop.
+         The retry belongs to this episode only: remembering it for the whole
+         series opened every following episode in Modo Fluido even after the
+         viewer picked Normal. */
       if (code === 4 && state.playerMode === 'vod' && state.streamMode === 'normal' && state.playerItem) {
         var failedItem = state.playerItem;
-        var failedKey = smoothModeKey(failedItem);
+        var failedKey = mediaInfoKey(failedItem) || smoothModeKey(failedItem);
         if (autoSmoothFallbackKey !== failedKey) {
           autoSmoothFallbackKey = failedKey;
-          setSmoothMode(failedItem, true);
+          state.streamMode = 'smooth';
           setPlayerStatus('Reintentando película en modo compatible…');
           setTimeout(function () {
             if (state.playerMode === 'vod' && state.playerItem === failedItem && state.streamMode === 'smooth') {
@@ -6120,6 +6633,16 @@ function portalServiceCall(method, params, done) {
     playerVideo.oncanplay = function () { releaseRelaySeek(); clearStatus(); };
     playerVideo.onloadedmetadata = function () {
       clearStatus();
+      /* Prefer Spanish on the direct path as well.  Android chooses this PID
+         internally; on webOS it is exposed only when the native AudioTrackList
+         becomes available with the loaded media metadata. */
+      if (state.playerMode === 'vod' && state.streamMode === 'normal') {
+        var audioInfo = (state.playerItem && state.playerItem.streamAudioInfo);
+        var nativeTrack = vodAudioChosen ? vodCurrentAudioTrack : preferredAudioIndex(audioInfo);
+        if (selectNativeAudioTrack(nativeTrack)) {
+          vodCurrentAudioTrack = nativeTrack;
+        }
+      }
       if (state.playerMode === 'vod') {
         var cur = relayBaseUrl ? relayStartOffset : (playerVideo.currentTime || 0);
         var vidDur = (playerVideo && isFinite(playerVideo.duration) && playerVideo.duration > 0) ? playerVideo.duration : 0;
@@ -6167,6 +6690,7 @@ function portalServiceCall(method, params, done) {
           durationToSeconds((state.playerEpisode && state.playerEpisode.duration) || (state.playerItem && state.playerItem.duration) || 0);
         rememberWatchProgress(pausePosition, pauseDuration, true);
         showOsdIcon('pause');
+        if (relayBaseUrl) { relayPaused = true; }
       }
     };
     playerVideo.onplay = function () {
@@ -6206,22 +6730,21 @@ function portalServiceCall(method, params, done) {
     }
 
     var srcNode = document.createElement('source');
-    /* LG's HLS pipeline reads mediaOption from the source element.  Setting
-       video.src afterwards replaces that source and silently drops HLS mode
-       on recent webOS releases, resulting in MEDIA_ERR_SRC_NOT_SUPPORTED. */
     srcNode.setAttribute('src', url);
     srcNode.setAttribute('type', typeStr);
     if (isHls) {
-      /* webOS 3+ expects readyState to be reset before a new <source> is
-         attached.  This is intentionally limited to HLS; VOD keeps its
-         proven direct-source path and Modo Fluido remains untouched. */
+      /* LG's HLS pipeline reads mediaOption from the source element. Setting
+         video.src afterwards replaces that source and silently drops HLS mode
+         on recent webOS releases, resulting in MEDIA_ERR_SRC_NOT_SUPPORTED. */
       try { playerVideo.load(); } catch (eHlsReset) { /* ignore */ }
     }
     playerVideo.appendChild(srcNode);
 
-    /* Direct src assignment is needed for the legacy URI/MP4 path, but must
-       never override the HLS source and its mediaOption. */
     if (!isHls) {
+      /* Starfish on webOS 3–6 does not reliably start a non-HLS <source>
+         alone.  Keep the source node (for mediaOption) AND assign src, also
+         for the local Fluent relay.  This is the proven 1.6.15 behaviour and
+         prevents the player from staying forever at “Conectando…”. */
       try { playerVideo.src = url; } catch (eSrc) {}
     }
     try { playerVideo.currentTime = 0; } catch (eCt) {}
@@ -6257,16 +6780,25 @@ function portalServiceCall(method, params, done) {
       params.trackIndex = state.trackIndex || 0;
       /* Prefer the Spanish PID like the real app when mediaInfo already
          answered; the relay maps it with ffmpeg -map 0:a:<n>. */
-      var cachedInfo = mediaInfoCache[mediaInfoKey(item)];
-      if (cachedInfo && !vodAudioChosen) {
-        vodCurrentAudioTrack = preferredAudioIndex(cachedInfo.audio);
+      var ep = state.playerEpisode;
+      var epKey = (ep && ep.id) || (item && item.id) || '';
+      var cachedInfo = mediaInfoCache[epKey] || mediaInfoCache[mediaInfoKey(item)];
+      /* Spanish is the default for every episode.  Index 0 is NOT Spanish:
+         the portal lists the PIDs in stream order ("por,spa,eng"), so sending
+         0 after an episode change made playback start in Portuguese (and the
+         FFmpeg relay map the Portuguese PID). */
+      var audioList = (cachedInfo && cachedInfo.audio) || (ep && ep.streamAudioInfo) || item.streamAudioInfo || '';
+      if (vodAudioChosen) {
+        vodCurrentAudioTrack = Math.max(0, Number(vodCurrentAudioTrack) || 0);
+      } else {
+        vodCurrentAudioTrack = preferredAudioIndex(audioList);
       }
       params.audioTrack = vodCurrentAudioTrack || 0;
       if (isSeriesItem(item)) {
-        var ep = state.playerEpisode;
+        var epSeries = state.playerEpisode;
         var seriesRef = item.seasonId || item.id;
-        if (ep && ep.id) {
-          params.contentId = ep.id;
+        if (epSeries && epSeries.id) {
+          params.contentId = epSeries.id;
           params.seriesContentId = seriesRef;
         } else {
           if (!item.episodes || !item.episodes.length) { return done(''); }
@@ -6284,6 +6816,7 @@ function portalServiceCall(method, params, done) {
           setPlayerStatus(state.streamError);
           return done('');
         }
+        rememberCdnProbe('vod', payload);
         item.streamMime = payload.mime || '';
         item.streamCodec = payload.codec || '';
         if (payload.duration > 0) {
@@ -6293,8 +6826,24 @@ function portalServiceCall(method, params, done) {
           item.duration = item.duration || 0;
         }
         item.subtitles = payload.subtitles || [];
-        item.streamAudioInfo = payload.audio || '';
+        item.streamAudioInfo = payload.audio || item.streamAudioInfo || '';
+        if (state.playerEpisode) { state.playerEpisode.streamAudioInfo = payload.audio || ''; }
         item.isHls = !!payload.isHls;
+        if (!vodAudioChosen && payload.audio) {
+          vodCurrentAudioTrack = preferredAudioIndex(payload.audio);
+        }
+        /* resolve already completed startPlayVOD.  Reuse its audio/subtitle
+           metadata in the panel instead of requesting the same episode a
+           second time when the viewer changes chapters. */
+        var resolvedInfo = {
+          audio: payload.audio || item.streamAudioInfo,
+          subtitles: item.subtitles,
+          tracks: payload.availableTracks || [],
+          selected: payload.selectedTrack || {},
+          duration: payload.duration || 0
+        };
+        mediaInfoCache[mediaInfoKey(item)] = resolvedInfo;
+        applySubtitleDefaults(resolvedInfo);
         /* Read-only local diagnostics for the webOS inspector.  Do not place
            the stream URL, licence or headers here. */
         try {
@@ -6330,9 +6879,36 @@ function portalServiceCall(method, params, done) {
     if (!it) { return; }
     vodAudioChosen = false;
     vodCurrentAudioTrack = 0;
-    /* Fetch real audio/subtitle tracks so the first Down press already has
-       the languages and renditions instead of guessing them. */
-    ensureMediaInfo(it);
+    /* resolvePlayerStream returns the same audio/subtitle metadata needed by
+       the dialog.  Do not issue mediaInfo in parallel here: on every episode
+       change that duplicated startPlayVOD and delayed the next chapter.  It is
+       only requested while the audio PID order is still unknown, because the
+       portal lists it in stream order (index 0 is not Spanish) and Modo Fluido
+       maps that index inside FFmpeg. */
+    var currentEp = episode || state.playerEpisode;
+    var epKey = (currentEp && currentEp.id) || (it && it.id) || '';
+    var epInfo = epKey ? mediaInfoCache[epKey] : null;
+    var knownAudio = (epInfo && epInfo.audio) || (currentEp && currentEp.streamAudioInfo) || '';
+    if (it._portal && !vodAudioChosen && !knownAudio) {
+      var started = false;
+      var startSeq = resolveSeq;
+      var proceed = function () {
+        if (started || startSeq !== resolveSeq) { return; }
+        started = true;
+        var epNum = episode ? (episode.number || episode.seriesNumber || '') : '';
+        setPlayerStatus(epNum ? ('Cargando capítulo ' + epNum + '…') : 'Cargando capítulo…');
+        resolvePlayerStream(it, function (url) {
+          if (url) { playUrl(url); }
+          else if (!state.streamError) { setPlayerStatus('Sin fuente de reproducción'); }
+        });
+      };
+      /* Never hold playback on the metadata call: after 2.5 s resolve anyway. */
+      setTimeout(proceed, 2500);
+      ensureMediaInfo(it, function (info) {
+        proceed();
+      });
+      return;
+    }
     if (it._portal) {
       var epNum = episode ? (episode.number || episode.seriesNumber || '') : '';
       setPlayerStatus(epNum ? ('Cargando capítulo ' + epNum + '…') : 'Cargando capítulo…');
@@ -6434,6 +7010,7 @@ function portalServiceCall(method, params, done) {
           setPlayerStatus(state.streamError);
           return;
         }
+        rememberCdnProbe('live', payload);
         var streamUrl = payload.proxyPath || payload.url;
         if (!streamUrl) {
           state.streamError = 'Señal no disponible';
@@ -6644,13 +7221,39 @@ function portalServiceCall(method, params, done) {
      logical viewport, whereas some UHD webOS 22/25 sets expose 3840×2160.
      Without this fit pass only the left half of the fixed canvas is painted
      and the right half of the TV remains black. */
+  function viewportSize() {
+    /* Most webOS builds report the CSS viewport here. Some 2K/4K firmware
+       reports a legacy 1280×720 inner viewport while compositing to its full
+       physical 1920/3840 panel; using that value alone paints the left part
+       of the TV and leaves the right side black. */
+    var vw = window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 0;
+    var vh = window.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 0;
+    if (!vw || !vh) { vw = 1920; vh = 1080; }
+    var panelW = Math.floor((screen && screen.width) || 0);
+    var panelH = Math.floor((screen && screen.height) || 0);
+    var cssRatio = vw / vh;
+    var panelRatio = panelW && panelH ? panelW / panelH : 0;
+    /* Only trust screen.* when it is a true UHD/4K panel (>= 2560).
+       Never override an HD/720p viewport (1280×720) with a virtual 1920 panel,
+       which would force scale=1.0 and crop 640px on the right and 360px on the bottom. */
+    if (panelW >= 2560 && panelW >= vw * 1.25 && panelH >= vh * 1.25 &&
+        Math.abs(cssRatio - panelRatio) < 0.03) {
+      vw = panelW;
+      vh = panelH;
+    }
+    var panel = (panelW > 0 && panelH > 0) ? { w: panelW, h: panelH } : null;
+    return { w: vw, h: vh, panel: panel };
+  }
+
   function fitDesignViewport() {
     var app = $('app');
     if (!app) { return; }
-    var vw = window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 1920;
-    var vh = window.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 1080;
+    var size = viewportSize();
+    var vw = size.w;
+    var vh = size.h;
     var scale = Math.min(vw / 1920, vh / 1080);
     if (!isFinite(scale) || scale <= 0) { scale = 1; }
+    scale = Math.round(scale * 10000) / 10000;
     /* Keep a non-16:9 display letterboxed instead of stretching the design. */
     var left = Math.max(0, Math.round((vw - (1920 * scale)) / 2));
     var top = Math.max(0, Math.round((vh - (1080 * scale)) / 2));
@@ -6658,12 +7261,26 @@ function portalServiceCall(method, params, done) {
     app.style.top = top + 'px';
     app.style.webkitTransform = 'scale(' + scale + ')';
     app.style.transform = 'scale(' + scale + ')';
+    /* Read by the network diagnostics panel: a photo of that screen tells
+       which viewport the TV really gave the app (720p / 2K / 4K sets differ). */
+    window.__xuperViewport = {
+      w: vw, h: vh, scale: scale,
+      panelW: size.panel ? size.panel.w : 0,
+      panelH: size.panel ? size.panel.h : 0
+    };
   }
 
   /* ------------------------------------------------------------------ boot */
   function boot() {
     fitDesignViewport();
     window.addEventListener('resize', fitDesignViewport, false);
+    window.addEventListener('orientationchange', fitDesignViewport, false);
+    document.addEventListener('visibilitychange', fitDesignViewport, false);
+    /* Some webOS builds only report the final window size after the splash
+       animation, and 720p / 2K sets take longer than 1080p ones. */
+    setTimeout(fitDesignViewport, 250);
+    setTimeout(fitDesignViewport, 1200);
+    setTimeout(fitDesignViewport, 3000);
     document.addEventListener('keydown', handleKey, false);
     document.addEventListener('keyup', function (e) {
       var code = e.keyCode || e.which;
@@ -6682,6 +7299,7 @@ function portalServiceCall(method, params, done) {
     });
     buildSearch();
     startServiceKeepAlive();
+    portalServiceCall('prewarm', {}, function () {});
     startWelcome();
     loadVodCatalog();
     loadLiveChannels();

@@ -115,7 +115,7 @@ ares-novacom --device tv --getkey
 ### 3. Instalar el IPK
 
 ```bash
-ares-install --device tv dist/com.webosflux.xuptertv.fidelity_1.5.9_all.ipk
+ares-install --device tv dist/com.webosflux.xuptertv.fidelity_1.6.12_all.ipk
 ares-launch  --device tv com.webosflux.xuptertv.fidelity
 ```
 
@@ -131,13 +131,13 @@ repositorio (SFTP + Luna):
 ```bash
 # Windows PowerShell
 $env:TV_HOST="192.168.1.50"; $env:TV_PASS="tu_clave"
-node tools/tv_deploy.mjs dist\com.webosflux.xuptertv.fidelity_1.5.9_all.ipk
+node tools/tv_deploy.mjs dist\com.webosflux.xuptertv.fidelity_1.6.12_all.ipk
 ```
 
 ```bash
 # Linux / macOS
 TV_HOST=192.168.1.50 TV_PASS=tu_clave \
-  node tools/tv_deploy.mjs dist/com.webosflux.xuptertv.fidelity_1.5.9_all.ipk
+  node tools/tv_deploy.mjs dist/com.webosflux.xuptertv.fidelity_1.6.12_all.ipk
 ```
 
 Sube el IPK a `/media/developer/temp/` y llama a
@@ -196,3 +196,23 @@ ares-install --device tv --remove com.webosflux.xuptertv.fidelity
   extraen credenciales de otras aplicaciones.
 - Si el televisor cambia de IP, actualiza el dispositivo con
   `ares-setup-device --modify tv`.
+
+## Problemas conocidos del instalador
+
+- **`Bad configuration option: pubkeyacceptedalgorithms`.** Windows 10 20H2
+  trae OpenSSH 8.1, que no conoce ese nombre (llegó en OpenSSH 8.5). El
+  instalador comprueba con `ssh -G` qué nombre acepta cada equipo y usa
+  `PubkeyAcceptedKeyTypes` en los antiguos. Si aparece, se está ejecutando un
+  `instalar-tv.ps1` viejo: extrae el ZIP completo en una carpeta limpia.
+- **La imagen se sale de la pantalla (720p, 2K o 4K).** El televisor puede
+  entregar una ventana mayor que su panel y recortar el lienzo de 1920×1080.
+  La app escala el lienzo al tamaño real y, si detecta que el panel es menor,
+  se ajusta a él. Comprueba antes en la TV
+  **Ajustes → Imagen → Relación de aspecto → Solo escaneo (Just Scan)**.
+  En **Ajustes → Diagnóstico** la última línea muestra
+  `Pantalla … · panel … · escala … · versión …`; una foto de esa pantalla
+  basta para corregir un modelo concreto.
+- **Diagnóstico en ámbar.** `Bloqueado` significa que el DNS del operador no
+  devuelve los dominios del portal; la app los resuelve por DNS seguro (DoH).
+  `Un servidor de vídeo no respondió` solo indica que un CDN rotativo no
+  contestó en ese momento: vuelve a analizar.

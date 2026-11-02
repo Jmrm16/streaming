@@ -30,7 +30,12 @@ html, body {
 img { border: 0; display: block; }
 div, section, span { outline: none; }
 #app {
-  position: relative;
+  /* The app is a fixed 1920×1080 design canvas.  Absolute positioning keeps
+     its unscaled layout box from contributing a 1920px document width on
+     720p sets, which otherwise clips the transformed right/bottom edges. */
+  position: absolute;
+  left: 0;
+  top: 0;
   width: 1920px;
   height: 1080px;
   overflow: hidden;
@@ -3813,3 +3818,104 @@ div, section, span { outline: none; }
 }
 
 
+
+/* =============================================================================
+   NETWORK DIAGNOSTICS
+   Read-only report: local (ISP) DNS answer next to the DoH answer and the
+   TCP/TLS result per host.  Green = working, amber = DNS intercepted but the
+   app can still reach the server, red = the server is not reachable.
+   ============================================================================= */
+.dg-note {
+  position: absolute;
+  left: 52px; top: 145px; right: 90px;
+  font-size: 24px;
+  line-height: 32px;
+  color: #9ca6b3;
+}
+.dg-btn {
+  border-radius: 11px;
+  background: #22262d;
+  color: #ffffff;
+  font-size: 29px;
+  line-height: 66px;
+  text-align: center;
+  white-space: nowrap;
+}
+.dg-btn.is-focused {
+  background: #d21525;
+  box-shadow: 0 0 0 3px #ffffff inset;
+}
+.dg-report-btn { background: #313741; }
+.dg-summary {
+  font-size: 24px;
+  line-height: 31px;
+  padding-top: 4px;
+  color: #b8c0cb;
+  overflow: hidden;
+}
+.dg-summary.ok { color: #39d353; }
+.dg-summary.warn { color: #f2a33c; }
+.dg-summary.bad { color: #e5484d; }
+
+.dg-head {
+  white-space: nowrap;
+  font-size: 21px;
+  line-height: 40px;
+  color: #858d94;
+  border-bottom: 1px solid rgba(255,255,255,.24);
+}
+.dg-head span,
+.dg-row span {
+  display: inline-block;
+  vertical-align: top;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dg-host { width: 470px; }
+.dg-local { width: 330px; }
+.dg-state { width: 190px; }
+.dg-ip { width: 390px; }
+
+.dg-list { overflow: hidden; }
+.dg-report {
+  height: 450px;
+  padding: 16px 22px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  font-family: monospace;
+  font-size: 22px;
+  line-height: 31px;
+  color: #e6edf5;
+  background: rgba(255,255,255,.045);
+  border-left: 3px solid #d21525;
+}
+.dg-row {
+  height: 52px;
+  line-height: 52px;
+  font-size: 23px;
+  color: #d8dee6;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.dg-row .dg-host { color: #ffffff; }
+.dg-row .dg-ip { color: #9ca6b3; font-size: 21px; }
+.dg-row.dns { margin-top: 18px; border-top: 1px solid rgba(255,255,255,.24); }
+.dg-row.ok .dg-state { color: #39d353; }
+.dg-row.warn .dg-state { color: #f2a33c; }
+.dg-row.bad .dg-state { color: #e5484d; }
+
+.dg-foot {
+  font-size: 21px;
+  line-height: 29px;
+  color: #858d94;
+}
+
+/* Viewport line: lets a photo of this panel tell whether a 720p / 2K / 4K TV
+   received a scaled canvas or a cropped one. */
+.dg-env {
+  font-size: 20px;
+  line-height: 32px;
+  color: #6f7780;
+  white-space: nowrap;
+  overflow: hidden;
+}

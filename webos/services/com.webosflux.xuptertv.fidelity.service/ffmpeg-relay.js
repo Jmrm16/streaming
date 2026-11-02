@@ -8,6 +8,7 @@ var fs = require('fs');
 var crypto = require('crypto');
 var urlmod = require('url');
 var spawn = require('child_process').spawn;
+var dnsx = require('./dnsx');
 
 /* Services run in a restricted namespace where /media/developer may not be
  * visible even though it is visible through SSH. Keep the executable next to
@@ -74,16 +75,11 @@ function buildArgs(s, start, audio) {
   var h = splitHeaders(s.headers);
   var args = [
     '-hide_banner', '-loglevel', 'warning', '-nostdin',
-    '-probesize', '2M', '-analyzeduration', '2M'
+    '-probesize', '1M', '-analyzeduration', '1M'
   ];
   if (/^https?:\/\//i.test(s.url)) {   // estas opciones solo existen para entradas HTTP(S)
-    /*
-     * No retry loop here.  On some webOS 4 sets a rejected upstream HTTPS
-     * connection made ffmpeg reconnect continuously, which can exhaust the
-     * TV/router connection table.  A user can simply retry playback; that is
-     * safer than an invisible, unbounded reconnect loop.
-     */
     args.push('-rw_timeout', '15000000');
+    if (/^https:/i.test(s.url)) { args.push('-tls_verify', '0'); }
     if (h.ua) args.push('-user_agent', h.ua);
     if (h.rest) args.push('-headers', h.rest);
   }
@@ -91,11 +87,13 @@ function buildArgs(s, start, audio) {
   args.push(
     '-i', s.url,
     '-map', '0:v:0', '-map', '0:a:' + audio + '?',
-    '-c', 'copy'
+    '-c', 'copy',
+    // El portal entrega AAC dentro de TS como ADTS. MP4/fMP4 exige el Audio
+    // Specific Config, que este filtro extrae sin recodificar el audio.
+    '-bsf:a', 'aac_adtstoasc'
   );
   if (s.hevc) args.push('-tag:v', 'hvc1');   // hvc1 es la etiqueta que el reproductor nativo acepta bien
   args.push(
-    '-bsf:a', 'aac_adtstoasc',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
     '-f', 'mp4', 'pipe:1'
   );
@@ -105,39 +103,61 @@ function buildArgs(s, start, audio) {
 /*
  * The bundled static ffmpeg occasionally cannot use webOS's local DNS stub
  * (127.0.0.1), while the platform resolver can. Resolve HTTP CDN names with
- * the platform utility and preserve the original Host header for the CDN.
+ * DoH (dnsx) or the platform utility and preserve the original Host header for the CDN.
  */
 function resolveForFfmpeg(s, done) {
   var parsed = urlmod.parse(s.url || '');
-  if (parsed.protocol !== 'http:' || !parsed.hostname || /^\d+\.\d+\.\d+\.\d+$/.test(parsed.hostname)) {
+  if (!/^https?:$/i.test(parsed.protocol || '') || !parsed.hostname || /^\d+\.\d+\.\d+\.\d+$/.test(parsed.hostname)) {
     return done(s);
   }
 
-  var lookup;
-  try { lookup = spawn('/usr/bin/getent', ['ahostsv4', parsed.hostname]); } catch (eSpawn) { return done(s); }
-  var out = '';
-  lookup.stdout.on('data', function (chunk) { out += String(chunk); });
-  lookup.on('error', function () { done(s); });
-  lookup.on('close', function () {
-    var match = /\b(\d{1,3}(?:\.\d{1,3}){3})\b/.exec(out);
-    if (!match) {
-      log('DNS nativo no devolvio IPv4; se usa hostname');
-      return done(s);
+  dnsx.resolve(parsed.hostname, function (err, res) {
+    var ip = (res && res.ips && res.ips[0]) || '';
+    if (!err && ip) {
+      var headers = {};
+      Object.keys(s.headers || {}).forEach(function (key) {
+        if (key.toLowerCase() !== 'host') headers[key] = s.headers[key];
+      });
+      headers.Host = parsed.host;
+      parsed.hostname = ip;
+      parsed.host = ip + (parsed.port ? ':' + parsed.port : '');
+      parsed.href = null;
+      log('CDN resuelto por DoH (' + (res && res.source) + ') para ffmpeg: ' + parsed.hostname + ' -> ' + ip);
+      return done({
+        url: urlmod.format(parsed),
+        headers: headers,
+        audio: s.audio,
+        hevc: s.hevc
+      });
     }
-    var headers = {};
-    Object.keys(s.headers || {}).forEach(function (key) {
-      if (key.toLowerCase() !== 'host') headers[key] = s.headers[key];
-    });
-    headers.Host = parsed.host;
-    parsed.hostname = match[1];
-    parsed.host = match[1] + (parsed.port ? ':' + parsed.port : '');
-    parsed.href = null;
-    log('CDN resuelto por webOS para ffmpeg');
-    done({
-      url: urlmod.format(parsed),
-      headers: headers,
-      audio: s.audio,
-      hevc: s.hevc
+
+    log('DoH no devolvio IP para ' + parsed.hostname + ' (' + (err && err.message) + '), probando DNS nativo...');
+    var lookup;
+    try { lookup = spawn('/usr/bin/getent', ['ahostsv4', parsed.hostname]); } catch (eSpawn) { return done(s); }
+    var out = '';
+    lookup.stdout.on('data', function (chunk) { out += String(chunk); });
+    lookup.on('error', function () { done(s); });
+    lookup.on('close', function () {
+      var match = /\b(\d{1,3}(?:\.\d{1,3}){3})\b/.exec(out);
+      if (!match) {
+        log('DNS nativo no devolvio IPv4; se usa hostname');
+        return done(s);
+      }
+      var headers2 = {};
+      Object.keys(s.headers || {}).forEach(function (key) {
+        if (key.toLowerCase() !== 'host') headers2[key] = s.headers[key];
+      });
+      headers2.Host = parsed.host;
+      parsed.hostname = match[1];
+      parsed.host = match[1] + (parsed.port ? ':' + parsed.port : '');
+      parsed.href = null;
+      log('CDN resuelto por webOS para ffmpeg');
+      done({
+        url: urlmod.format(parsed),
+        headers: headers2,
+        audio: s.audio,
+        hevc: s.hevc
+      });
     });
   });
 }

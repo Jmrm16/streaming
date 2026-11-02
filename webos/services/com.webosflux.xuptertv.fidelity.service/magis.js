@@ -21,19 +21,31 @@ var crypto = require('crypto');
 var https = require('https');
 var http = require('http');
 var url = require('url');
+var dnsx = require('./dnsx');
 
 /* --------------------------------------------------------------- constants */
 var KEY_HEX = 'e7af1ed7de1ffddd7bd3fe37ebdffde9ef3fe1ae39edfeb8';
-var HOSTS = ['osuhk.m3x8o50te.com', 'oogoy.f30c96w8.com'];
+var HOSTS = [
+  'ftmrmy.jdfey0cd.com',
+  'fuxok.nguvmqhpk.com',
+  'eajmnp.hcgv1dt8.com',
+  'mptec.dhkrxuzcy.com',
+  'hinumz.a878kkoyc.com',
+  'krdwvd.swcaw7qx.com',
+  'osuhk.m3x8o50te.com',
+  'oogoy.f30c96w8.com'
+];
 var PORTAL_CODE = 'masnew';
 var APP_ID = 'com.android.msandroid';
 var APK_VERSION = '49902';
-var SPKG_VER = '2025-08-07 05:40:11_36_16_';
+var SPKG_VER = '2024-09-10 06:25:30_33_13_';
 var APK_VER_HEADER = '43404';
 var USER_AGENT = 'okhttp/3.12.12';
 var CONTENT_TYPE = 'application/json;charset=utf-8';
 var SNTOKEN_SALT = 'ntFT65w6itH!lHCPw7D=@qnsFC5adD28';
 var FIXED_MAC = '02:00:00:00:00:00';
+var FIXED_RESERVE1 = '583442714b345572434a4d5769637461545a735936413d3d';
+var FIXED_DRM_ID = '0iSGEyv2EqiS/nqI/I3hqdu12irw5Q3/uqrWvRFx9bM=';
 var UA_CDN = 'Ranger/4.9.4-17294ac0';
 
 var RATE_MS = 450;          // portal pacing (observed safe value)
@@ -63,7 +75,7 @@ var ROOT_CATEGORY = {
 var DEVICE_FIXED = {
   loginType: '2', appLanguage: 'en', hardwareInfo: 'ranchu',
   model: 'sdk_gphone64_arm64', product: 'sdk_gphone64_arm64', cpu: 'arm64-v8a',
-  B29: '', reserve1: '', deviceToken: '', drmId: '', sdkVer: 36
+  B29: '', reserve1: FIXED_RESERVE1, deviceToken: '', drmId: FIXED_DRM_ID, sdkVer: 33
 };
 
 var FINGERPRINT_FIXED = {
@@ -176,6 +188,13 @@ function deviceDict() {
 }
 
 function post(path, body, done) {
+  var origDone = done;
+  var settled = false;
+  done = function (err, result) {
+    if (settled) { return; }
+    settled = true;
+    origDone(err, result);
+  };
   var payload;
   try {
     payload = encryptBody(JSON.stringify(body));
@@ -185,8 +204,21 @@ function post(path, body, done) {
   var host = HOSTS[0];
   var attempt = 0;
 
-  function tryHost() {
-    var req = https.request({
+  function nextHost(err) {
+    attempt++;
+    if (attempt < HOSTS.length) {
+      host = HOSTS[attempt];
+      setup();
+      return;
+    }
+    done(err);
+  }
+
+  function setup() {
+    /* The portal hostname is resolved over DoH so an ISP that poisons its DNS
+       cannot stop the catalogue.  TLS SNI and the HTTP Host header keep the
+       original name. */
+    var baseOptions = {
       hostname: host,
       servername: host,
       rejectUnauthorized: false,
@@ -200,60 +232,58 @@ function post(path, body, done) {
         'Content-Type': CONTENT_TYPE,
         'Content-Length': Buffer.byteLength(payload)
       }
-    }, function (res) {
-      var chunks = [];
-      res.on('data', function (c) { chunks.push(c); });
-      res.on('end', function () {
-        var raw = Buffer.concat(chunks).toString('utf8');
-        var answer;
-        try {
-          answer = JSON.parse(raw);
-        } catch (e) {
-          return done(new Error(path + ': respuesta no JSON (' + res.statusCode + ')'));
-        }
-        var code = answer.returnCode === undefined || answer.returnCode === null ? '' : String(answer.returnCode);
-        if (code !== '' && code !== '0') {
-          var err = new Error(path + ' -> ' + code + ' ' + text(answer.errorMessage));
-          err.portalCode = code;
-          return done(err);
-        }
-        if (typeof answer.data === 'string' && answer.data !== '') {
-          var plain;
-          try {
-            plain = decryptBlob(answer.data);
-          } catch (e2) {
-            return done(new Error(path + ': no se pudo descifrar la respuesta (' + e2.message + ')'));
-          }
-          try {
-            return done(null, JSON.parse(plain));
-          } catch (e3) {
-            return done(new Error(path + ': respuesta descifrada no JSON'));
-          }
-        }
-        done(null, answer.data !== undefined && answer.data !== null ? answer.data : answer);
-      });
-    });
+    };
 
-    req.setTimeout(REQUEST_TIMEOUT, function () {
-      req.abort();
+    dnsx.prepare(baseOptions, function (prepErr, options) {
+      if (prepErr) { return nextHost(prepErr); }
+
+      var req = https.request(options, function (res) {
+        var chunks = [];
+        res.on('data', function (c) { chunks.push(c); });
+        res.on('end', function () {
+          var raw = Buffer.concat(chunks).toString('utf8');
+          var answer;
+          try {
+            answer = JSON.parse(raw);
+          } catch (e) {
+            return done(new Error(path + ': respuesta no JSON (' + res.statusCode + ')'));
+          }
+          var code = answer.returnCode === undefined || answer.returnCode === null ? '' : String(answer.returnCode);
+          if (code !== '' && code !== '0') {
+            var err = new Error(path + ' -> ' + code + ' ' + text(answer.errorMessage));
+            err.portalCode = code;
+            return done(err);
+          }
+          if (typeof answer.data === 'string' && answer.data !== '') {
+            var plain;
+            try {
+              plain = decryptBlob(answer.data);
+            } catch (e2) {
+              return done(new Error(path + ': no se pudo descifrar la respuesta (' + e2.message + ')'));
+            }
+            try {
+              return done(null, JSON.parse(plain));
+            } catch (e3) {
+              return done(new Error(path + ': respuesta descifrada no JSON'));
+            }
+          }
+          done(null, answer.data !== undefined && answer.data !== null ? answer.data : answer);
+        });
+      });
+
+      req.setTimeout(REQUEST_TIMEOUT, function () {
+        req.abort();
+      });
+      req.on('timeout', function () {
+        req.abort();
+      });
+      req.on('error', function (e) { nextHost(e); });
+      req.write(payload);
+      req.end();
     });
-    req.on('timeout', function () {
-      req.abort();
-    });
-    req.on('error', function (e) {
-      attempt++;
-      if (attempt < HOSTS.length) {
-        host = HOSTS[attempt];
-        tryHost();
-        return;
-      }
-      done(e);
-    });
-    req.write(payload);
-    req.end();
   }
 
-  tryHost();
+  setup();
 }
 
 function call(path, bean, opts, done) {
@@ -267,12 +297,12 @@ function call(path, bean, opts, done) {
       body.userId = session.userId;
       body.userToken = session.userToken;
     }
-    for (k in bean) {
-      if (Object.prototype.hasOwnProperty.call(bean, k)) { body[k] = bean[k]; }
-    }
     var dev = deviceDict();
     for (k in dev) {
       if (Object.prototype.hasOwnProperty.call(dev, k)) { body[k] = dev[k]; }
+    }
+    for (k in bean) {
+      if (Object.prototype.hasOwnProperty.call(bean, k)) { body[k] = bean[k]; }
     }
     post(path, body, function (err, data) {
       release();
@@ -320,28 +350,36 @@ function ensureSession(done) {
       }, 500);
     }
     // Reintento final: si hay conexión exterior a github, probar seeds remotas
-    var req = https.get('https://raw.githubusercontent.com/xuper-plugin/kino-plugin-xuper/seeds/seeds.json', { timeout: 10000 }, function (res) {
-      if (res.statusCode !== 200) { return done(origErr); }
-      var chunks = [];
-      res.on('data', function (c) { chunks.push(c); });
-      res.on('end', function () {
-        try {
-          var seeds = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          var list = Array.isArray(seeds) ? seeds : (seeds && seeds.seeds) || [];
-          if (!list.length) { return done(origErr); }
-          var seed = list[Math.floor(Math.random() * Math.min(list.length, 50))];
-          session.userId = trim(seed.userId);
-          session.userToken = trim(seed.userToken);
-          session.sn = trim(seed.sn).toLowerCase();
-          session.ready = true;
-          done(null, session);
-        } catch (pe) {
-          done(origErr);
-        }
+    var seedUrl = 'https://raw.githubusercontent.com/xuper-plugin/kino-plugin-xuper/seeds/seeds.json';
+    var seedOptions = url.parse(seedUrl);
+    seedOptions.method = 'GET';
+    seedOptions.headers = { 'User-Agent': 'XuperTV/webOS' };
+    dnsx.prepare(seedOptions, function (seedPrepErr, seedOpts) {
+      if (seedPrepErr) { return done(origErr); }
+      var req = https.request(seedOpts, function (res) {
+        if (res.statusCode !== 200) { res.resume(); return done(origErr); }
+        var chunks = [];
+        res.on('data', function (c) { chunks.push(c); });
+        res.on('end', function () {
+          try {
+            var seeds = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            var list = Array.isArray(seeds) ? seeds : (seeds && seeds.seeds) || [];
+            if (!list.length) { return done(origErr); }
+            var seed = list[Math.floor(Math.random() * Math.min(list.length, 50))];
+            session.userId = trim(seed.userId);
+            session.userToken = trim(seed.userToken);
+            session.sn = trim(seed.sn).toLowerCase();
+            session.ready = true;
+            done(null, session);
+          } catch (pe) {
+            done(origErr);
+          }
+        });
       });
+      req.on('error', function () { done(origErr); });
+      req.setTimeout(10000, function () { req.abort(); done(origErr); });
+      req.end();
     });
-    req.on('error', function () { done(origErr); });
-    req.on('timeout', function () { req.abort(); done(origErr); });
   }
 
   call('v3/snToken', fp, { baseFields: false }, function (err, mint) {
@@ -562,7 +600,7 @@ function slbBean() {
   return {
     hasPay: '0', userIdentity: '1', type: 'merge', appVer: APK_VERSION, lang: 'es',
     encMediaSupported: 1, liveCodeList: ['masnew_live'], appParams: '',
-    reserve1: FIXED_MAC, pipFlag: '0'
+    reserve1: FIXED_RESERVE1, pipFlag: '0'
   };
 }
 
@@ -576,7 +614,8 @@ function isCfl(url) {
 
 function withScheme(addr) {
   var clean = trim(addr).replace(/\/+$/, '');
-  return /^https?:\/\//.test(clean) ? clean : 'https://' + clean;
+  clean = clean.replace(/^http:\/\//i, 'https://');
+  return /^https:\/\//.test(clean) ? clean : 'https://' + clean;
 }
 
 function vodCdns(slb) {
@@ -599,12 +638,34 @@ function vodCdns(slb) {
       }
     }
   }
+  // Secondary fallback: if no CacheFly CDN found, accept any free VOD CDN
+  if (!out.length) {
+    for (var j = 0; j < list.length; j++) {
+      var cdn2 = list[j];
+      if (!cdn2 || trim(cdn2.tag) !== 'vod') { continue; }
+      var urls2 = cdn2.url_list || [];
+      for (var u2 = 0; u2 < urls2.length; u2++) {
+        var entry2 = urls2[u2];
+        var url2 = trim(entry2 && entry2.url);
+        if (url2 && (trim(entry2 && entry2.tag) === 'free' || url2.indexOf('tag=free') !== -1)) {
+          var bases2 = [withScheme(cdn2.main_addr)];
+          var spare2 = trim(cdn2.spared_addr);
+          if (spare2 && bases2.indexOf(withScheme(spare2)) === -1) { bases2.push(withScheme(spare2)); }
+          out.push({ bases: bases2, auth: url2 });
+          break;
+        }
+      }
+    }
+  }
   return out;
 }
 
 function getSlb(done) {
   if (slbCache && Date.now() < slbCache.at + SLB_TTL) { return done(null, slbCache.slb); }
-  call('v14/getSlbInfo', slbBean(), function (err, slb) {
+  firstCall([
+    { path: 'v15/getSlbInfo', bean: slbBean() },
+    { path: 'v14/getSlbInfo', bean: slbBean() }
+  ], function (err, slb) {
     if (err) { return done(err); }
     if (!vodCdns(slb).length) { return done(new Error('el portal no expuso CDN de vod libre')); }
     slbCache = { at: Date.now(), slb: slb };
@@ -970,7 +1031,7 @@ function getLiveChannels(columnId, pageNum, pageSize, done) {
         if (!poster && c.posterList && c.posterList.length) {
           poster = text(c.posterList[0].fileUrl);
         }
-        out.push({
+        var chItem = {
           channelCode: c.channelCode,
           index: c.channelNumber || out.length + 1,
           name: text(c.name || c.alias || ('Canal ' + (out.length + 1))),
@@ -981,13 +1042,16 @@ function getLiveChannels(columnId, pageNum, pageSize, done) {
           next: '',
           time: '',
           liveAddressList: c.liveAddressList || []
-        });
+        };
+        out.push(chItem);
+        liveChannelCache[c.channelCode] = { at: Date.now(), channel: chItem };
       }
       done(null, out, list.length >= pageSize);
     });
   });
 }
 
+var liveChannelCache = {};
 var liveCategoriesCache = null;
 function getLiveCategories(done) {
   if (liveCategoriesCache && liveCategoriesCache.length) {
@@ -1052,26 +1116,31 @@ function fetchM3u(urlStr, done) {
   var mod = isHttps ? https : http;
   var opts = url.parse(urlStr);
   opts.rejectUnauthorized = false;
+  opts.method = 'GET';
   opts.headers = {
     'User-Agent': 'Mozilla/5.0 (SmartHub; SMART-TV; U; Linux/SmartTV) AppleWebKit/538.1+ (KHTML, like Gecko) Safari/538.1+'
   };
-  var req = mod.get(opts, function (res) {
-    if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-      return fetchM3u(res.headers.location, done);
-    }
-    if (res.statusCode !== 200) {
-      return done(new Error('HTTP ' + res.statusCode + ' al descargar addon'));
-    }
-    var chunks = [];
-    res.on('data', function (c) { chunks.push(c); });
-    res.on('end', function () {
-      var raw = Buffer.concat(chunks).toString('utf8');
-      var chs = parseM3u(raw);
-      done(null, chs);
+  dnsx.prepare(opts, function (prepErr, prepped) {
+    if (prepErr) { return done(prepErr); }
+    var req = mod.get(prepped, function (res) {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return fetchM3u(url.resolve(urlStr, res.headers.location), done);
+      }
+      if (res.statusCode !== 200) {
+        return done(new Error('HTTP ' + res.statusCode + ' al descargar addon'));
+      }
+      var chunks = [];
+      res.on('data', function (c) { chunks.push(c); });
+      res.on('end', function () {
+        var raw = Buffer.concat(chunks).toString('utf8');
+        var chs = parseM3u(raw);
+        done(null, chs);
+      });
     });
+    req.on('error', function (err) { done(err); });
+    req.setTimeout(20000, function () { req.abort(); done(new Error('Tiempo de espera agotado al descargar addon')); });
   });
-  req.on('error', function (err) { done(err); });
-  req.setTimeout(20000, function () { req.abort(); done(new Error('Tiempo de espera agotado al descargar addon')); });
 }
 
 /* Live authorizations are short-lived but valid long enough to make channel
@@ -1079,6 +1148,68 @@ function fetchM3u(urlStr, done) {
    trips every time the viewer returns to a channel. */
 var liveResolveCache = {};
 var LIVE_RESOLVE_CACHE_MS = 120000;
+
+/* Tries each attempt in order and stops at the first one that returns data.
+   Portal builds differ per account: some require the live column id and the
+   v15 SLB endpoint, older ones only answer columnId 0 / v14.  Calling the
+   wrong form returns error 1, so live TV must never depend on a single guess. */
+function firstCall(attempts, done) {
+  var i = 0;
+  function next(lastErr) {
+    if (i >= attempts.length) {
+      return done(lastErr || new Error('el portal no respondió'));
+    }
+    var attempt = attempts[i++];
+    call(attempt.path, attempt.bean, function (err, data) {
+      if (err) { return next(err); }
+      done(null, data);
+    });
+  }
+  next(null);
+}
+
+function liveCdnsOf(slb) {
+  var cdns = (slb && slb.cdn_list) || [];
+  var list = [];
+  var seen = {};
+  function addEntry(host, auth) {
+    var bh = bareHost(host);
+    if (bh && !seen[bh]) {
+      seen[bh] = true;
+      list.push({ cflHost: bh, authBase: auth });
+    }
+  }
+  // 1st pass: prioritize cfl / CacheFly CDNs
+  for (var c = 0; c < cdns.length; c++) {
+    var cdn = cdns[c];
+    if (!cdn || cdn.tag !== 'live') continue;
+    var urls = cdn.url_list || [];
+    for (var u = 0; u < urls.length; u++) {
+      var entry = urls[u];
+      var urlStr = (entry && entry.url) || '';
+      if (entry.sign_type === 'cfl' || urlStr.indexOf('sign_type=cfl') !== -1) {
+        addEntry(cdn.main_addr, urlStr);
+        if (cdn.spared_addr) addEntry(cdn.spared_addr, urlStr);
+      }
+    }
+  }
+  // 2nd pass: fallback to any live CDN if cfl wasn't present or list is short
+  for (var c2 = 0; c2 < cdns.length; c2++) {
+    var cdn2 = cdns[c2];
+    if (!cdn2 || cdn2.tag !== 'live') continue;
+    var urls2 = cdn2.url_list || [];
+    for (var u2 = 0; u2 < urls2.length; u2++) {
+      var entry2 = urls2[u2];
+      var urlStr2 = (entry2 && entry2.url) || '';
+      if (urlStr2 && urlStr2.indexOf('token=') !== -1) {
+        addEntry(cdn2.main_addr, urlStr2);
+        if (cdn2.spared_addr) addEntry(cdn2.spared_addr, urlStr2);
+      }
+    }
+  }
+  return list;
+}
+
 function resolveLive(channelCode, done) {
   var cached = liveResolveCache[channelCode];
   if (cached && (Date.now() - cached.at) < LIVE_RESOLVE_CACHE_MS) {
@@ -1086,54 +1217,67 @@ function resolveLive(channelCode, done) {
   }
   ensureSession(function (err) {
     if (err) { return done(err); }
-    call('v4/startPlayLive', { channelCode: channelCode, columnId: 0, type: '1' }, function (err2, play) {
-      if (err2) { return done(err2); }
-      var addrList = (play && play.liveAddressList) || [];
-      var addr = null;
-      for (var a = 0; a < addrList.length; a++) {
-        if (addrList[a] && addrList[a].playCode && addrList[a].license) {
-          addr = addrList[a];
-          break;
+
+    function getStreamAddr(cb) {
+      firstCall([
+        { path: 'v4/startPlayLive', bean: { channelCode: channelCode, type: '1' } },
+        { path: 'v4/startPlayLive', bean: { channelCode: channelCode, columnId: '76182', type: '1' } },
+        { path: 'v4/startPlayLive', bean: { channelCode: channelCode, columnId: 0, type: '1' } }
+      ], function (err2, play) {
+        if (err2) { return cb(err2); }
+        var addrList = (play && play.liveAddressList) || [];
+        var addr = null;
+        for (var a = 0; a < addrList.length; a++) {
+          if (addrList[a] && addrList[a].playCode && addrList[a].license) {
+            addr = addrList[a];
+            break;
+          }
         }
-      }
-      if (!addr && addrList[0]) { addr = addrList[0]; }
-      if (!addr || !addr.license) {
-        return done(new Error('el portal no devolvió licencia para el canal'));
-      }
+        if (!addr && addrList[0]) { addr = addrList[0]; }
+        if (!addr || !addr.license) {
+          return cb(new Error('el portal no devolvió licencia para el canal'));
+        }
+        cb(null, addr);
+      });
+    }
+
+    getStreamAddr(function (err2, addr) {
+      if (err2) { return done(err2); }
       var playCode = addr.playCode || channelCode;
       var license = addr.license;
 
       var bean = slbBean();
-      bean.liveCodeList = [channelCode];
-      call('v14/getSlbInfo', bean, function (err3, slb) {
-        if (err3) { return done(err3); }
-        var cdns = slb.cdn_list || [];
-        var liveCdns = [];
-        for (var c = 0; c < cdns.length; c++) {
-          var cdn = cdns[c];
-          if (cdn.tag !== 'live') continue;
-          var urls = cdn.url_list || [];
-          for (var u = 0; u < urls.length; u++) {
-            var entry = urls[u];
-            var urlStr = entry.url || '';
-            if (entry.sign_type === 'cfl' || urlStr.indexOf('sign_type=cfl') !== -1) {
-              var bh = bareHost(cdn.main_addr);
-              if (bh) liveCdns.push({ cflHost: bh, authBase: urlStr });
-            }
-          }
-        }
-        if (!liveCdns.length) {
+      bean.liveCodeList = ['masnew_live'];
+      var slbPaths = ['v15/getSlbInfo', 'v14/getSlbInfo'];
+      var slbIndex = 0;
+
+      function trySlb(lastSlbErr) {
+        if (slbIndex >= slbPaths.length) {
           return done(new Error('el portal no expuso CDN de vivo'));
         }
+        call(slbPaths[slbIndex++], bean, function (err3, slb) {
+          if (err3) { return trySlb(err3); }
+          var liveCdns = liveCdnsOf(slb);
+          if (!liveCdns.length) { return trySlb(new Error('CDN de vivo vacía')); }
+          useCdns(liveCdns);
+        });
+      }
+
+      function useCdns(liveCdns) {
         var chosen = liveCdns[0];
         var liveUrl = 'http://' + chosen.cflHost + '/live/' + playCode + '.m3u8';
         var tokenMatch = chosen.authBase.match(/token=([0-9a-fA-F]{32})/);
         var token = tokenMatch ? tokenMatch[1] : '';
-        var moment = Math.trunc(Date.now());
+        var moment = Math.floor(Date.now());
         var sign2 = signO3(token, moment);
         var authHeader = chosen.authBase + '&sign2_method=sign_o3&instance=0&start_moment=' + moment + '&sign2=' + sign2;
+        var backupUrls = [];
+        for (var b = 1; b < liveCdns.length; b++) {
+          backupUrls.push('http://' + liveCdns[b].cflHost + '/live/' + playCode + '.m3u8');
+        }
         var stream = {
           url: liveUrl,
+          backupUrls: backupUrls,
           mime: 'application/x-mpegurl',
           headers: {
             'Content-Auth': authHeader,
@@ -1143,11 +1287,13 @@ function resolveLive(channelCode, done) {
             'App-Version': '49902',
             'X-Buffer': '0'
           },
-          name: text(play.name)
+          name: text((addr && addr.name) || (liveChannelCache[channelCode] && liveChannelCache[channelCode].channel && liveChannelCache[channelCode].channel.name) || channelCode)
         };
         liveResolveCache[channelCode] = { at: Date.now(), stream: stream };
         done(null, stream);
-      });
+      }
+
+      trySlb(null);
     });
   });
 }
@@ -1172,6 +1318,7 @@ module.exports = {
     APK_VERSION: APK_VERSION,
     UA_CDN: UA_CDN,
     FIXED_MAC: FIXED_MAC,
-    ROOT_CODES: ROOT_CODES
+    ROOT_CODES: ROOT_CODES,
+    HOSTS: HOSTS
   }
 };

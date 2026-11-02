@@ -41,7 +41,11 @@ $AppId      = 'com.webosflux.xuptertv.fidelity'
 $SvcId      = 'com.webosflux.xuptertv.fidelity.service'
 $AppDir     = "/media/developer/apps/usr/palm/applications/$AppId"
 $SvcDir     = "/media/developer/apps/usr/palm/services/$SvcId"
-$ConfigFile = Join-Path $PSScriptRoot 'instalar-config.json'
+# Persistir por usuario, no junto al ZIP: así una actualización del instalador
+# conserva la TV y la clave cifrada sin incluir datos privados al compartirlo.
+$LegacyConfigFile = Join-Path $PSScriptRoot 'instalar-config.json'
+$ConfigDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'XuperTV' } else { $PSScriptRoot }
+$ConfigFile = Join-Path $ConfigDir 'installer.json'
 $script:LastExit = 0
 $script:Fail = 0
 $script:KeyPath = ''
@@ -257,20 +261,51 @@ function Select-TvFromScan($locals) {
     return $found[$idx - 1]
 }
 
+$script:SshOptionCache = @{}
+
 function Test-SshOption([string]$opt) {
     # OpenSSH antiguo no conoce algunas opciones: se comprueban antes de usarlas.
     # Ojo: si la entrada esta redirigida, ssh escribe un aviso por stderr y con
     # ErrorActionPreference=Stop eso se convertiria en error. Aqui no interesa.
+    if ($script:SshOptionCache.ContainsKey($opt)) {
+        return [bool]$script:SshOptionCache[$opt]
+    }
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $null = & ssh -G -o $opt localhost 2>$null
-        return ($LASTEXITCODE -eq 0)
+        $null = & ssh -G -o $opt 127.0.0.1 2>$null
+        $ok = ($LASTEXITCODE -eq 0)
     } catch {
-        return $false
+        $ok = $false
     } finally {
         $ErrorActionPreference = $prev
     }
+    $script:SshOptionCache[$opt] = $ok
+    return $ok
+}
+
+function Get-PubkeyAlgName {
+    # OpenSSH 8.5 cambio PubkeyAcceptedKeyTypes por PubkeyAcceptedAlgorithms.
+    # Windows 10 20H2 (8.1) solo entiende el nombre viejo: si se usa el nuevo
+    # ssh termina con "Bad configuration option".
+    foreach ($name in @('PubkeyAcceptedAlgorithms', 'PubkeyAcceptedKeyTypes')) {
+        if (Test-SshOption ($name + '=ssh-rsa')) { return $name }
+    }
+    try {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $ver = (& ssh -V 2>&1 | Out-String)
+        $ErrorActionPreference = $prev
+        if ($ver -match 'OpenSSH[_\s]+(?:for[_\s]+Windows[_\s]+)?([0-9]+)\.([0-9]+)') {
+            $major = [int]$matches[1]
+            $minor = [int]$matches[2]
+            if ($major -gt 8 -or ($major -eq 8 -and $minor -ge 5)) {
+                return 'PubkeyAcceptedAlgorithms'
+            }
+            return 'PubkeyAcceptedKeyTypes'
+        }
+    } catch { }
+    return 'PubkeyAcceptedKeyTypes'
 }
 
 function Get-SshOpts {
@@ -285,12 +320,20 @@ function Get-SshOpts {
     )
     foreach ($pair in @(
         @('HostKeyAlgorithms', 'ssh-rsa'),
-        @('PubkeyAcceptedAlgorithms', 'ssh-rsa'),
         @('KexAlgorithms', 'diffie-hellman-group14-sha1'),
         @('MACs', 'hmac-sha1')
     )) {
         $opt = $pair[0] + '=+' + $pair[1]
         if (Test-SshOption $opt) { $o += @('-o', $opt) }
+    }
+    $pubkeyName = Get-PubkeyAlgName
+    if ($pubkeyName) {
+        $optPlus = $pubkeyName + '=+ssh-rsa'
+        if (Test-SshOption $optPlus) {
+            $o += @('-o', $optPlus)
+        } else {
+            $o += @('-o', ($pubkeyName + '=ssh-rsa'))
+        }
     }
     return $o
 }
@@ -384,6 +427,43 @@ function Read-TvPassword {
         return $sb.ToString()
     }
     return (Read-Host '   Clave de la TV')
+}
+
+function Get-SavedTvPassphrase($config) {
+    # ConvertFrom-SecureString sin -Key usa DPAPI. El valor solo se puede abrir
+    # desde este usuario de Windows y este ordenador; nunca se guarda texto plano.
+    if (-not $config -or -not $config.credential) { return '' }
+    try {
+        $secure = ConvertTo-SecureString -String ([string]$config.credential)
+        return (New-Object System.Net.NetworkCredential('', $secure)).Password
+    } catch {
+        return ''
+    }
+}
+
+function Save-InstallerConfig([string]$passphrase) {
+    try {
+        if (-not (Test-Path -LiteralPath $ConfigDir)) {
+            New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
+        }
+        $save = [ordered]@{ host = $TvHost; user = $TvUser; port = $Port }
+        if (-not $script:RootMode -and -not [string]::IsNullOrWhiteSpace($passphrase)) {
+            $secure = ConvertTo-SecureString -String $passphrase -AsPlainText -Force
+            $save.credential = ConvertFrom-SecureString -SecureString $secure
+        }
+        ([pscustomobject]$save | ConvertTo-Json) | Set-Content -LiteralPath $ConfigFile -Encoding UTF8 -ErrorAction Stop
+    } catch { }
+}
+
+function Clear-SavedTvPassphrase {
+    try {
+        if (-not $cfg) { return }
+        $save = [ordered]@{ host = $TvHost; user = $TvUser; port = $Port }
+        if (-not (Test-Path -LiteralPath $ConfigDir)) {
+            New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
+        }
+        ([pscustomobject]$save | ConvertTo-Json) | Set-Content -LiteralPath $ConfigFile -Encoding UTF8 -ErrorAction Stop
+    } catch { }
 }
 
 function Get-UserCandidates {
@@ -525,7 +605,12 @@ function Get-KeyAlgOpts {
     # OpenSSH 9.5 ofrece primero rsa-sha2-512/256; el sshd 6.1 de webOS solo
     # conoce ssh-rsa, y con varias ofertas agota MaxAuthTries. Se fija ssh-rsa
     # como UNICO algoritmo de firma para esta conexion.
-    if ($script:KeyIsRsa) { return @('-o', 'PubkeyAcceptedAlgorithms=ssh-rsa') }
+    # El nombre de la opcion depende de la version: Windows 10 20H2 (8.1) usa
+    # PubkeyAcceptedKeyTypes y rechaza PubkeyAcceptedAlgorithms.
+    if ($script:KeyIsRsa) {
+        $name = Get-PubkeyAlgName
+        if ($name) { return @('-o', ($name + '=ssh-rsa')) }
+    }
     return @()
 }
 
@@ -661,7 +746,16 @@ function Get-IpkVersion($path) {
     } catch {
         return ''
     } finally {
-        Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+        # The archive extractor can remove/never create its staging folder on
+        # some Windows builds. Cleanup is optional and must never abort an
+        # otherwise valid TV installation.
+        if ($tmpDir -and (Test-Path -LiteralPath $tmpDir -PathType Container)) {
+            try {
+                Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction Stop
+            } catch {
+                # Temp cleanup failure is harmless; Windows clears it later.
+            }
+        }
     }
 }
 
@@ -707,8 +801,9 @@ Ok ($ipkItem.Name + '  (' + ('{0:N1}' -f ($ipkItem.Length / 1MB)) + ' MB)')
 
 # ---------------------------------------------------------- 3. la TV
 $cfg = $null
-if (Test-Path -LiteralPath $ConfigFile) {
-    try { $cfg = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json } catch { $cfg = $null }
+$configToRead = if (Test-Path -LiteralPath $ConfigFile) { $ConfigFile } elseif (Test-Path -LiteralPath $LegacyConfigFile) { $LegacyConfigFile } else { '' }
+if ($configToRead) {
+    try { $cfg = Get-Content -LiteralPath $configToRead -Raw | ConvertFrom-Json } catch { $cfg = $null }
 }
 
 Step '3/6' 'Datos del televisor'
@@ -884,11 +979,14 @@ if ($script:RootMode) {
     Info 'Si nunca la cambiaste, normalmente es: alpine'
 } else {
     Info 'Escribe la clave que muestra la app "Developer Mode" en la TV.'
+    Info 'Después de verificarla se recordará cifrada solo en este PC.'
 }
 Info 'No se ve nada mientras escribes: es normal.'
 Write-Host ''
 
 $tvPass = ''
+$savedTvPass = if ($script:RootMode) { '' } else { Get-SavedTvPassphrase $cfg }
+$usingSavedPass = $false
 $intentosPass = 0
 while (-not $tvPass) {
     $intentosPass = $intentosPass + 1
@@ -905,7 +1003,15 @@ while (-not $tvPass) {
         Pause-End
         exit 1
     }
-    $tvPass = Read-TvPassword
+    $usingSavedPass = $false
+    if ($savedTvPass) {
+        $tvPass = $savedTvPass
+        $savedTvPass = ''
+        $usingSavedPass = $true
+        Info 'Usando la clave cifrada guardada en este PC...'
+    } else {
+        $tvPass = Read-TvPassword
+    }
     if ($tvPass) { $tvPass = $tvPass.Trim() }
     if ([string]::IsNullOrEmpty($tvPass)) {
         Fail 'La clave no puede estar vacia.'
@@ -981,6 +1087,10 @@ while (-not $tvPass) {
 
     if (-not $authOk) {
         Fail 'La TV ha rechazado esa clave.'
+        if ($usingSavedPass) {
+            Warn 'La clave guardada ya no sirve. Se eliminó y se pedirá una nueva.'
+            Clear-SavedTvPassphrase
+        }
         if ($script:RootMode) {
             Info 'Comprueba SSH Server en Homebrew Channel y la contraseña root.'
         } else {
@@ -1038,6 +1148,7 @@ APP="@@APPDIR@@"
 SVC="@@SVCDIR@@"
 EXPECT="@@VERSION@@"
 JSON="@@JSON@@"
+APPID="@@APPID@@"
 # En Developer Mode el usuario prisoner puede ejecutar la instalacion, pero
 # algunas TVs montan /tmp como solo lectura para ese usuario. El JSON vive en
 # /media/developer/temp, que es la carpeta que acabamos de escribir por SFTP;
@@ -1045,6 +1156,8 @@ JSON="@@JSON@@"
 LOG="${JSON}.log"
 
 echo ""
+echo "   >> Cerrando instancia previa si esta abierta..."
+luna-send-pub -n 1 -f luna://com.webos.applicationManager/closeByAppId "{\"id\":\"$APPID\"}" >/dev/null 2>&1
 echo "   >> La TV esta instalando el paquete..."
 luna-send-pub -i -f luna://com.webos.appInstallService/dev/install "$(cat $JSON)" > "$LOG" 2>&1 &
 PID=$!
@@ -1064,8 +1177,7 @@ kill $PID 2>/dev/null
 if [ "$V" != "$EXPECT" ]; then
   if grep -q '"downgrade"[[:space:]]*:[[:space:]]*true' "$LOG" 2>/dev/null; then
     echo "   >> La TV rechazo el paquete como una version anterior."
-    echo "   >> Esto ocurre cuando webOS compara 1.5.12 como menor que 1.5.9."
-    echo "   >> Usa un paquete con version mayor (por ejemplo 1.6.0) o desinstala la version previa."
+    echo "   >> Comprueba la version instalada o elimina la version previa."
   fi
   echo "   >> La TV no confirmo la instalacion (encontrada: ${V:-ninguna})"
   echo "   ---- respuesta del televisor ----"
@@ -1087,12 +1199,13 @@ case "$PERMS" in
     ;;
 esac
 
+ls-control scan-services >/dev/null 2>&1
 echo "   >> Abriendo XuperTV en el televisor..."
 luna-send-pub -n 1 -f luna://com.webos.applicationManager/launch "$(cat @@LAUNCH@@)" > /dev/null 2>&1
 exit 0
 '@
 
-$remoteScript = $remoteScript.Replace('@@APPDIR@@', $AppDir).Replace('@@SVCDIR@@', $SvcDir).Replace('@@VERSION@@', $expected).Replace('@@JSON@@', $installJsonPath).Replace('@@LAUNCH@@', $launchJsonPath)
+$remoteScript = $remoteScript.Replace('@@APPDIR@@', $AppDir).Replace('@@SVCDIR@@', $SvcDir).Replace('@@VERSION@@', $expected).Replace('@@JSON@@', $installJsonPath).Replace('@@APPID@@', $AppId).Replace('@@LAUNCH@@', $launchJsonPath)
 $remoteScript = $remoteScript -replace "`r`n", "`n"
 
 $tmp = Join-Path $env:TEMP ('xuper-inst-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -1135,10 +1248,7 @@ if ($installExit -eq 0) {
     Info ''
     Info 'Para ACTUALIZAR: vuelve a ejecutar este mismo instalador.'
     Info 'Para DESINSTALAR: manten pulsado el boton sobre el icono de la app en la TV.'
-    try {
-        $save = [pscustomobject]@{ host = $TvHost; user = $TvUser; port = $Port }
-        ($save | ConvertTo-Json) | Set-Content -LiteralPath $ConfigFile -Encoding UTF8 -ErrorAction SilentlyContinue
-    } catch { }
+    Save-InstallerConfig $tvPass
 } else {
     Write-Host ''
     Fail 'La instalacion no termino bien.'

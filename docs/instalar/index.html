@@ -440,7 +440,7 @@
 <span class="g">      OK   Cliente SSH disponible</span>
 
 <span class="d">  [2/6] Buscando el paquete de la aplicacion (.ipk)</span>
-<span class="g">      OK   com.webosflux.xuptertv.fidelity_1.5.9_all.ipk  (21,4 MB)</span>
+<span class="g">      OK   com.webosflux.xuptertv.fidelity_1.6.12_all.ipk  (21,4 MB)</span>
 
 <span class="d">  [3/6] Datos del televisor</span>
 <span class="d">           La IP y la clave las muestra la app "Developer Mode" en la pantalla de la TV.</span>
@@ -463,11 +463,11 @@
 
 <span class="d">  [6/6] Instalando en el televisor</span>
 <span class="d">           No cierres esta ventana. Puede tardar entre 30 segundos y 2 minutos.</span>
-<span class="d">           Version que se va a instalar: 1.5.9</span>
+<span class="d">           Version que se va a instalar: 1.6.12</span>
 
 <span class="d">   &gt;&gt; La TV esta instalando el paquete...</span>
 <span class="d">   .....</span>
-<span class="d">   &gt;&gt; Instalada la version 1.5.9</span>
+<span class="d">   &gt;&gt; Instalada la version 1.6.12</span>
 <span class="d">   &gt;&gt; ffmpeg en la TV: -rwxr-xr-x</span>
 <span class="d">   &gt;&gt; Abriendo XuperTV en el televisor...</span>
 
@@ -580,6 +580,20 @@
           <td>El Modo Desarrollador se apaga al reiniciar en algunos modelos. Abre la app
             <b>Developer Mode</b> y actívalo otra vez; la IP puede haber cambiado.</td>
         </tr>
+        <tr>
+          <td>Bad configuration option: pubkeyacceptedalgorithms</td>
+          <td>Tu Windows trae una versión antigua del cliente SSH (pasa en Windows 10 20H2) y estabas
+            usando un instalador viejo. <b>La versión nueva ya se adapta sola</b>: extrae el ZIP completo
+            en una carpeta limpia, sin mezclar archivos de versiones anteriores, y vuelve a ejecutar
+            <code>INSTALAR-XUPERTV.bat</code>.</td>
+        </tr>
+        <tr>
+          <td>La imagen se sale de la pantalla (bordes cortados)</td>
+          <td>Primero revisa el ajuste de la TV: <b>Ajustes → Imagen → Relación de aspecto → Solo escaneo
+            (Just Scan)</b>. Si sigue igual, abre la app y entra en <b>Ajustes → Diagnóstico</b>: la última
+            línea muestra el tamaño de pantalla que la TV le dio a la app. Haz una foto de esa pantalla y
+            pásala: con ese dato se corrige la escala para tu modelo.</td>
+        </tr>
       </table>
 
       <div class="tip">
@@ -649,6 +663,18 @@
       </details>
 
       <details>
+        <summary>La app abre pero el vídeo no arranca (“código 4”)</summary>
+        <p>En algunos países (Chile, por ejemplo) la operadora bloquea el servicio por <b>DNS</b>:
+        el televisor recibe una dirección falsa y el vídeo no carga aunque internet funcione.</p>
+        <p>Entra en la app en <b>Ajustes → Diagnóstico</b>. La prueba se hace sola y muestra cada
+        dominio con su estado. Si aparece <b>DNS alterado</b>, es justo eso: la app ya conecta por el
+        DNS seguro y el vídeo debería abrir igualmente. Si aparece <b>Sin conexión</b> o
+        <b>DNS seguro bloqueado</b>, el problema es la red del televisor, no la app.</p>
+        <p>Este diagnóstico llegó con la versión <b>1.6.12</b>. Si en tu TV no aparece ese menú,
+        instala la versión actual.</p>
+      </details>
+
+      <details>
         <summary>¿Funciona en otros televisores?</summary>
         <p>En cualquier LG con <b>webOS 4 o superior</b> (2018 en adelante). En modelos más antiguos
         (webOS 3) el motor del navegador es demasiado viejo y no funciona bien.</p>
@@ -699,7 +725,7 @@
   <footer>
     <p><b>XuperTV para LG webOS</b> — guía de instalación para usuarios.
     Proyecto no oficial, sin relación con XuperTV ni con LG. No incluye contenido audiovisual.</p>
-    <p>Versión de la app: 1.5.9 · Si esta guía no coincide con lo que ves, pide la versión actualizada
+    <p>Versión de la app: 1.6.12 · Si esta guía no coincide con lo que ves, pide la versión actualizada
     a quien te pasó el archivo.</p>
   </footer>
 </div>

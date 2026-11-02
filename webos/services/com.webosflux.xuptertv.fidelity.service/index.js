@@ -13,8 +13,23 @@ var pkg = require('./package.json');
 var magis = require('./magis');
 var proxy = require('./proxy');
 var relay = require('./ffmpeg-relay');
+var dnsx = require('./dnsx');
+var netdiag = require('./netdiag');
+var urlmod = require('url');
+
+try {
+  var httpsMod = require('https');
+  var httpMod = require('http');
+  if (httpsMod.globalAgent) { httpsMod.globalAgent.maxSockets = 32; }
+  if (httpMod.globalAgent) { httpMod.globalAgent.maxSockets = 32; }
+} catch (eAgent) { /* ignore */ }
 
 var service = new Service(pkg.name);
+
+/* Prevent unexpected network errors or aborts from terminating the service */
+process.on('uncaughtException', function (err) {
+  console.error('[xuper-service] uncaughtException:', (err && err.stack) || err);
+});
 
 /* Intercept process.exit so idle timers in webos-service do not kill the proxy */
 try {
@@ -130,31 +145,40 @@ function resolveStream(message, forceRelay) {
     if (useSmoothMode && !relay.available()) {
       return fail(message, new Error('Modo Fluido no disponible: ffmpeg no es ejecutable en esta TV'));
     }
+
+    /* Keep the proven Fluent path single-hop: FFmpeg consumes the resolved
+       portal stream itself and emits fragmented MP4 on :8787.  Sending the
+       same stream through proxy -> FFmpeg adds a second local HTTP consumer;
+       on webOS it can leave both waiting for the other side and the player
+       remains permanently at "Conectando…".  The proxy is still started for
+       subtitle URLs only. */
     if (useSmoothMode) {
       var relayUrl = relay.register(stream, { hevc: isHevc, audio: Number(payload.audioTrack) || 0 });
-      console.log('[xuper-service] routing stream via ffmpeg relay: ' + relayUrl);
+      console.log('[xuper-service] routing stream via direct ffmpeg relay: ' + relayUrl);
       stream.proxyPath = relayUrl;
       stream.mime = 'video/mp4';
       stream.isRelay = true;
       stream.isHls = false;
-      proxy.start(function () { /* the relay needs no media proxy; subtitles do */
+      proxy.start(function (perr) {
+        if (perr) { return fail(message, perr); }
         respond(message, null, attachSubtitles(stream));
       });
       return;
     }
 
-    proxy.start(function (perr, port) {
-      if (perr) { return fail(message, perr); }
-      var token = proxy.add(stream.url, stream.headers, stream.duration);
-      var extension = stream.mime === 'video/mp4' ? 'mp4' : 'ts';
-      /* The on-device HLS indexer is intentionally disabled: indexing long
-         VOD files in the webOS 4 service can retain enough memory to make the
-         system restart other foreground apps.  Direct ranged playback keeps
-         the service's memory bounded. */
-      stream.proxyPath = proxy.baseUrl() + '/media/' + token + '/stream.' + extension;
-      stream.isHls = false;
-      attachSubtitles(stream);
-      respond(message, null, stream);
+    var streamHost = (urlmod.parse(stream.url || '').hostname) || '';
+    dnsx.resolve(streamHost, function (dnsErr, dnsRes) {
+      var resolvedIp = (dnsRes && dnsRes.ips && dnsRes.ips[0]) || '';
+
+      proxy.start(function (perr, port) {
+        if (perr) { return fail(message, perr); }
+        var token = proxy.add(stream.url, stream.headers, stream.duration, resolvedIp);
+        var extension = stream.mime === 'video/mp4' ? 'mp4' : 'ts';
+        stream.proxyPath = proxy.baseUrl() + '/media/' + token + '/stream.' + extension;
+        stream.isHls = false;
+        attachSubtitles(stream);
+        respond(message, null, stream);
+      });
     });
   });
 }
@@ -213,12 +237,16 @@ service.register('resolveLive', function (message) {
   if (!payload.channelCode) { return fail(message, new Error('channelCode requerido')); }
   magis.resolveLive(payload.channelCode, function (err, stream) {
     if (err) { return fail(message, err); }
-    proxy.start(function (perr) {
-      if (perr) { return fail(message, perr); }
-      var token = proxy.add(stream.url, stream.headers, 0);
-      stream.proxyPath = proxy.baseUrl() + '/media/' + token + '/stream.m3u8';
-      stream.isHls = true;
-      respond(message, null, stream);
+    var streamHost = (urlmod.parse(stream.url || '').hostname) || '';
+    dnsx.resolve(streamHost, function (dnsErr, dnsRes) {
+      var resolvedIp = (dnsRes && dnsRes.ips && dnsRes.ips[0]) || '';
+      proxy.start(function (perr) {
+        if (perr) { return fail(message, perr); }
+        var token = proxy.add(stream.url, stream.headers, 0, resolvedIp, stream.backupUrls);
+        stream.proxyPath = proxy.baseUrl() + '/media/' + token + '/stream.m3u8';
+        stream.isHls = true;
+        respond(message, null, stream);
+      });
     });
   });
 });
@@ -237,6 +265,96 @@ service.register('prewarm', function (message) {
   magis.ensureSession(function (err) {
     if (err) { return fail(message, err); }
     message.respond({ returnValue: true, sn: magis.session.sn, userId: magis.session.userId });
+  });
+});
+
+/* netdiag(): read-only report used by "Diagnóstico de red".
+ * It resolves the portal/CDN hostnames with the TV resolver and with DoH,
+ * then tests TCP/TLS, so a blocked DNS can be told apart from a dead server. */
+service.register('netdiag', function (message) {
+  var payload = message.payload || {};
+  var hosts = [];
+  var constants = magis.constants || {};
+  if (constants.HOSTS && constants.HOSTS.length) {
+    hosts = constants.HOSTS.slice(0);
+  }
+  /* CDN hosts seen recently are the ones that actually serve the video.  Stale
+     entries would make an old, already-changed CDN look like a network fault. */
+  var cached = dnsx.summary();
+  for (var i = 0; i < cached.length; i++) {
+    if (cached[i] && cached[i].host && cached[i].ageMs < 120000 && hosts.indexOf(cached[i].host) === -1) {
+      hosts.push(cached[i].host);
+    }
+  }
+  if (payload.hosts && payload.hosts.length) {
+    hosts = payload.hosts.concat(hosts);
+  }
+  /* The page reports its real viewport so a cropped UI can be diagnosed from
+     a photo of this screen (720p / 2K / 4K sets differ). */
+  var screen = null;
+  if (Number(payload.screenW) > 0 && Number(payload.screenH) > 0) {
+    screen = {
+      w: Number(payload.screenW),
+      h: Number(payload.screenH),
+      scale: Number(payload.screenScale) || 0,
+      panelW: Number(payload.panelW) || 0,
+      panelH: Number(payload.panelH) || 0
+    };
+  }
+  var reportData = null;
+  var layersData = null;
+  var settled = false;
+
+  function finish() {
+    if (settled || !reportData || !layersData) { return; }
+    settled = true;
+    reportData.version = pkg.version;
+    reportData.layers = layersData;
+    /* Codec info forwarded from the browser page */
+    reportData.codec = {
+      h264: payload.codecH264 || '',
+      hevc: payload.codecHEVC || '',
+      hls:  payload.codecHLS  || ''
+    };
+    respond(message, null, reportData);
+  }
+
+  /* 1. Run DNS and host reachability check */
+  netdiag.run({ hosts: hosts, screen: screen }, function (err, report) {
+    reportData = (err || !report) ? { verdict: 'incompleto', hosts: [], providers: [] } : report;
+    finish();
+  });
+
+  /* 2. Run session and layer check in parallel with 9s deadline */
+  var layerTimer = setTimeout(function () {
+    if (!layersData) {
+      var s = magis.session || {};
+      layersData = {
+        portal:  { ok: false, error: 'tiempo agotado' },
+        session: { userId: s.userId ? '✓' : '?', token: s.userToken ? '✓' : '?', ready: !!s.ready, error: 'tiempo agotado' }
+      };
+      finish();
+    }
+  }, 9000);
+
+  magis.ensureSession(function (sessErr) {
+    var sess = magis.session || {};
+    var portalHost = (magis.constants && magis.constants.HOSTS && magis.constants.HOSTS[0]) || '';
+    var portalUrl  = portalHost ? ('https://' + portalHost + '/api/portalCore/v8/active') : '';
+    var layerOpts = {
+      portalUrl:   portalUrl,
+      session:     { userId: sess.userId || '', userToken: sess.userToken || '', ready: !!sess.ready, error: sessErr ? (sessErr.message || 'error') : '' },
+      liveUrl:     payload.liveUrl  || '',
+      liveHeaders: payload.liveHeaders || {},
+      vodUrl:      payload.vodUrl   || '',
+      vodHeaders:  payload.vodHeaders  || {}
+    };
+
+    netdiag.runLayers(layerOpts, function (lerr, layers) {
+      clearTimeout(layerTimer);
+      layersData = layers || {};
+      finish();
+    });
   });
 });
 
