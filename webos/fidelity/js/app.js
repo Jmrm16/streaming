@@ -2627,7 +2627,7 @@ function portalServiceCall(method, params, done, customTimeout) {
   }
 
   function checkForUpdates(silent, onResult) {
-    var currentVer = '2.2.44';
+    var currentVer = '2.2.45';
     portalServiceCall('checkUpdate', { currentVersion: currentVer }, function (err, res) {
       if (err) {
         if (onResult) { onResult(err, null); }
@@ -4293,7 +4293,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     var updateBox = el('div', 'sp-about-update-box');
     updateBox.appendChild(el('div', 'sp-about-update-title', 'Actualizaciones de XuperTV'));
     updateBox.appendChild(el('div', 'sp-about-update-desc',
-      'Versión instalada: v2.2.44. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.'));
+      'Versión instalada: v2.2.45. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.'));
     var row = el('div', 'sp-about-update-row');
     var btnCheckUpdate = el('button', 'sp-about-update-btn focusable', 'Buscar actualizaciones');
     var msgUpdate = el('span', 'sp-about-update-msg');
@@ -4309,7 +4309,7 @@ function portalServiceCall(method, params, done, customTimeout) {
           msgUpdate.textContent = '¡Nueva versión disponible: v' + res.latestVersion + '!';
           msgUpdate.style.color = '#22c55e';
         } else {
-          msgUpdate.textContent = 'Tienes la versión más reciente (v2.2.44).';
+          msgUpdate.textContent = 'Tienes la versión más reciente (v2.2.45).';
           msgUpdate.style.color = '#38bdf8';
         }
       });
