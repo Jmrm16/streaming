@@ -18,6 +18,7 @@ var spawn = require('child_process').spawn;
 var dnsx = require('./dnsx');
 
 var UPDATE_MANIFEST_URLS = [
+  'https://cdn.jsdelivr.net/gh/cristianco7/XUPER-HYDRA-PORT-WEBOS@main/version.json',
   'https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/feature/catalog-webos-compat/version.json',
   'https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/main/version.json'
 ];
