@@ -1,8 +1,9 @@
 {
-  "version": "2.2.45",
+  "version": "2.2.46",
   "name": "XuperTV",
   "minWebos": "1.0.0",
-  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.45/com.webosflux.xuptertv.fidelity_2.2.45_all.ipk",
-  "changelog": "Sistema de actualización directa desde la TV (OTA) y optimizaciones de catálogo.",
+  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.46/com.webosflux.xuptertv.fidelity_2.2.46_all.ipk",
+  "sha256": "CF05BF8B8117710027E0A9212CB08E49DB459A07A19A7851013A478CEF37B4E0",
+  "changelog": "Restaurado el diseño de Mi Cuenta: accesos directos a Mi lista, Compartir APP y Agregar Addons M3U con navegación mejorada.",
   "releaseDate": "2026-11-04"
 }

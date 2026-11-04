@@ -1,6 +1,6 @@
 {
   "id": "com.webosflux.xuptertv.fidelity",
-  "version": "2.2.45",
+  "version": "2.2.46",
   "vendor": "webosflux",
   "type": "web",
   "main": "index.html",
