@@ -1,9 +1,8 @@
 {
-  "version": "2.2.44",
+  "version": "2.2.45",
   "name": "XuperTV",
   "minWebos": "1.0.0",
-  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.44/com.webosflux.xuptertv.fidelity_2.2.44_all.ipk",
-  "changelog": "Sistema de actualización directa (OTA) desde la TV, corrección de previsualización en películas y soporte de carátulas para webOS 1/2/3.",
+  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.45/com.webosflux.xuptertv.fidelity_2.2.45_all.ipk",
+  "changelog": "Sistema de actualización directa desde la TV (OTA) y optimizaciones de catálogo.",
   "releaseDate": "2026-11-04"
 }
-
