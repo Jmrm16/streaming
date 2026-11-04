@@ -880,19 +880,21 @@ function portalServiceCall(method, params, done, customTimeout) {
   ];
 
   var SETTINGS_ITEMS = [
-    { id: 'profile', label: 'Mi cuenta' },
-    { id: 'history', label: 'Mi lista' },
-    { id: 'share', label: 'Compartir APP' },
-    { id: 'parent', label: 'Bloqueo' },
-    { id: 'playback', label: 'Configuración global' },
-    { id: 'netdiag', label: 'Diagnóstico' },
-    { id: 'feedback', label: 'Ayuda y Feedback' },
-    { id: 'about', label: 'Sobre nosotros' }
+    { id: 'profile', label: 'Mi cuenta', desc: 'Tu perfil en este televisor', group: 'Tu cuenta' },
+    { id: 'history', label: 'Mi lista', desc: 'Historial y favoritos', group: 'Tu cuenta' },
+    { id: 'addons', label: 'Agregar Addons', desc: 'Anime, Cine, Novelas y TDT', group: 'Contenido' },
+    { id: 'share', label: 'Compartir APP', desc: 'Instálala en otra TV', group: 'Aplicación' },
+    { id: 'playback', label: 'Configuración global', desc: 'Subtítulos y preferencias', group: 'Aplicación' },
+    { id: 'parent', label: 'Control parental', desc: 'Bloqueo de contenido adulto', group: 'Aplicación' },
+    { id: 'netdiag', label: 'Diagnóstico', desc: 'Pruebas de red y streaming', group: 'Sistema' },
+    { id: 'feedback', label: 'Ayuda y Feedback', desc: 'Comunidad y soporte', group: 'Sistema' },
+    { id: 'about', label: 'Sobre nosotros', desc: 'Versión y actualizaciones', group: 'Sistema' }
   ];
 
   var SETTINGS_MENU_ICONS = {
     profile: '<svg viewBox="0 0 32 32"><circle cx="16" cy="10" r="5"/><path d="M6 27c.7-6 4.3-9 10-9s9.3 3 10 9"/></svg>',
     history: '<svg viewBox="0 0 32 32"><rect x="4" y="4" width="9" height="9"/><rect x="19" y="4" width="9" height="9"/><rect x="4" y="19" width="9" height="9"/><rect x="19" y="19" width="9" height="9"/></svg>',
+    addons: '<svg viewBox="0 0 32 32"><rect x="5" y="5" width="9" height="9" rx="1.5"/><rect x="18" y="5" width="9" height="9" rx="1.5"/><rect x="5" y="18" width="9" height="9" rx="1.5"/><path d="M22.5 18v9M18 22.5h9"/></svg>',
     share: '<svg viewBox="0 0 32 32"><circle cx="8" cy="16" r="3"/><circle cx="24" cy="7" r="3"/><circle cx="24" cy="25" r="3"/><path d="M10.6 14.5l10.8-6M10.6 17.5l10.8 6"/></svg>',
     parent: '<svg viewBox="0 0 32 32"><rect x="7" y="14" width="18" height="14" rx="2"/><path d="M11 14V10a5 5 0 0 1 10 0v4"/><path d="M16 19v4"/></svg>',
     playback: '<svg viewBox="0 0 32 32"><rect x="4" y="6" width="24" height="20" rx="3"/><path d="M13 11l8 5-8 5z"/></svg>',
@@ -2627,7 +2629,7 @@ function portalServiceCall(method, params, done, customTimeout) {
   }
 
   function checkForUpdates(silent, onResult) {
-    var currentVer = '2.2.45';
+    var currentVer = '2.2.46';
     portalServiceCall('checkUpdate', { currentVersion: currentVer }, function (err, res) {
       if (err) {
         if (onResult) { onResult(err, null); }
@@ -3913,10 +3915,26 @@ function portalServiceCall(method, params, done, customTimeout) {
     clear(settingsMenu); clear(settingsRight);
 
     settingsItems = [];
+    var lastGroup = null;
     for (var i = 0; i < SETTINGS_ITEMS.length; i++) {
+      var itemDef = SETTINGS_ITEMS[i];
+      if (itemDef.group && itemDef.group !== lastGroup) {
+        lastGroup = itemDef.group;
+        var grpEl = el('div', 'settings-group', lastGroup);
+        settingsMenu.appendChild(grpEl);
+      }
       var item = el('div', 'settings-item focusable');
-      item.innerHTML = '<span class="settings-icon">' + (SETTINGS_MENU_ICONS[SETTINGS_ITEMS[i].id] || '') + '</span>' +
-        '<span class="settings-label">' + SETTINGS_ITEMS[i].label + '</span>';
+      var iconBox = el('div', 'settings-icon');
+      iconBox.innerHTML = SETTINGS_MENU_ICONS[itemDef.id] || '';
+      item.appendChild(iconBox);
+
+      var textBox = el('div', 'settings-text');
+      textBox.appendChild(el('div', 'settings-label', itemDef.label));
+      if (itemDef.desc) {
+        textBox.appendChild(el('div', 'settings-desc', itemDef.desc));
+      }
+      item.appendChild(textBox);
+
       item._index = i;
       item._activate = (function (idx) {
         return function () { showSettingsPanel(idx, true); };
@@ -3936,6 +3954,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     settingsPanels = {};
     settingsPanels.profile = buildProfilePanel();
     settingsPanels.history = buildHistoryPanel();
+    settingsPanels.addons = buildAddonsPanel();
     settingsPanels.share = buildSharePanel();
     settingsPanels.playback = buildPlaybackPanel();
     settingsPanels.netdiag = buildNetdiagPanel();
@@ -3956,6 +3975,12 @@ function portalServiceCall(method, params, done, customTimeout) {
   }
 
   function showSettingsPanel(index, focus) {
+    if (typeof index === 'string') {
+      for (var s = 0; s < SETTINGS_ITEMS.length; s++) {
+        if (SETTINGS_ITEMS[s].id === index) { index = s; break; }
+      }
+    }
+    index = Number(index) || 0;
     var activeId = (SETTINGS_ITEMS[index] && SETTINGS_ITEMS[index].id) || 'profile';
     var settingsScreen = $('screen-settings');
     if (settingsScreen) { settingsScreen.classList.toggle('is-history-view', activeId === 'history'); }
@@ -3967,6 +3992,10 @@ function portalServiceCall(method, params, done, customTimeout) {
       var refreshedHistory = buildHistoryPanel();
       settingsRight.replaceChild(refreshedHistory, settingsPanels.history);
       settingsPanels.history = refreshedHistory;
+    } else if (activeId === 'addons' && settingsPanels.addons && settingsRight) {
+      var refreshedAddons = buildAddonsPanel();
+      settingsRight.replaceChild(refreshedAddons, settingsPanels.addons);
+      settingsPanels.addons = refreshedAddons;
     } else if (activeId === 'netdiag' && settingsPanels.netdiag && settingsPanels.netdiag._ensureDiag) {
       settingsPanels.netdiag._ensureDiag();
     }
@@ -4104,16 +4133,45 @@ function portalServiceCall(method, params, done, customTimeout) {
     p.appendChild(avatar);
     p.appendChild(el('div', 'account-number', localProfile.id));
     p.appendChild(el('div', 'account-type', 'Perfil local de este televisor'));
+
     var summary = el('div', 'account-card');
     summary.appendChild(el('div', 'account-card-title', 'Tu cuenta está lista'));
     summary.appendChild(el('div', 'account-card-text', 'Las preferencias, el historial y el capítulo que estabas viendo se guardan automáticamente en este TV.'));
     p.appendChild(summary);
-    var goHistory = el('div', 'account-history-btn focusable', 'Ver mi lista');
-    goHistory._activate = function () { showSettingsPanel(1, true); };
-    p.appendChild(goHistory);
+
+    var actionsRow = el('div', 'account-actions-row');
+
+    var btnList = el('div', 'account-action-btn focusable', '📋 Ver mi lista');
+    btnList._activate = function () { showSettingsPanel('history', true); };
+    btnList._onMove = function (dir) {
+      if (dir === 'left') { setFocus(settingsItems[0]); return true; }
+      if (dir === 'right') { setFocus(btnAddons); return true; }
+      return false;
+    };
+
+    var btnAddons = el('div', 'account-action-btn focusable', '➕ Agregar Addons');
+    btnAddons._activate = function () { openAddonsDialog(); };
+    btnAddons._onMove = function (dir) {
+      if (dir === 'left') { setFocus(btnList); return true; }
+      if (dir === 'right') { setFocus(btnShare); return true; }
+      return false;
+    };
+
+    var btnShare = el('div', 'account-action-btn focusable', '📲 Compartir APP');
+    btnShare._activate = function () { showSettingsPanel('share', true); };
+    btnShare._onMove = function (dir) {
+      if (dir === 'left') { setFocus(btnAddons); return true; }
+      return false;
+    };
+
+    actionsRow.appendChild(btnList);
+    actionsRow.appendChild(btnAddons);
+    actionsRow.appendChild(btnShare);
+    p.appendChild(actionsRow);
+
     var privacy = el('div', 'account-card account-card-small');
     privacy.appendChild(el('div', 'account-card-title', 'Sin registro ni contraseña'));
-    privacy.appendChild(el('div', 'account-card-text', 'Este perfil no envía tus datos a ningún servidor.'));
+    privacy.appendChild(el('div', 'account-card-text', 'Este perfil no envía tus datos a ningún servidor externo. El historial, tus favoritos y los addons instalados se guardan de forma segura en la memoria de este TV.'));
     p.appendChild(privacy);
     return p;
   }
@@ -4130,7 +4188,7 @@ function portalServiceCall(method, params, done, customTimeout) {
         var tabEl = el('div', 'history-tab focusable' + (historyViewTab === tab.id ? ' is-selected' : ''), tab.label);
         tabEl._activate = function () {
           historyViewTab = tab.id;
-          showSettingsPanel(1, true);
+          showSettingsPanel('history', true);
         };
         tabs.appendChild(tabEl);
       })(tabDefs[t]);
@@ -4175,10 +4233,76 @@ function portalServiceCall(method, params, done, customTimeout) {
     return p;
   }
 
+  function buildAddonsPanel() {
+    var p = el('div', 'settings-panel');
+    p.appendChild(el('div', 'sp-title', 'Addons y Listas M3U'));
+    p.appendChild(abs(el('div', 'sp-hr soft'), 0, 165, 1498, 1));
+    p.appendChild(el('div', 'sp-global-note', 'Extiende tu catálogo con miles de canales en vivo: Anime 24/7, Telenovelas, Cine continuo, Pluto TV y señales de TV abierta de Latinoamérica y España.'));
+
+    var card = el('div', 'account-card');
+    card.style.top = '245px';
+    card.style.height = '160px';
+    card.appendChild(el('div', 'account-card-title', 'Canales en Vivo e IPTV Personalizado'));
+    card.appendChild(el('div', 'account-card-text', 'Instala listas temáticas con un solo clic o añade tus propios enlaces M3U / M3U8 para disfrutar de televisión en vivo sin límites.'));
+    p.appendChild(card);
+
+    var btn = el('button', 'account-action-btn focusable', '➕ Abrir Administrador de Addons');
+    btn.style.position = 'absolute';
+    btn.style.left = '0';
+    btn.style.top = '435px';
+    btn.style.height = '68px';
+    btn.style.lineHeight = '68px';
+    btn.style.padding = '0 36px';
+    btn.style.fontSize = '25px';
+    btn._activate = function () {
+      openAddonsDialog();
+    };
+    btn._onMove = function (dir) {
+      if (dir === 'left') {
+        var idx = 2;
+        for (var i = 0; i < SETTINGS_ITEMS.length; i++) { if (SETTINGS_ITEMS[i].id === 'addons') { idx = i; break; } }
+        if (settingsItems[idx]) { setFocus(settingsItems[idx]); return true; }
+      }
+      return false;
+    };
+    p.appendChild(btn);
+
+    var note = el('div', 'sp-global-note', '💡 Consejo: También puedes administrar tus listas directamente desde la sección En Vivo pulsando en la categoría "➕ Addons M3U".');
+    note.style.top = '535px';
+    p.appendChild(note);
+
+    return p;
+  }
+
   function buildSharePanel() {
-    var p = panelBase('Compartir APP');
-    p.appendChild(el('div', 'sp-hr'));
-    p.appendChild(el('div', 'share-copy', 'Instala XuperTV en otro televisor desde tu propia IPK. El historial de este perfil permanece privado en este TV.'));
+    var p = el('div', 'settings-panel share-panel');
+    p.appendChild(el('div', 'share-head', 'Compartir XuperTV'));
+    p.appendChild(el('div', 'share-sub', 'Instala XuperTV en cualquier otro televisor LG webOS de tu hogar o de tus amigos directamente desde el instalador IPK.'));
+
+    var freeBox = el('div', 'share-free');
+    freeBox.appendChild(el('div', 'share-free-badge', '100% GRATIS'));
+    freeBox.appendChild(el('div', 'share-free-text', 'Esta aplicación es y siempre será gratuita y sin fines de lucro. No compres suscripciones ni pagues a intermediarios.'));
+    p.appendChild(freeBox);
+
+    var warnBox = el('div', 'share-warning');
+    warnBox.appendChild(el('div', 'share-warning-title', 'Protege a tu comunidad contra revendedores'));
+    warnBox.appendChild(el('div', 'share-warning-text', 'Si alguien intentó cobrarte por esta app, repórtalo en nuestra comunidad. El código y las descargas son abiertas.'));
+    p.appendChild(warnBox);
+
+    var qrBox = el('div', 'share-qr-box');
+    var qrImg = el('img', 'share-qr');
+    qrImg.src = 'assets/original/settings/qr_telegram.png';
+    qrImg.alt = 'Telegram QR';
+    qrBox.appendChild(qrImg);
+
+    var qrText = el('div', 'share-qr-text');
+    qrText.appendChild(el('div', 'share-qr-title', 'Canal oficial de novedades y soporte'));
+    qrText.appendChild(el('div', 'share-qr-line', 'Únete a nuestro canal para descargar las versiones más recientes, reportar incidencias y conocer nuevas funciones.'));
+    qrText.appendChild(el('div', 'share-qr-handle', '@CristiancoDEV'));
+    qrText.appendChild(el('div', 'share-qr-url', 'https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS'));
+    qrBox.appendChild(qrText);
+    p.appendChild(qrBox);
+
     return p;
   }
 
@@ -4293,7 +4417,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     var updateBox = el('div', 'sp-about-update-box');
     updateBox.appendChild(el('div', 'sp-about-update-title', 'Actualizaciones de XuperTV'));
     updateBox.appendChild(el('div', 'sp-about-update-desc',
-      'Versión instalada: v2.2.45. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.'));
+      'Versión instalada: v2.2.46. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.'));
     var row = el('div', 'sp-about-update-row');
     var btnCheckUpdate = el('button', 'sp-about-update-btn focusable', 'Buscar actualizaciones');
     var msgUpdate = el('span', 'sp-about-update-msg');
@@ -4309,7 +4433,7 @@ function portalServiceCall(method, params, done, customTimeout) {
           msgUpdate.textContent = '¡Nueva versión disponible: v' + res.latestVersion + '!';
           msgUpdate.style.color = '#22c55e';
         } else {
-          msgUpdate.textContent = 'Tienes la versión más reciente (v2.2.45).';
+          msgUpdate.textContent = 'Tienes la versión más reciente (v2.2.46).';
           msgUpdate.style.color = '#38bdf8';
         }
       });
