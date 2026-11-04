@@ -2,14 +2,12 @@
 
 # XuperTV para LG webOS
 
-**Port nativo de XuperTV 4.34.4 a televisores LG webOS 4** — HTML/CSS/JS sobre
-Chromium 53, catálogo real del portal, TV en vivo con categorías y reproducción
-con relay FFmpeg integrado.
+**Port nativo de XuperTV 4.34.4 a televisores LG webOS 1–6** — HTML/CSS/JS sobre Chromium, catálogo real del portal, TV en vivo con categorías, reproducción con relay FFmpeg y evasión de bloqueos DNS del operador.
 
-![webOS 4](https://img.shields.io/badge/webOS-4.x-a50034?style=flat-square&logo=lg&logoColor=white)
+![webOS](https://img.shields.io/badge/webOS-1–6-a50034?style=flat-square&logo=lg&logoColor=white)
 ![Chromium 53](https://img.shields.io/badge/Chromium-53-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
 ![1920x1080](https://img.shields.io/badge/render-1920%C3%971080-0b7285?style=flat-square)
-![versión](https://img.shields.io/badge/IPK-1.6.16-c91923?style=flat-square)
+![versión](https://img.shields.io/badge/IPK-2.2.44-c91923?style=flat-square)
 ![licencia](https://img.shields.io/badge/c%C3%B3digo-MIT-2ea44f?style=flat-square)
 
 [Instalación](#instalación-en-el-televisor) ·
@@ -39,10 +37,10 @@ misma disposición, mismos recursos gráficos, mismo mando a distancia.
 
 | | |
 |---|---|
-| **Probado en** | LG 43LM6300PDB · webOS 4.10.2-29 · 1920×1080 |
+| **Probado en** | webOS 1.x · 2.x · 3.x/3.5 · 4.x · 5.x · 6.x (incl. 6.5.3-47) |
 | **ID de paquete** | `com.webosflux.xuptertv.fidelity` |
-| **Versión actual** | `1.6.16` |
-| **Runtime** | Chromium 53 (web app) + Node antiguo del TV (servicio) |
+| **Versión actual** | `2.2.44` |
+| **Runtime** | Chromium (web app) + servicio Node del TV |
 | **Dependencias en el TV** | ninguna: FFmpeg viaja dentro del IPK |
 
 ## Estado actual
@@ -50,14 +48,18 @@ misma disposición, mismos recursos gráficos, mismo mando a distancia.
 | Área | Estado |
 |---|---|
 | Inicio, 7 pestañas, detalle, búsqueda, ajustes | ✅ funcionando con datos reales |
-| TV en vivo (1 000+ canales, 38 categorías) | ✅ funcionando, con filtro por categoría |
+| TV en vivo (4 000+ canales, todas las categorías del portal) | ✅ funcionando, con filtro por categoría |
+| Addons M3U (13 presets instalados automáticamente) | ✅ acceso rápido por categoría en el panel de TV |
+| Catálogo VOD (películas, series, anime, novelas) | ✅ página 2 incluida; expansión automática con addons |
 | Reproductor VOD (HLS/TS/MP4) | ✅ funcionando |
 | Audio y subtítulos reales del portal | ✅ selector en el panel y en «Ajuste de reproducir» |
 | Series: temporadas y episodios | ✅ navegador tipo Netflix dentro del reproductor |
-| «Modo fluido» (relay FFmpeg local) | ✅ para HEVC/TS; por título, no se filtra entre películas |
-| DNS bloqueado por la operadora | ✅ DNS seguro (DoH) + diagnóstico en Ajustes |
+| «Modo fluido» (relay FFmpeg local) | ✅ por título; fMP4 en webOS 4–6, MPEG-TS en webOS 1/2/3 |
+| Desync audio/vídeo en Modo Fluido | ✅ corregido con -avoid_negative_ts y resample=async=1 |
+| webOS 6 noexec mount (ffmpeg no ejecuta desde la app) | ✅ copia automática a /tmp con reintentos |
+| DNS bloqueado por la operadora | ✅ DoH multi-cloud (16 resolvers) + diagnóstico en Ajustes |
+| Portal con un host bloqueado (ej. mptec.dhkrxuzcy.com) | ✅ carrera hedged 8 hosts; el bloqueado no demora |
 | Modo desarrollador / instalación por IPK | ✅ |
-| Comparación píxel a píxel con Android TV | ⚠️ pendiente de referencias verificables |
 | DRM, geobloqueo, control parental del portal | ❌ fuera de alcance (no se elude nada) |
 
 Detalle fino de lo que falta en

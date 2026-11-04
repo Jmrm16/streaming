@@ -1,4 +1,4 @@
-/*
+﻿/*
  * DNS-over-HTTPS resolver for the webOS service.
  *
  * WHY
@@ -166,15 +166,15 @@ function systemLookup(host, done) {
     done(err, ips || []);
   }
   try {
-    dns.lookup(host, { all: true, family: 4 }, function (err, addrs) {
+    /* Node 0.12 (webOS 3) only supports dns.lookup(host, family, cb) with integer family.
+       Passing an options object throws TypeError: family must be 4 or 6. */
+    var lookupCb = function (err, addrs) {
       if (err) { return finish(err); }
       var ips = [];
-      /* Old Node builds ignore {all:true} and answer (address, family) with a
-         string, so handle both shapes. */
       if (typeof addrs === 'string') {
         if (isIpv4(addrs)) { ips.push(addrs); }
-      } else {
-        for (var i = 0; i < (addrs || []).length; i++) {
+      } else if (Array.isArray(addrs)) {
+        for (var i = 0; i < addrs.length; i++) {
           var a = addrs[i];
           var ip = typeof a === 'string' ? a : (a && a.address);
           if (isIpv4(ip)) { ips.push(ip); }
@@ -182,7 +182,12 @@ function systemLookup(host, done) {
       }
       if (!ips.length) { return finish(new Error('DNS del televisor: sin respuesta')); }
       finish(null, ips);
-    });
+    };
+    try {
+      dns.lookup(host, 4, lookupCb);
+    } catch (eFam) {
+      dns.lookup(host, lookupCb);
+    }
   } catch (e) {
     finish(e);
   }

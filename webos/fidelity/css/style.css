@@ -344,6 +344,69 @@ div, section, span { outline: none; }
   padding-bottom: 4px;
   line-height: 34px;
 }
+/* Badges de puntuación y categoría en tarjetas del catálogo real */
+.poster .p-score {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(0,0,0,.72);
+  color: #f0c040;
+  font-size: 22px;
+  font-weight: bold;
+  padding: 2px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  line-height: 1.4;
+}
+.poster .p-score::before { content: '★ '; font-size: 18px; }
+.poster .p-cat {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  background: rgba(58,102,254,.82);
+  color: #fff;
+  font-size: 20px;
+  padding: 2px 10px;
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  max-width: 90%;
+  text-overflow: ellipsis;
+  text-transform: capitalize;
+}
+/* Si la miniatura no carga o falla la red, el título y la sombra se muestran siempre */
+.poster.has-no-poster .p-shade,
+.poster.has-no-poster .p-title {
+  display: block !important;
+}
+.bento .p-score {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  background: rgba(0,0,0,.75);
+  color: #f0c040;
+  font-size: 24px;
+  font-weight: bold;
+  padding: 3px 10px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 5;
+}
+.bento .p-score::before { content: '★ '; font-size: 20px; }
+.bento .p-cat {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  background: rgba(58,102,254,.85);
+  color: #fff;
+  font-size: 22px;
+  padding: 3px 12px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 5;
+  text-transform: capitalize;
+}
 /* sel_poster_nohalo : 2px gold 9-patch, transparent interior */
 .poster.gold.is-focused { -webkit-transform: none; transform: none; }
 .poster.gold.is-focused::after {
@@ -2577,44 +2640,125 @@ div, section, span { outline: none; }
   display: none;
   z-index: 25;
   box-sizing: border-box;
-  padding: 0 80px 60px 80px;
+  padding: 0 70px 36px 70px;
   -webkit-box-orient: vertical;
   flex-direction: column;
   -webkit-box-pack: end;
   justify-content: flex-end;
+  background: -webkit-linear-gradient(bottom, rgba(8, 11, 16, 0.98) 0%, rgba(10, 14, 21, 0.94) 52%, rgba(13, 18, 27, 0.75) 82%, rgba(13, 18, 27, 0) 100%);
+  background: linear-gradient(to top, rgba(8, 11, 16, 0.98) 0%, rgba(10, 14, 21, 0.94) 52%, rgba(13, 18, 27, 0.75) 82%, rgba(13, 18, 27, 0) 100%);
+  pointer-events: auto;
 }
 .player-playsetting-view.is-active {
   display: -webkit-box;
   display: flex;
 }
 
+/* Header inside playsetting view */
+.psv-header {
+  display: -webkit-box;
+  display: flex;
+  -webkit-box-pack: justify;
+  justify-content: space-between;
+  -webkit-box-align: end;
+  align-items: flex-end;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  flex-shrink: 0;
+}
+.psv-header-info {
+  display: -webkit-box;
+  display: flex;
+  -webkit-box-orient: vertical;
+  flex-direction: column;
+}
+.psv-header-badge {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: #e50914;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.psv-header-title {
+  font-size: 36px;
+  line-height: 42px;
+  font-weight: 800;
+  color: #ffffff;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
+}
+.psv-header-sub {
+  font-size: 20px;
+  line-height: 26px;
+  color: #a4abb8;
+  margin-top: 4px;
+  font-weight: 500;
+}
+.psv-header-tips {
+  display: -webkit-box;
+  display: flex;
+  gap: 10px;
+}
+.psv-tip-pill {
+  display: -webkit-inline-box;
+  display: inline-flex;
+  -webkit-box-align: center;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 15px;
+  color: #c5cbd4;
+  font-weight: 500;
+}
+.psv-tip-key {
+  font-weight: 800;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.18);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
 .psv-scroll {
   overflow-y: auto;
   overflow-x: hidden;
-  max-height: 100%;
-  padding: 0;
+  max-height: 720px;
+  padding: 4px 0 16px 0;
 }
 .psv-scroll::-webkit-scrollbar { display: none; }
 
 .psv-row {
-  margin-bottom: 25px;
+  margin-bottom: 22px;
   flex-shrink: 0;
 }
 .psv-row:last-child { margin-bottom: 0; }
 .psv-row.is-hidden { display: none; }
 
 .psv-title {
-  font-size: 32px;
-  line-height: 40px;
-  color: #858d94;
-  font-weight: 400;
+  font-size: 20px;
+  line-height: 26px;
+  color: #8c93a0;
+  font-weight: 700;
   text-transform: uppercase;
+  letter-spacing: 1px;
   white-space: nowrap;
+  display: -webkit-box;
+  display: flex;
+  -webkit-box-align: center;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  transition: color 0.2s ease;
+}
+.psv-title-icon {
+  font-size: 20px;
 }
 .psv-row.is-row-focused .psv-title {
-  font-size: 40px;
-  line-height: 48px;
   color: #ffffff;
+  text-shadow: 0 0 10px rgba(229, 9, 20, 0.5);
 }
 
 .psv-grid,
@@ -2622,215 +2766,35 @@ div, section, span { outline: none; }
 .psv-groups-row {
   display: -webkit-box;
   display: flex;
-  margin-top: 12px;
+  margin-top: 4px;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 0;
+  padding: 4px 0;
 }
 .psv-grid::-webkit-scrollbar,
 .psv-seasons-row::-webkit-scrollbar,
 .psv-groups-row::-webkit-scrollbar { display: none; }
 
-/* Episode selector: match the original player panel -- six wide dark tiles,
-   then a plain range rail underneath. */
-#psv-episodes-row { display: block; overflow: visible; margin-top: 18px; }
-.psv-episode-numbers,
-.psv-episode-ranges { display: -webkit-box; display: flex; overflow-x: auto; overflow-y: hidden; }
-.psv-episode-numbers { margin-bottom: 18px; }
-.psv-episode-numbers::-webkit-scrollbar,
-.psv-episode-ranges::-webkit-scrollbar { display: none; }
-.psv-ep-btn {
-  width: 150px;
-  min-width: 150px;
-  height: 64px;
-  margin-right: 10px;
-  margin-bottom: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: rgba(72, 79, 90, 0.88);
-  color: #ffffff;
-  font-size: 34px;
-  font-weight: 400;
-  line-height: 64px;
-  outline: none;
-  cursor: pointer;
-  position: relative;
-  box-sizing: border-box;
-  display: -webkit-inline-box;
-  display: inline-flex;
-  -webkit-box-align: center;
-  align-items: center;
-  -webkit-box-pack: center;
-  justify-content: center;
-  white-space: nowrap;
-  flex-shrink: 0;
-  transition: transform 0.15s ease, background 0.15s ease;
-}
-.psv-ep-btn.is-selected,
-.psv-ep-btn.is-current {
-  background: rgba(72, 79, 90, 0.88);
-  color: #ffffff;
-  border-bottom: 0;
-}
-.psv-ep-btn.is-focused {
-  background: #ffffff;
-  color: #000000;
-  outline: none;
-  box-shadow: 0 4px 16px rgba(255, 255, 255, 0.6);
-  transform: scale(1.08);
-  z-index: 2;
-}
-.psv-ep-btn.is-selected.is-focused,
-.psv-ep-btn.is-current.is-focused {
-  background: #ffffff;
-  color: #000000;
-  outline: 3px solid #ffffff;
-  box-shadow: 0 4px 18px rgba(229, 9, 20, 0.7);
-  transform: scale(1.08);
-  z-index: 2;
-}
-.psv-range-btn {
-  height: 34px;
-  min-width: 96px;
-  margin-right: 16px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: #d6d6d6;
-  font-size: 25px;
-  font-weight: 400;
-  line-height: 34px;
-  outline: none;
-  cursor: pointer;
-  box-sizing: border-box;
-  display: -webkit-inline-box;
-  display: inline-flex;
-  -webkit-box-align: center;
-  align-items: center;
-  -webkit-box-pack: center;
-  justify-content: center;
-  white-space: nowrap;
-  flex-shrink: 0;
-  transition: transform 0.15s ease, background 0.15s ease;
-}
-.psv-episode-ranges { margin-left: 54px; }
-.psv-range-btn.is-selected { background: transparent; color: #e50914; }
-.psv-range-btn.is-selected {
-  background: transparent;
-  color: #e50914;
-  border-bottom: 0;
-}
-.psv-range-btn.is-focused {
-  background: transparent;
-  color: #ffffff;
-  outline: 2px solid #ffffff;
-  box-shadow: none;
-  transform: none;
-}
-.psv-range-btn.is-selected.is-focused { color: #e50914; }
-/* The reference selection row begins 52px from the left edge.  Keep this
-   adjustment scoped to the episode row so audio/options retain their layout. */
-#psv-sec-selection .psv-title,
-#psv-sec-selection #psv-episodes-row { margin-left: -28px; }
-.psv-selection-empty {
-  color: #b8bbc0;
-  font-size: 22px;
-  padding: 12px 0;
-}
-
-.psv-btn {
-  width: 306px;
-  min-width: 306px;
-  height: 72px;
-  margin-right: 6px;
-  padding: 0 24px;
-  border: 0;
-  border-radius: 0;
-  background: rgba(85, 91, 102, 0.8);   /* #cc555b66 */
-  color: #ffffff;
-  font-size: 32px;
-  font-weight: 400;
-  outline: none;
-  cursor: pointer;
-  position: relative;
-  box-sizing: border-box;
-  display: -webkit-inline-box;
-  display: inline-flex;
-  -webkit-box-align: center;
-  align-items: center;
-  -webkit-box-pack: center;
-  justify-content: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex-shrink: 0;
-}
-.psv-btn.is-focused {
-  background: #c91923;                 /* color_bnt_focused */
-}
-
-
-/* Range groups (1-20, 21-40...) */
-.psv-groups-row {
-  display: -webkit-box;
-  display: flex;
-  margin-top: 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-.psv-group-btn {
-  height: 44px;
-  min-width: 100px;
-  margin-right: 8px;
-  padding: 0 16px;
-  border: 0;
-  border-radius: 6px;
-  background: rgba(85, 91, 102, 0.7);
-  color: #c0c4cb;
-  font-size: 20px;
-  font-weight: 500;
-  outline: none;
-  cursor: pointer;
-  box-sizing: border-box;
-  display: -webkit-inline-box;
-  display: inline-flex;
-  -webkit-box-align: center;
-  align-items: center;
-  -webkit-box-pack: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.psv-group-btn.is-selected {
-  background: rgba(229, 9, 20, 0.4);
-  color: #ffffff;
-  border-bottom: 3px solid #e50914;
-}
-.psv-group-btn.is-focused {
-  background: #e50914;
-  color: #ffffff;
-}
-
-/* Season buttons (if series has multiple seasons) */
+/* Season pills */
 .psv-seasons-row {
   display: -webkit-box;
   display: flex;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
   overflow-x: auto;
   overflow-y: hidden;
+  padding: 4px 0;
 }
 .psv-season-btn {
   height: 46px;
   min-width: 140px;
-  margin-right: 8px;
-  padding: 0 18px;
-  border: 0;
-  border-radius: 6px;
-  background: rgba(85, 91, 102, 0.7);
-  color: #c0c4cb;
-  font-size: 21px;
-  font-weight: 500;
+  margin-right: 10px;
+  padding: 0 20px;
+  border: 1.5px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(35, 40, 50, 0.85);
+  color: #c4c9d4;
+  font-size: 19px;
+  font-weight: 600;
   outline: none;
   cursor: pointer;
   box-sizing: border-box;
@@ -2841,47 +2805,299 @@ div, section, span { outline: none; }
   -webkit-box-pack: center;
   justify-content: center;
   flex-shrink: 0;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
 }
 .psv-season-btn.is-selected {
-  background: rgba(229, 9, 20, 0.4);
+  background: rgba(229, 9, 20, 0.28);
+  border-color: #e50914;
   color: #ffffff;
-  border-bottom: 3px solid #e50914;
 }
 .psv-season-btn.is-focused {
   background: #e50914;
+  border-color: #ffffff;
+  outline: 3px solid #ffffff;
+  color: #ffffff;
+  transform: translateY(-2px) scale(1.04);
+  box-shadow: 0 4px 16px rgba(229, 9, 20, 0.6);
+  z-index: 10;
+}
+
+/* Episodes row */
+#psv-episodes-row {
+  display: block;
+  overflow: visible;
+  margin-top: 4px;
+}
+.psv-episode-numbers {
+  display: -webkit-box;
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 0;
+  margin-bottom: 6px;
+}
+.psv-episode-numbers::-webkit-scrollbar { display: none; }
+
+.psv-ep-btn {
+  width: 148px;
+  min-width: 148px;
+  height: 80px;
+  margin-right: 12px;
+  margin-bottom: 0;
+  padding: 6px 10px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(30, 35, 44, 0.9);
+  color: #ffffff;
+  outline: none;
+  cursor: pointer;
+  position: relative;
+  box-sizing: border-box;
+  display: -webkit-box;
+  display: flex;
+  -webkit-box-orient: vertical;
+  flex-direction: column;
+  -webkit-box-align: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  justify-content: center;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.psv-ep-num-wrap {
+  display: -webkit-box;
+  display: flex;
+  -webkit-box-align: baseline;
+  align-items: baseline;
+  gap: 5px;
+}
+.psv-ep-prefix {
+  font-size: 15px;
+  font-weight: 600;
+  color: #8e95a2;
+  text-transform: uppercase;
+}
+.psv-ep-num {
+  font-size: 32px;
+  font-weight: 800;
+  line-height: 36px;
   color: #ffffff;
 }
 
-#psv-btn-p1, #psv-btn-p2 {
-  width: auto;
-  min-width: 290px;
-  padding: 0 26px;
-  font-size: 28px;
+.psv-ep-status-tag {
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(229, 9, 20, 0.85);
+  color: #ffffff;
 }
-#psv-btn-p1.is-selected {
-  background: rgba(229, 9, 20, 0.35);
-  border-bottom: 4px solid #e50914;
+.psv-ep-title {
+  margin-top: 2px;
+  font-size: 13px;
+  color: #9da3af;
+  max-width: 125px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* Selected marker: 25x25 white circle, inline before the label so the
-   check + text group stays centered (matches the real pills). */
+/* Selected state: currently playing */
+.psv-ep-btn.is-current,
+.psv-ep-btn.is-selected {
+  border-color: #e50914;
+  background: rgba(229, 9, 20, 0.22);
+}
+.psv-ep-btn.is-current .psv-ep-prefix,
+.psv-ep-btn.is-selected .psv-ep-prefix {
+  color: #ff4d58;
+}
+
+/* Focus state */
+.psv-ep-btn.is-focused {
+  background: #e50914;
+  border-color: #ffffff;
+  outline: 3px solid #ffffff;
+  box-shadow: 0 6px 20px rgba(229, 9, 20, 0.7);
+  transform: translateY(-4px) scale(1.06);
+  z-index: 10;
+}
+.psv-ep-btn.is-focused .psv-ep-prefix,
+.psv-ep-btn.is-focused .psv-ep-num,
+.psv-ep-btn.is-focused .psv-ep-title {
+  color: #ffffff;
+}
+.psv-ep-btn.is-focused .psv-ep-status-tag {
+  background: #ffffff;
+  color: #e50914;
+}
+
+/* Ranges row */
+.psv-episode-ranges {
+  display: -webkit-box;
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 0;
+  margin-top: 6px;
+  -webkit-box-align: center;
+  align-items: center;
+}
+.psv-episode-ranges::-webkit-scrollbar { display: none; }
+
+.psv-range-btn {
+  height: 38px;
+  min-width: 120px;
+  margin-right: 10px;
+  padding: 0 16px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(42, 48, 58, 0.7);
+  color: #b8bec8;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 38px;
+  outline: none;
+  cursor: pointer;
+  box-sizing: border-box;
+  display: -webkit-inline-box;
+  display: inline-flex;
+  -webkit-box-align: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  justify-content: center;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+.psv-range-btn.is-selected {
+  background: rgba(229, 9, 20, 0.35);
+  border-color: #e50914;
+  color: #ffffff;
+}
+.psv-range-btn.is-focused {
+  background: #e50914;
+  border-color: #ffffff;
+  outline: 2px solid #ffffff;
+  color: #ffffff;
+  transform: scale(1.05);
+  box-shadow: 0 4px 14px rgba(229, 9, 20, 0.6);
+}
+
+.psv-all-episodes-btn {
+  height: 38px;
+  padding: 0 18px;
+  margin-left: 6px;
+  border: 1px dashed rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  font-size: 17px;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+  box-sizing: border-box;
+  display: -webkit-inline-box;
+  display: inline-flex;
+  -webkit-box-align: center;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+.psv-all-episodes-btn.is-focused {
+  background: #e50914;
+  border-style: solid;
+  border-color: #ffffff;
+  outline: 2px solid #ffffff;
+  color: #ffffff;
+  transform: scale(1.05);
+  box-shadow: 0 4px 14px rgba(229, 9, 20, 0.6);
+}
+
+.psv-selection-empty {
+  font-size: 19px;
+  color: #8c93a0;
+  padding: 16px 0;
+  font-style: italic;
+}
+
+/* General pill button */
+.psv-btn {
+  width: auto;
+  min-width: 250px;
+  height: 66px;
+  margin-right: 12px;
+  padding: 0 24px;
+  border: 1.5px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(32, 38, 48, 0.88);
+  color: #ffffff;
+  font-size: 22px;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+  position: relative;
+  box-sizing: border-box;
+  display: -webkit-inline-box;
+  display: inline-flex;
+  -webkit-box-align: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  justify-content: center;
+  gap: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.psv-btn.is-selected {
+  border-color: #e50914;
+  background: rgba(229, 9, 20, 0.24);
+  color: #ffffff;
+}
+.psv-btn.is-focused {
+  background: #e50914;
+  border-color: #ffffff;
+  outline: 3px solid #ffffff;
+  box-shadow: 0 6px 20px rgba(229, 9, 20, 0.65);
+  transform: translateY(-3px) scale(1.04);
+  z-index: 10;
+}
+
+#psv-btn-p1, #psv-btn-p2 {
+  min-width: 280px;
+  padding: 0 24px;
+  font-size: 22px;
+}
+
+/* Selected marker: 22x22 red/white check circle */
 .psv-check {
   display: none;
-  width: 25px;
-  height: 25px;
-  margin-right: 12px;
+  width: 22px;
+  height: 22px;
+  margin-right: 8px;
   border-radius: 50%;
-  background: #ffffff;
-  color: #555b66;
-  font-size: 17px;
-  line-height: 25px;
+  background: #e50914;
+  color: #ffffff;
+  font-size: 14px;
+  line-height: 22px;
   text-align: center;
   font-weight: bold;
   flex-shrink: 0;
+  border: 1px solid #ffffff;
 }
-.psv-btn.is-selected .psv-check,
-.psv-ep-btn.is-current .psv-check {
+.psv-btn.is-selected .psv-check {
   display: block;
+}
+.psv-btn.is-focused .psv-check {
+  background: #ffffff;
+  color: #e50914;
 }
 
 /* ------------------------------------------------------------------
@@ -3918,4 +4134,236 @@ div, section, span { outline: none; }
   color: #6f7780;
   white-space: nowrap;
   overflow: hidden;
+}
+
+/* ============================================================
+   Over-The-Air (OTA) Update Dialog & Controls
+   ============================================================ */
+.dialog-update-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  background: rgba(0, 0, 0, 0.82);
+  display: none;
+  z-index: 99;
+}
+.dialog-update-overlay.is-active {
+  display: block;
+}
+.dialog-update-box {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 980px;
+  max-height: 720px;
+  background: #181b20;
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.95);
+  border: 1.5px solid rgba(255, 255, 255, 0.14);
+}
+.du-header {
+  padding: 30px 40px 20px;
+  background: linear-gradient(180deg, #242932 0%, #1c2027 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.du-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 6px;
+  background: #e50914;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  margin-bottom: 10px;
+}
+.du-title {
+  font-size: 34px;
+  font-weight: 700;
+  color: #ffffff;
+}
+.du-subtitle {
+  font-size: 20px;
+  color: #9aa0a6;
+  margin-top: 6px;
+}
+.du-body {
+  padding: 28px 40px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.du-section-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: #d1d5db;
+  margin-bottom: 12px;
+}
+.du-changelog {
+  background: #111317;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 16px 20px;
+  color: #e5e7eb;
+  font-size: 21px;
+  line-height: 32px;
+  min-height: 90px;
+  max-height: 180px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  margin-bottom: 24px;
+}
+.du-status {
+  margin-top: 8px;
+  margin-bottom: 16px;
+}
+.du-progress-bar-bg {
+  width: 100%;
+  height: 16px;
+  background: #282c35;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.du-progress-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #e50914, #ff5252);
+  border-radius: 8px;
+  transition: width 0.3s ease;
+}
+.du-status-text {
+  font-size: 22px;
+  font-weight: 600;
+  color: #ffffff;
+}
+.du-status-subtext {
+  font-size: 17px;
+  color: #9ca3af;
+  margin-top: 4px;
+}
+.du-footer {
+  padding: 20px 40px 30px;
+  display: flex;
+  gap: 20px;
+  justify-content: flex-end;
+  background: #14161a;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.du-btn {
+  height: 56px;
+  padding: 0 32px;
+  border-radius: 10px;
+  font-size: 22px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 2px solid transparent;
+  outline: none;
+  transition: all 0.2s ease;
+}
+.du-btn-primary {
+  background: #e50914;
+  color: #ffffff;
+}
+.du-btn-primary.is-focused {
+  background: #ff1f2d;
+  border-color: #ffffff;
+  transform: scale(1.05);
+  box-shadow: 0 0 20px rgba(229, 9, 20, 0.7);
+}
+.du-btn-secondary {
+  background: #2a2e37;
+  color: #d1d5db;
+}
+.du-btn-secondary.is-focused {
+  background: #3b414e;
+  border-color: #ffffff;
+  color: #ffffff;
+  transform: scale(1.05);
+  box-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
+}
+
+/* Settings > Sobre nosotros > Boton Actualizar */
+.sp-about-update-box {
+  position: absolute;
+  left: 52px;
+  top: 470px;
+  width: 1080px;
+  height: 220px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  border: 1.5px solid rgba(255, 255, 255, 0.1);
+  padding: 24px 32px;
+  box-sizing: border-box;
+}
+.sp-about-update-title {
+  font-size: 26px;
+  font-weight: bold;
+  color: #ffffff;
+  margin-bottom: 8px;
+}
+.sp-about-update-desc {
+  font-size: 20px;
+  color: #9ca3af;
+  line-height: 28px;
+  margin-bottom: 20px;
+}
+.sp-about-update-row {
+  display: -webkit-box;
+  display: flex;
+  -webkit-box-align: center;
+  align-items: center;
+}
+.sp-about-update-btn {
+  display: inline-block;
+  height: 54px;
+  line-height: 50px;
+  padding: 0 32px;
+  background: #2f3440;
+  color: #ffffff;
+  font-size: 22px;
+  font-weight: 600;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s;
+  box-sizing: border-box;
+}
+.sp-about-update-btn.is-focused {
+  background: #e50914;
+  border-color: #ffffff;
+  transform: scale(1.04);
+  box-shadow: 0 0 15px rgba(229, 9, 20, 0.6);
+}
+.sp-about-update-msg {
+  display: inline-block;
+  margin-left: 24px;
+  font-size: 20px;
+  font-weight: 500;
+  color: #38bdf8;
+}
+
+.app-toast {
+  position: absolute;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 24, 30, 0.95);
+  border: 1.5px solid rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+  padding: 14px 28px;
+  border-radius: 30px;
+  font-size: 21px;
+  font-weight: 500;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.85);
+  z-index: 100;
+  pointer-events: none;
+  transition: opacity 0.3s;
 }
