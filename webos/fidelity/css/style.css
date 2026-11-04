@@ -4291,37 +4291,50 @@ div, section, span { outline: none; }
 
 /* Settings > Sobre nosotros > Boton Actualizar */
 .sp-about-update-box {
-  margin-top: 36px;
-  padding: 24px;
+  position: absolute;
+  left: 52px;
+  top: 470px;
+  width: 1080px;
+  height: 220px;
   background: rgba(255, 255, 255, 0.04);
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  width: 900px;
+  border: 1.5px solid rgba(255, 255, 255, 0.1);
+  padding: 24px 32px;
+  box-sizing: border-box;
 }
 .sp-about-update-title {
-  font-size: 24px;
+  font-size: 26px;
   font-weight: bold;
   color: #ffffff;
   margin-bottom: 8px;
 }
 .sp-about-update-desc {
-  font-size: 19px;
+  font-size: 20px;
   color: #9ca3af;
   line-height: 28px;
-  margin-bottom: 18px;
+  margin-bottom: 20px;
+}
+.sp-about-update-row {
+  display: -webkit-box;
+  display: flex;
+  -webkit-box-align: center;
+  align-items: center;
 }
 .sp-about-update-btn {
-  height: 52px;
-  padding: 0 28px;
+  display: inline-block;
+  height: 54px;
+  line-height: 50px;
+  padding: 0 32px;
   background: #2f3440;
   color: #ffffff;
-  font-size: 21px;
+  font-size: 22px;
   font-weight: 600;
   border-radius: 8px;
   border: 2px solid transparent;
   cursor: pointer;
   outline: none;
   transition: all 0.2s;
+  box-sizing: border-box;
 }
 .sp-about-update-btn.is-focused {
   background: #e50914;
@@ -4330,8 +4343,10 @@ div, section, span { outline: none; }
   box-shadow: 0 0 15px rgba(229, 9, 20, 0.6);
 }
 .sp-about-update-msg {
-  margin-top: 14px;
-  font-size: 19px;
+  display: inline-block;
+  margin-left: 24px;
+  font-size: 20px;
+  font-weight: 500;
   color: #38bdf8;
 }
 

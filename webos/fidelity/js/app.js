@@ -4279,7 +4279,9 @@ function portalServiceCall(method, params, done, customTimeout) {
       'Xuper TV se dedica a ofrecer a los usuarios una amplia variedad de recursos de alta calidad. ' +
       'Aquí encontrarás miles de películas, series, animes y canales en vivo, todo reunido en un solo lugar. ' +
       'Brindamos una experiencia estable, diversa y siempre actualizada, además de contenidos gratuitos para disfrutar.'));
-    p.appendChild(el('div', 'sp-about-port', 'Port para LG webOS realizado por CristiancoDEV'));
+    var port = el('div', 'sp-about-port', 'Port para LG webOS realizado por CristiancoDEV');
+    port.style.top = '380px';
+    p.appendChild(port);
     var mail = el('div', 'sp-about-mail');
     var ico = el('img');
     ico.src = 'assets/original/settings/vod_email_icon.png';
@@ -4292,8 +4294,9 @@ function portalServiceCall(method, params, done, customTimeout) {
     updateBox.appendChild(el('div', 'sp-about-update-title', 'Actualizaciones de XuperTV'));
     updateBox.appendChild(el('div', 'sp-about-update-desc',
       'Versión instalada: v2.2.44. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.'));
+    var row = el('div', 'sp-about-update-row');
     var btnCheckUpdate = el('button', 'sp-about-update-btn focusable', 'Buscar actualizaciones');
-    var msgUpdate = el('div', 'sp-about-update-msg');
+    var msgUpdate = el('span', 'sp-about-update-msg');
     btnCheckUpdate._activate = function () {
       btnCheckUpdate.textContent = 'Comprobando...';
       msgUpdate.textContent = '';
@@ -4311,8 +4314,9 @@ function portalServiceCall(method, params, done, customTimeout) {
         }
       });
     };
-    updateBox.appendChild(btnCheckUpdate);
-    updateBox.appendChild(msgUpdate);
+    row.appendChild(btnCheckUpdate);
+    row.appendChild(msgUpdate);
+    updateBox.appendChild(row);
     p.appendChild(updateBox);
 
     return p;

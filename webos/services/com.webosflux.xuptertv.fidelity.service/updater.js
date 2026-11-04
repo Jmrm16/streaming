@@ -4,6 +4,7 @@
  * Checks GitHub for published updates, downloads the IPK to /tmp/,
  * invokes webOS appInstallService, and relaunches the app.
  *
+ * Uses dnsx DoH resolver to bypass ISP DNS blocks in Colombia/Chile.
  * ES5 strict compliance for Node 0.12 / V8 3.28 (webOS 1/2/3).
  */
 'use strict';
@@ -14,10 +15,11 @@ var urlmod = require('url');
 var fs = require('fs');
 var path = require('path');
 var spawn = require('child_process').spawn;
+var dnsx = require('./dnsx');
 
 var UPDATE_MANIFEST_URLS = [
-  'https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/main/version.json',
-  'https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/feature/catalog-webos-compat/version.json'
+  'https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/feature/catalog-webos-compat/version.json',
+  'https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/main/version.json'
 ];
 
 var TARGET_IPK_PATH = '/tmp/xuper-ota.ipk';
@@ -53,6 +55,27 @@ function compareSemVer(v1, v2) {
   return 0;
 }
 
+var resolveHostIp = function (host, cb) {
+  if (!host || (dnsx && dnsx.isIpv4 && dnsx.isIpv4(host))) {
+    return cb(null, host);
+  }
+  if (!dnsx || typeof dnsx.resolve !== 'function') {
+    return cb(null, host);
+  }
+  var hit = (typeof dnsx.cached === 'function') ? dnsx.cached(host) : null;
+  if (hit && hit.ips && hit.ips.length) {
+    var cachedIp = (typeof dnsx.dial === 'function') ? dnsx.dial(host, hit.ips) : hit.ips[0];
+    return cb(null, cachedIp || host);
+  }
+  dnsx.resolve(host, function (err, res) {
+    if (!err && res && res.ips && res.ips.length) {
+      var ip = (typeof dnsx.dial === 'function') ? dnsx.dial(host, res.ips) : res.ips[0];
+      return cb(null, ip || host);
+    }
+    cb(null, host);
+  });
+};
+
 var fetchJson = function (urlStr, cb, maxRedirects) {
   if (maxRedirects === undefined) { maxRedirects = 5; }
   if (maxRedirects < 0) {
@@ -66,55 +89,64 @@ var fetchJson = function (urlStr, cb, maxRedirects) {
     return cb(eParse);
   }
 
-  var client = parsed.protocol === 'http:' ? http : https;
-  var opts = {
-    protocol: parsed.protocol,
-    hostname: parsed.hostname,
-    port: parsed.port || (parsed.protocol === 'http:' ? 80 : 443),
-    path: parsed.path,
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (SmartHub; SMART-TV; webOS) XuperTV-OTA/1.0',
-      'Accept': 'application/json, text/plain, */*'
-    },
-    timeout: 12000
-  };
+  resolveHostIp(parsed.hostname, function (errDns, targetHost) {
+    var client = parsed.protocol === 'http:' ? http : https;
+    var opts = {
+      protocol: parsed.protocol,
+      hostname: targetHost || parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'http:' ? 80 : 443),
+      path: parsed.path,
+      servername: parsed.hostname,
+      rejectUnauthorized: false,
+      headers: {
+        'Host': parsed.hostname,
+        'User-Agent': 'Mozilla/5.0 (SmartHub; SMART-TV; webOS) XuperTV-OTA/1.0',
+        'Accept': 'application/json, text/plain, */*'
+      },
+      timeout: 12000
+    };
 
-  var req = client.get(opts, function (res) {
-    if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-      var nextUrl = urlmod.resolve(urlStr, res.headers.location);
-      return fetchJson(nextUrl, cb, maxRedirects - 1);
-    }
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      return cb(new Error('HTTP ' + res.statusCode + ' al consultar actualización'));
-    }
-
-    var body = '';
-    res.setEncoding('utf8');
-    res.on('data', function (chunk) { body += chunk; });
-    res.on('end', function () {
-      var data;
-      try {
-        data = JSON.parse(body);
-      } catch (eJson) {
-        return cb(new Error('Formato JSON inválido en servidor de actualización: ' + (eJson && eJson.message)));
+    var req = client.get(opts, function (res) {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        var nextUrl = urlmod.resolve(urlStr, res.headers.location);
+        return fetchJson(nextUrl, cb, maxRedirects - 1);
       }
-      cb(null, data);
+      if (res.statusCode === 404) {
+        return cb(new Error('No se encontró version.json en GitHub (HTTP 404). Debes hacer "git push" a tu repositorio.'));
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        return cb(new Error('HTTP ' + res.statusCode + ' al consultar actualización'));
+      }
+
+      var body = '';
+      res.setEncoding('utf8');
+      res.on('data', function (chunk) { body += chunk; });
+      res.on('end', function () {
+        var data;
+        try {
+          data = JSON.parse(body);
+        } catch (eJson) {
+          return cb(new Error('Formato JSON inválido en servidor de actualización: ' + (eJson && eJson.message)));
+        }
+        cb(null, data);
+      });
     });
-  });
 
-  req.on('error', function (err) {
-    cb(err);
-  });
+    req.on('error', function (err) {
+      cb(err);
+    });
 
-  req.on('timeout', function () {
-    try { req.abort(); } catch (eAbort) { /* ignore */ }
-    cb(new Error('Tiempo de espera agotado al consultar servidor'));
+    req.on('timeout', function () {
+      try { req.abort(); } catch (eAbort) { /* ignore */ }
+      cb(new Error('Tiempo de espera agotado al consultar servidor de actualización'));
+    });
   });
 };
 
-var checkManifestInList = function (urls, index, cb) {
+var checkManifestInList = function (urls, index, lastError, cb) {
   if (index >= urls.length) {
-    return cb(new Error('No se pudo contactar con los servidores de actualización'));
+    var msg = (lastError && lastError.message) || 'No se pudo contactar con los servidores de actualización';
+    return cb(new Error(msg));
   }
 
   var targetUrl = urls[index] + '?t=' + Date.now();
@@ -122,12 +154,12 @@ var checkManifestInList = function (urls, index, cb) {
     if (!err && manifest && manifest.version) {
       return cb(null, manifest);
     }
-    checkManifestInList(urls, index + 1, cb);
+    checkManifestInList(urls, index + 1, err || lastError, cb);
   });
 };
 
 function checkUpdate(currentVersion, cb) {
-  checkManifestInList(UPDATE_MANIFEST_URLS, 0, function (err, manifest) {
+  checkManifestInList(UPDATE_MANIFEST_URLS, 0, null, function (err, manifest) {
     if (err) {
       return cb(err);
     }
@@ -159,85 +191,90 @@ var downloadFile = function (urlStr, destPath, onProgress, cb, maxRedirects) {
     return cb(eParse);
   }
 
-  var client = parsed.protocol === 'http:' ? http : https;
-  var opts = {
-    protocol: parsed.protocol,
-    hostname: parsed.hostname,
-    port: parsed.port || (parsed.protocol === 'http:' ? 80 : 443),
-    path: parsed.path,
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (SmartHub; SMART-TV; webOS) AppleWebKit/537.36 (KHTML, like Gecko)',
-      'Accept': '*/*'
-    },
-    timeout: 45000
-  };
-
-  var req = client.get(opts, function (res) {
-    if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-      var nextUrl = urlmod.resolve(urlStr, res.headers.location);
-      return downloadFile(nextUrl, destPath, onProgress, cb, maxRedirects - 1);
-    }
-
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      return cb(new Error('HTTP ' + res.statusCode + ' al descargar el paquete'));
-    }
-
-    var totalBytes = parseInt(res.headers['content-length'], 10) || 0;
-    var downloadedBytes = 0;
-    var lastPercent = -1;
-
-    try {
-      if (fs.existsSync(destPath)) { fs.unlinkSync(destPath); }
-    } catch (eUnlink) { /* ignore */ }
-
-    var fileStream = fs.createWriteStream(destPath);
-    var finished = false;
-
-    var finish = function (err, path) {
-      if (finished) { return; }
-      finished = true;
-      cb(err, path);
+  resolveHostIp(parsed.hostname, function (errDns, targetHost) {
+    var client = parsed.protocol === 'http:' ? http : https;
+    var opts = {
+      protocol: parsed.protocol,
+      hostname: targetHost || parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'http:' ? 80 : 443),
+      path: parsed.path,
+      servername: parsed.hostname,
+      rejectUnauthorized: false,
+      headers: {
+        'Host': parsed.hostname,
+        'User-Agent': 'Mozilla/5.0 (SmartHub; SMART-TV; webOS) AppleWebKit/537.36 (KHTML, like Gecko)',
+        'Accept': '*/*'
+      },
+      timeout: 45000
     };
 
-    fileStream.on('error', function (err) {
-      try { req.abort(); } catch (e) { /* ignore */ }
-      finish(err);
-    });
-
-    res.on('data', function (chunk) {
-      downloadedBytes += chunk.length;
-      if (totalBytes > 0) {
-        var pct = Math.floor((downloadedBytes / totalBytes) * 100);
-        if (pct !== lastPercent) {
-          lastPercent = pct;
-          if (onProgress) { onProgress(pct, downloadedBytes, totalBytes); }
-        }
-      } else {
-        if (onProgress) { onProgress(-1, downloadedBytes, 0); }
+    var req = client.get(opts, function (res) {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        var nextUrl = urlmod.resolve(urlStr, res.headers.location);
+        return downloadFile(nextUrl, destPath, onProgress, cb, maxRedirects - 1);
       }
-    });
 
-    res.on('error', function (err) {
-      try { fileStream.close(); } catch (eClose) { /* ignore */ }
-      finish(err);
-    });
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        return cb(new Error('HTTP ' + res.statusCode + ' al descargar el paquete'));
+      }
 
-    res.pipe(fileStream);
+      var totalBytes = parseInt(res.headers['content-length'], 10) || 0;
+      var downloadedBytes = 0;
+      var lastPercent = -1;
 
-    fileStream.on('finish', function () {
-      fileStream.close(function () {
-        finish(null, destPath);
+      try {
+        if (fs.existsSync(destPath)) { fs.unlinkSync(destPath); }
+      } catch (eUnlink) { /* ignore */ }
+
+      var fileStream = fs.createWriteStream(destPath);
+      var finished = false;
+
+      var finish = function (err, path) {
+        if (finished) { return; }
+        finished = true;
+        cb(err, path);
+      };
+
+      fileStream.on('error', function (err) {
+        try { req.abort(); } catch (e) { /* ignore */ }
+        finish(err);
+      });
+
+      res.on('data', function (chunk) {
+        downloadedBytes += chunk.length;
+        if (totalBytes > 0) {
+          var pct = Math.floor((downloadedBytes / totalBytes) * 100);
+          if (pct !== lastPercent) {
+            lastPercent = pct;
+            if (onProgress) { onProgress(pct, downloadedBytes, totalBytes); }
+          }
+        } else {
+          if (onProgress) { onProgress(-1, downloadedBytes, 0); }
+        }
+      });
+
+      res.on('error', function (err) {
+        try { fileStream.close(); } catch (eClose) { /* ignore */ }
+        finish(err);
+      });
+
+      res.pipe(fileStream);
+
+      fileStream.on('finish', function () {
+        fileStream.close(function () {
+          finish(null, destPath);
+        });
       });
     });
-  });
 
-  req.on('error', function (err) {
-    cb(err);
-  });
+    req.on('error', function (err) {
+      cb(err);
+    });
 
-  req.on('timeout', function () {
-    try { req.abort(); } catch (eAbort) { /* ignore */ }
-    cb(new Error('Tiempo de espera agotado descargando la actualización'));
+    req.on('timeout', function () {
+      try { req.abort(); } catch (eAbort) { /* ignore */ }
+      cb(new Error('Tiempo de espera agotado descargando la actualización'));
+    });
   });
 };
 
@@ -360,4 +397,3 @@ module.exports = {
   applyUpdate: applyUpdate,
   compareSemVer: compareSemVer
 };
-
