@@ -20,8 +20,11 @@
 var crypto = require('crypto');
 var https = require('https');
 var http = require('http');
+var fs = require('fs');
 var url = require('url');
+var path = require('path');
 var dnsx = require('./dnsx');
+var upstream = require('./upstream');
 
 /* --------------------------------------------------------------- constants */
 var KEY_HEX = 'e7af1ed7de1ffddd7bd3fe37ebdffde9ef3fe1ae39edfeb8';
@@ -49,10 +52,28 @@ var FIXED_DRM_ID = '0iSGEyv2EqiS/nqI/I3hqdu12irw5Q3/uqrWvRFx9bM=';
 var UA_CDN = 'Ranger/4.9.4-17294ac0';
 
 var RATE_MS = 450;          // portal pacing (observed safe value)
-var REQUEST_TIMEOUT = 20000;
 var TREE_TTL = 10 * 60 * 1000;
 var SEARCH_TTL = 3 * 60 * 1000;
 var SLB_TTL = 5 * 60 * 1000;
+
+/* ------------------------------------------------------------ seed rescue */
+/* In some countries the portal answers `portal100024` (region blocked) to the
+   anonymous activation.  The reference plugin solves it with borrowed device
+   sessions ("seeds").  The pool is the ONLY way out of a blocked region, so it
+   is cached, sampled, expired and dead-marked instead of fetching one seed. */
+var SEED_URL = 'https://raw.githubusercontent.com/xuper-plugin/kino-plugin-xuper/seeds/seeds.json';
+var SEED_FILE = '/tmp/xuper-seeds.json';
+var SEED_DEAD_FILE = '/tmp/xuper-seeds-dead.json';
+var SEED_MAX = 200;
+var SEED_MIN_LIFE_MS = 5 * 60 * 1000;
+var SEED_RESCUE_ROUNDS = 3;
+var SEED_POOL_FRESH_MS = 10 * 60 * 1000;
+var SEED_REFRESH_COOLDOWN_MS = 10 * 1000;
+var SEED_FAILED_COOLDOWN_MS = 30 * 1000;
+var DEAD_SEED_MS = 6 * 3600 * 1000;
+var GEO_BLOCKED = 'portal100024';
+var SESSION_DEAD = { aaa100027: 1, aaa100028: 1, aaa100080: 1, aaa100082: 1, aaa100083: 1 };
+var SESSION_MAX_AGE_MS = 6 * 3600 * 1000;
 
 var ROOT_CODES = {
   featured: 'masnew_featured',
@@ -127,11 +148,25 @@ function trim(value) {
 
 function imageOf(asset, type) {
   var list = asset && asset.posterList;
-  if (!list || !list.length) { return ''; }
-  for (var i = 0; i < list.length; i++) {
-    if (list[i] && list[i].fileType === type && trim(list[i].fileUrl) !== '') {
-      return trim(list[i].fileUrl);
+  if (list && list.length) {
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].fileType === type && trim(list[i].fileUrl) !== '') {
+        return trim(list[i].fileUrl);
+      }
     }
+  }
+  /* Fallback: campos planos de imagen (el portal los incluye en algunos endpoints). */
+  if (type === 'icon') {
+    return trim(asset.iconUrl || asset.icon || asset.coverUrl || asset.cover ||
+      asset.posterUrl || asset.poster || asset.imageUrl || asset.image || '');
+  }
+  if (type === 'poster') {
+    return trim(asset.posterUrl || asset.poster || asset.coverUrl || asset.cover ||
+      asset.iconUrl || asset.icon || asset.imageUrl || asset.image || '');
+  }
+  if (type === 'stage') {
+    return trim(asset.backdropUrl || asset.backdrop || asset.landscapeUrl || asset.landscape ||
+      asset.wideImage || asset.bannerImage || '');
   }
   return '';
 }
@@ -149,7 +184,21 @@ function genresOf(asset) {
 }
 
 /* ----------------------------------------------------------------- session */
-var session = { sn: '', userId: '', userToken: '', snToken: '', ready: false, busy: false };
+var session = { sn: '', userId: '', userToken: '', snToken: '', ready: false, busy: false, seed: null, usesSeed: false, at: 0 };
+
+/* A rejected live authorization can leave the anonymous portal token stale.
+ * Do not let one failed channel poison the shared session used by catalog and
+ * VOD. The caller is responsible for allowing just one recovery attempt. */
+function resetSessionAfterLiveFailure() {
+  session.ready = false;
+  session.userId = '';
+  session.userToken = '';
+  session.snToken = '';
+  session.seed = null;
+  session.usesSeed = false;
+  session.at = 0;
+  liveResolveCache = {};
+}
 var queue = [];
 var lastCallAt = 0;
 
@@ -187,41 +236,66 @@ function deviceDict() {
   return d;
 }
 
+var preferredHost = '';
+var HOST_TIMEOUT = 6000;
+var HOST_HEDGE = 1500;
+var HTTP_FALLBACK_DELAY = 1200;
+
+function hostOrder() {
+  var out = [];
+  if (preferredHost) { out.push(preferredHost); }
+  for (var i = 0; i < HOSTS.length; i++) {
+    if (HOSTS[i] !== preferredHost) { out.push(HOSTS[i]); }
+  }
+  return out;
+}
+
+/* One request to the portal.  Several hosts are started in a staggered race:
+   the first host that speaks the portal protocol wins and the rest are
+   aborted.  A carrier that drops one Cloudflare address (or a Cloudflare WAF
+   that answers HTML) therefore no longer delays every catalogue call by a full
+   timeout, which is what produced "portal: tiempo agotado" and a missing
+   session on blocked networks. */
 function post(path, body, done) {
-  var origDone = done;
-  var settled = false;
-  done = function (err, result) {
-    if (settled) { return; }
-    settled = true;
-    origDone(err, result);
-  };
   var payload;
   try {
     payload = encryptBody(JSON.stringify(body));
   } catch (encErr) {
     return done(new Error(path + ': error cifrando cuerpo: ' + encErr.message));
   }
-  var host = HOSTS[0];
-  var attempt = 0;
 
-  function nextHost(err) {
-    attempt++;
-    if (attempt < HOSTS.length) {
-      host = HOSTS[attempt];
-      setup();
-      return;
+  var order = hostOrder();
+  var launched = 0;
+  var active = 0;
+  var settled = false;
+  var lastError = null;
+  var hedgeTimer = null;
+  var requests = [];
+
+  function finish(err, result) {
+    if (settled) { return; }
+    settled = true;
+    if (hedgeTimer) { clearTimeout(hedgeTimer); hedgeTimer = null; }
+    for (var i = 0; i < requests.length; i++) {
+      try { requests[i].abort(); } catch (eAbort) { /* ignore */ }
     }
-    done(err);
+    done(err, result);
   }
 
-  function setup() {
-    /* The portal hostname is resolved over DoH so an ISP that poisons its DNS
-       cannot stop the catalogue.  TLS SNI and the HTTP Host header keep the
-       original name. */
+  function maybeFinish() {
+    if (settled || launched < order.length) { return; }
+    if (active <= 0) { finish(lastError || new Error(path + ': el portal no respondió')); }
+  }
+
+  function attempt(host, transport, onNetworkError) {
+    var plainHttp = transport === 'http';
     var baseOptions = {
       hostname: host,
       servername: host,
       rejectUnauthorized: false,
+      protocol: plainHttp ? 'http:' : 'https:',
+      port: plainHttp ? 80 : 443,
+      agent: upstream.agentFor(!plainHttp, host, plainHttp ? 80 : 443),
       path: '/api/portalCore/' + path,
       method: 'POST',
       headers: {
@@ -235,55 +309,150 @@ function post(path, body, done) {
     };
 
     dnsx.prepare(baseOptions, function (prepErr, options) {
-      if (prepErr) { return nextHost(prepErr); }
+      if (settled) { return; }
+      if (prepErr) {
+        lastError = prepErr;
+        active--;
+        maybeFinish();
+        return;
+      }
 
-      var req = https.request(options, function (res) {
-        var chunks = [];
-        res.on('data', function (c) { chunks.push(c); });
-        res.on('end', function () {
-          var raw = Buffer.concat(chunks).toString('utf8');
-          var answer;
-          try {
-            answer = JSON.parse(raw);
-          } catch (e) {
-            return done(new Error(path + ': respuesta no JSON (' + res.statusCode + ')'));
-          }
-          var code = answer.returnCode === undefined || answer.returnCode === null ? '' : String(answer.returnCode);
-          if (code !== '' && code !== '0') {
-            var err = new Error(path + ' -> ' + code + ' ' + text(answer.errorMessage));
-            err.portalCode = code;
-            return done(err);
-          }
-          if (typeof answer.data === 'string' && answer.data !== '') {
-            var plain;
+      var reqFinished = false;
+      var resStarted = false;
+      var req = null;
+
+      function fail(err) {
+        if (reqFinished || settled) { return; }
+        reqFinished = true;
+        lastError = err;
+        try { if (req) { req.abort(); } } catch (eA) { /* ignore */ }
+        if (preferredHost === host) { preferredHost = ''; }
+        /* TLS/SNI blocked: do not wait for the head start, go HTTP now. */
+        if (!plainHttp && onNetworkError) {
+          try { onNetworkError(); } catch (eOn) { /* ignore */ }
+        }
+        active--;
+        maybeFinish();
+      }
+
+      function retryable(err) {
+        /* Protocol/decrypt answers only make sense from the portal itself;
+           network and HTML answers mean this host/IP is not usable. */
+        lastError = err;
+        if (preferredHost === host) { preferredHost = ''; }
+        if (!plainHttp && onNetworkError) {
+          try { onNetworkError(); } catch (eOnHttp) { /* ignore */ }
+        }
+        active--;
+        maybeFinish();
+      }
+
+      try {
+        req = (plainHttp ? http : https).request(options, function (res) {
+          resStarted = true;
+          var chunks = [];
+          res.on('data', function (c) { chunks.push(c); });
+          res.on('error', function (eRes) { fail(eRes); });
+          res.on('end', function () {
+            if (reqFinished || settled) { return; }
+            reqFinished = true;
+            var raw = Buffer.concat(chunks).toString('utf8');
+            var answer;
             try {
-              plain = decryptBlob(answer.data);
-            } catch (e2) {
-              return done(new Error(path + ': no se pudo descifrar la respuesta (' + e2.message + ')'));
+              answer = JSON.parse(raw);
+            } catch (eJson) {
+              return retryable(new Error(path + ': respuesta no JSON (' + res.statusCode + ') en ' + host));
             }
-            try {
-              return done(null, JSON.parse(plain));
-            } catch (e3) {
-              return done(new Error(path + ': respuesta descifrada no JSON'));
+            /* Any JSON answer proves this hostname/IP is reachable: keep it
+               first for the next call and for the network diagnostic instead
+               of starting from a dead one. */
+            preferredHost = host;
+            if (plainHttp) {
+              console.log('[magis] portal respondió por HTTP plano en ' + host + ' (TLS/SNI filtrado por el operador)');
             }
-          }
-          done(null, answer.data !== undefined && answer.data !== null ? answer.data : answer);
+            var hi = HOSTS.indexOf(host);
+            if (hi > 0) {
+              HOSTS.splice(hi, 1);
+              HOSTS.unshift(host);
+            }
+            var code = answer.returnCode === undefined || answer.returnCode === null ? '' : String(answer.returnCode);
+            if (code !== '' && code !== '0') {
+              var err = new Error(path + ' -> ' + code + ' ' + text(answer.errorMessage));
+              err.portalCode = code;
+              return finish(err);
+            }
+            if (typeof answer.data === 'string' && answer.data !== '') {
+              var plain;
+              try {
+                plain = decryptBlob(answer.data);
+              } catch (e2) {
+                return retryable(new Error(path + ': no se pudo descifrar la respuesta (' + e2.message + ')'));
+              }
+              var parsed;
+              try {
+                parsed = JSON.parse(plain);
+              } catch (e3) {
+                return retryable(new Error(path + ': respuesta descifrada no JSON'));
+              }
+              return finish(null, parsed);
+            }
+            finish(null, answer.data !== undefined && answer.data !== null ? answer.data : answer);
+          });
         });
-      });
+      } catch (eReq) {
+        return fail(eReq);
+      }
 
-      req.setTimeout(REQUEST_TIMEOUT, function () {
-        req.abort();
+      requests.push(req);
+      req.setTimeout(HOST_TIMEOUT, function () {
+        fail(new Error(path + ': timeout en ' + host));
       });
       req.on('timeout', function () {
-        req.abort();
+        fail(new Error(path + ': timeout en ' + host));
       });
-      req.on('error', function (e) { nextHost(e); });
+      req.on('error', function (e) { fail(e); });
+      req.on('close', function () {
+        if (!resStarted) { fail(new Error(path + ': conexion cerrada en ' + host)); }
+      });
       req.write(payload);
       req.end();
     });
   }
 
-  setup();
+  function launchNext() {
+    if (settled || launched >= order.length) { return; }
+    var host = order[launched++];
+    var httpStarted = false;
+    var httpTimer = null;
+
+    function startHttp() {
+      if (httpStarted || settled) { return; }
+      httpStarted = true;
+      if (httpTimer) { clearTimeout(httpTimer); httpTimer = null; }
+      attempt(host, 'http');
+    }
+
+    /* HTTPS va primero (certificado y SNI reales).  El HTTP plano solo arranca
+       si el intento TLS falla o no contesta en 1,2 s: algunos operadores
+       filtran TLS/SNI hacia el portal y dejan pasar el puerto 80, que es el
+       mismo camino que usa el cliente nativo con {agreement}://{ip}. */
+    active += 2;
+    httpTimer = setTimeout(startHttp, HTTP_FALLBACK_DELAY);
+    attempt(host, 'https', startHttp);
+  }
+
+  function scheduleHedge() {
+    if (settled || launched >= order.length) { return; }
+    hedgeTimer = setTimeout(function () {
+      hedgeTimer = null;
+      if (settled) { return; }
+      launchNext();
+      scheduleHedge();
+    }, HOST_HEDGE);
+  }
+
+  launchNext();
+  scheduleHedge();
 }
 
 function call(path, bean, opts, done) {
@@ -306,16 +475,42 @@ function call(path, bean, opts, done) {
     }
     post(path, body, function (err, data) {
       release();
-      // Si el portal rechaza con aaa100028 (no iniciado sesión / token caducado), renovamos la sesión automáticamente
-      if (err && (err.portalCode === 'aaa100028' || /未登录|sesi[oó]n|login/i.test(err.message)) && !opts._sessionRetried) {
-        console.log('[magis] sesión no iniciada (' + (err.portalCode || err.message) + '). Renovando sesión limpia...');
+      var code = err && err.portalCode;
+      var isDead = code && SESSION_DEAD[code];
+      var isExpiredMsg = err && /未登录|sesi[oó]n|login|token.*expir|invalid.*sn/i.test(err.message || '');
+      /* aaa100028 (not logged in) on OUR OWN anonymous session: mint a clean
+         one.  A seed token cannot be renewed, so it goes to the seed rescue. */
+      if (err && (code === 'aaa100028' || code === 'aaa100027' || isDead || isExpiredMsg) &&
+          !opts._sessionRetried && !session.usesSeed) {
+        console.log('[magis] sesión no iniciada (' + (code || err.message) + '). Renovando sesión limpia...');
         session.ready = false;
         session.userId = '';
         session.userToken = '';
         session.snToken = '';
+        session.at = 0;
         return ensureSession(function (errSess) {
           if (errSess) { return done(err); }
           opts._sessionRetried = true;
+          call(path, bean, opts, done);
+        });
+      }
+      /* Region block (portal100024) or a dead token: try another pool seed,
+         exactly like the reference plugin's rescue.  A seed the portal calls
+         "not logged in" is marked dead so later launches skip it. */
+      if (err && (code === GEO_BLOCKED || isDead || isExpiredMsg) &&
+          (opts._seedTries || 0) < SEED_RESCUE_ROUNDS) {
+        if (SESSION_DEAD[code] && session.usesSeed && session.seed) {
+          markSeedDead(session.seed);
+        }
+        var tried = opts._seedTried || {};
+        if (session.usesSeed && session.seed) { tried[seedIdentity(session.seed)] = true; }
+        return rescueSeed(tried, function (seedErr, seed) {
+          if (!seed) { return done(err); }
+          opts._seedTried = tried;
+          opts._seedTries = (opts._seedTries || 0) + 1;
+          opts._sessionRetried = false;
+          console.log('[magis] ' + (code || 'sesión caída') + ': probando otra semilla (' +
+            opts._seedTries + '/' + SEED_RESCUE_ROUNDS + ')');
           call(path, bean, opts, done);
         });
       }
@@ -324,9 +519,235 @@ function call(path, bean, opts, done) {
   });
 }
 
+/* ------------------------------------------------------- seed pool helpers */
+var seedPool = [];
+var seedsAt = 0;
+var seedInflight = false;
+var seedWaiters = [];
+var lastSeedFailure = 0;
+var deadSeeds = {};
+
+/* /tmp survives a service restart until the TV reboots: keep the pool there
+   so a blocked region does not need the network on every launch. */
+(function loadSeedCache() {
+  try {
+    var raw = JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'));
+    var list = raw && raw.seeds ? raw.seeds : raw;
+    if (list && list.length) { seedPool = list; }
+    if (raw && typeof raw.at === 'number') { seedsAt = raw.at; }
+  } catch (eSeeds) { /* first run */ }
+  if (!seedPool || !seedPool.length) {
+    try {
+      var fallbackPath = path.join(__dirname, 'seeds-fallback.json');
+      var fallbackRaw = JSON.parse(fs.readFileSync(fallbackPath, 'utf8'));
+      var fList = fallbackRaw && fallbackRaw.seeds ? fallbackRaw.seeds : fallbackRaw;
+      if (fList && fList.length) {
+        seedPool = fList;
+        console.log('[magis] semillas iniciales cargadas desde fallback local: ' + seedPool.length);
+      }
+    } catch (eFb) { /* no fallback file */ }
+  }
+  try {
+    var dead = JSON.parse(fs.readFileSync(SEED_DEAD_FILE, 'utf8'));
+    if (dead && typeof dead === 'object') { deadSeeds = dead; }
+  } catch (eDead) { /* none marked yet */ }
+})();
+
+function writeJsonSafe(file, value) {
+  try { fs.writeFileSync(file, JSON.stringify(value)); } catch (eWrite) { /* read-only /tmp */ }
+}
+
+function seedIdentity(seed) {
+  var tok = trim(seed && seed.userToken);
+  return trim(seed && seed.sn) + '|' + tok.slice(-6);
+}
+
+function seedIsDead(seed) {
+  var at = deadSeeds[seedIdentity(seed)];
+  return typeof at === 'number' && Date.now() - at < DEAD_SEED_MS;
+}
+
+function markSeedDead(seed) {
+  var id = seedIdentity(seed);
+  if (!id || id === '|') { return; }
+  deadSeeds[id] = Date.now();
+  var keys = [];
+  var k;
+  for (k in deadSeeds) {
+    if (Object.prototype.hasOwnProperty.call(deadSeeds, k)) { keys.push(k); }
+  }
+  keys.sort(function (a, b) { return deadSeeds[b] - deadSeeds[a]; });
+  var keep = {};
+  for (var i = 0; i < keys.length && i < SEED_MAX; i++) { keep[keys[i]] = deadSeeds[keys[i]]; }
+  deadSeeds = keep;
+  writeJsonSafe(SEED_DEAD_FILE, deadSeeds);
+  console.log('[magis] semilla marcada como muerta: ' + id.slice(0, 16));
+}
+
+function seedIsUsable(seed) {
+  if (!seed || !trim(seed.userId) || !trim(seed.userToken)) { return false; }
+  if (typeof seed.exp === 'number' && seed.exp > 0) {
+    if (seed.exp * 1000 - Date.now() < SEED_MIN_LIFE_MS) { return false; }
+  }
+  return !seedIsDead(seed);
+}
+
+function usableSeeds() {
+  var out = [];
+  for (var i = 0; i < seedPool.length; i++) {
+    if (seedIsUsable(seedPool[i])) { out.push(seedPool[i]); }
+  }
+  return out;
+}
+
+/* `sampleSeeds` from the reference plugin: keep at most SEED_MAX, drawn at
+   random per device so thousands of TVs do not all burn the same seeds. */
+function storeSeeds(list) {
+  var now = Date.now();
+  var alive = [];
+  var rest = [];
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (!e || !trim(e.userId) || !trim(e.userToken)) { continue; }
+    var exp = typeof e.exp === 'number' && e.exp > 0 ? e.exp : 0;
+    var entry = { userId: trim(e.userId), userToken: trim(e.userToken), sn: trim(e.sn).toLowerCase() };
+    if (exp) { entry.exp = exp; }
+    if (exp && exp * 1000 - now < SEED_MIN_LIFE_MS) { rest.push(entry); } else { alive.push(entry); }
+  }
+  var pool = alive.length >= SEED_MAX ? alive : alive.concat(rest);
+  for (var j = pool.length - 1; j > 0; j--) {
+    var r = Math.floor(Math.random() * (j + 1));
+    var tmp = pool[j]; pool[j] = pool[r]; pool[r] = tmp;
+  }
+  seedPool = pool.slice(0, SEED_MAX);
+  seedsAt = now;
+  writeJsonSafe(SEED_FILE, { at: seedsAt, seeds: seedPool });
+}
+
+function refreshSeeds(cb) {
+  cb = cb || function () {};
+  if (seedInflight) { seedWaiters.push(cb); return; }
+  var now = Date.now();
+  if (seedPool.length && seedsAt && now - seedsAt < SEED_REFRESH_COOLDOWN_MS) {
+    return cb(null, false);
+  }
+  if (lastSeedFailure && now - lastSeedFailure < SEED_FAILED_COOLDOWN_MS) {
+    return cb(null, false);
+  }
+  seedInflight = true;
+
+  function finish(err) {
+    seedInflight = false;
+    if (err) { lastSeedFailure = Date.now(); } else { lastSeedFailure = 0; }
+    var waiters = seedWaiters.slice();
+    seedWaiters = [];
+    cb(err || null, !err);
+    for (var i = 0; i < waiters.length; i++) {
+      try { waiters[i](err || null, !err); } catch (eW) { /* ignore */ }
+    }
+  }
+
+  var seedOptions = url.parse(SEED_URL);
+  seedOptions.method = 'GET';
+  seedOptions.rejectUnauthorized = false;
+  seedOptions.headers = { 'User-Agent': 'XuperTV/webOS' };
+  dnsx.prepare(seedOptions, function (prepErr, seedOpts) {
+    if (prepErr) { return finish(prepErr); }
+    seedOpts.rejectUnauthorized = false;
+    var req;
+    try {
+      req = https.request(seedOpts, function (res) {
+        if (res.statusCode !== 200) { res.resume(); return finish(new Error('semillas HTTP ' + res.statusCode)); }
+        var chunks = [];
+        res.on('data', function (c) { chunks.push(c); });
+        res.on('error', function (eRes) { finish(eRes); });
+        res.on('end', function () {
+          var seeds;
+          try { seeds = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+          catch (eJson) { return finish(eJson); }
+          var list = seeds && seeds.seeds ? seeds.seeds : seeds;
+          if (!list || !list.length) { return finish(new Error('lista de semillas vacía')); }
+          storeSeeds(list);
+          console.log('[magis] semillas actualizadas: ' + seedPool.length);
+          finish(null);
+        });
+      });
+    } catch (eReq) { return finish(eReq); }
+    req.on('error', function (e) { finish(e); });
+    req.setTimeout(6000, function () { req.abort(); finish(new Error('timeout de semillas')); });
+    req.end();
+  });
+}
+
+function pickSeed(tried) {
+  var pool = usableSeeds();
+  if (!pool.length) { return null; }
+  for (var i = pool.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+  }
+  for (var n = 0; n < pool.length; n++) {
+    if (!tried[seedIdentity(pool[n])]) { return pool[n]; }
+  }
+  return null;
+}
+
+function adoptSeed(seed) {
+  seed = seed || {};
+  session.userId = trim(seed.userId);
+  session.userToken = trim(seed.userToken);
+  session.sn = trim(seed.sn).toLowerCase();
+  session.snToken = '';
+  session.ready = true;
+  session.seed = seed;
+  session.usesSeed = true;
+  session.at = Date.now();
+}
+
+/* Pick a seed not tried yet.  The kept pool is reused while fresh; otherwise
+   it is downloaded, bounded by the refresh/failure cooldowns. */
+function rescueSeed(tried, cb) {
+  tried = tried || {};
+  var now = Date.now();
+  var fresh = !!(seedPool.length && seedsAt && now - seedsAt < SEED_POOL_FRESH_MS && usableSeeds().length);
+  function pick() {
+    var seed = pickSeed(tried);
+    if (!seed) { return cb(new Error('sin semillas disponibles')); }
+    tried[seedIdentity(seed)] = true;
+    adoptSeed(seed);
+    return cb(null, seed);
+  }
+  if (fresh) { return pick(); }
+  refreshSeeds(function () { pick(); });
+}
+
+var sessionStarting = false;
+var sessionWaiters = [];
+
 function ensureSession(done) {
-  if (session.ready && session.userId && session.userToken) { return done(null, session); }
+  done = done || function () {};
+  var now = Date.now();
+  if (session.ready && session.userId && session.userToken) {
+    if (!session.at || now - session.at < SESSION_MAX_AGE_MS) {
+      return done(null, session);
+    }
+    console.log('[magis] sesión superó 6 horas en memoria. Renovando sesión preventiva...');
+    session.ready = false;
+  }
+  sessionWaiters.push(done);
+  if (sessionStarting) { return; }
+  sessionStarting = true;
   session.ready = false;
+
+  function finishSession(err, sess) {
+    sessionStarting = false;
+    var list = sessionWaiters.slice();
+    sessionWaiters = [];
+    for (var i = 0; i < list.length; i++) {
+      try { list[i](err, sess); } catch (eW) { /* ignore */ }
+    }
+  }
+
   var fp = {};
   var k;
   for (k in FINGERPRINT_FIXED) {
@@ -339,53 +760,44 @@ function ensureSession(done) {
   fp.gatewayMac = randomHex(6).replace(/(..)(?=.)/g, '$1:');
   fp.wifiMac = randomHex(6).replace(/(..)(?=.)/g, '$1:');
 
-  function tryFallbackSeed(origErr) {
-    console.log('[magis] snToken/active falló: ' + (origErr && origErr.message) + '. Reintentando con otro host...');
-    if (!origErr || !origErr._retried) {
-      HOSTS.push(HOSTS.shift()); // rotar host
-      var retryErr = origErr || new Error('reintento');
-      retryErr._retried = true;
-      return setTimeout(function () {
-        ensureSession(done);
-      }, 500);
-    }
-    // Reintento final: si hay conexión exterior a github, probar seeds remotas
-    var seedUrl = 'https://raw.githubusercontent.com/xuper-plugin/kino-plugin-xuper/seeds/seeds.json';
-    var seedOptions = url.parse(seedUrl);
-    seedOptions.method = 'GET';
-    seedOptions.headers = { 'User-Agent': 'XuperTV/webOS' };
-    dnsx.prepare(seedOptions, function (seedPrepErr, seedOpts) {
-      if (seedPrepErr) { return done(origErr); }
-      var req = https.request(seedOpts, function (res) {
-        if (res.statusCode !== 200) { res.resume(); return done(origErr); }
-        var chunks = [];
-        res.on('data', function (c) { chunks.push(c); });
-        res.on('end', function () {
-          try {
-            var seeds = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            var list = Array.isArray(seeds) ? seeds : (seeds && seeds.seeds) || [];
-            if (!list.length) { return done(origErr); }
-            var seed = list[Math.floor(Math.random() * Math.min(list.length, 50))];
-            session.userId = trim(seed.userId);
-            session.userToken = trim(seed.userToken);
-            session.sn = trim(seed.sn).toLowerCase();
-            session.ready = true;
-            done(null, session);
-          } catch (pe) {
-            done(origErr);
-          }
-        });
-      });
-      req.on('error', function () { done(origErr); });
-      req.setTimeout(10000, function () { req.abort(); done(origErr); });
-      req.end();
+  /* Seeds are only useful when the portal itself answers but refuses to
+     activate this device.  If every host timed out, the network is blocked and
+     a borrowed userId/token cannot resolve a stream either, so fail fast and
+     allow the diagnostics report to show the real cause. */
+  function fetchSeedSession(origErr) {
+    var tried = {};
+    if (session.usesSeed && session.seed) { tried[seedIdentity(session.seed)] = true; }
+    rescueSeed(tried, function (seedErr, seed) {
+      if (!seed) {
+        console.log('[magis] sin semilla utilizable: ' + (origErr && origErr.message));
+        return finishSession(origErr);
+      }
+      console.log('[magis] sesión por semilla ' + seedIdentity(seed).slice(0, 16) + ' (bloqueo regional)');
+      finishSession(null, session);
     });
   }
 
+  function retrySessionOnce(origErr) {
+    if (origErr && origErr._retried) { return fetchSeedSession(origErr); }
+    console.log('[magis] sesión no activada por red (' + (origErr && origErr.message) + '). Reintentando una vez...');
+    HOSTS.push(HOSTS.shift()); // rotar host y volver a intentar con otro IP
+    var retryErr = origErr || new Error('reintento');
+    retryErr._retried = true;
+    setTimeout(function () {
+      sessionStarting = false;
+      ensureSession(function () {});
+    }, 400);
+  }
+
   call('v3/snToken', fp, { baseFields: false }, function (err, mint) {
-    if (err) { return tryFallbackSeed(err); }
+    if (err) {
+      /* No portal response at all: another host cycle cannot help, because the
+         hedged post() already tried every hostname and every DNS address. */
+      if (!err.portalCode) { return finishSession(err); }
+      return fetchSeedSession(err);
+    }
     var snToken = trim(mint && mint.snToken);
-    if (!snToken) { return tryFallbackSeed(new Error('el portal no devolvió snToken')); }
+    if (!snToken) { return fetchSeedSession(new Error('el portal no devolvió snToken')); }
     var sn = mint && trim(mint.sn);
     if (!sn) {
       sn = crypto.createHash('md5').update(snToken + SNTOKEN_SALT).digest('hex');
@@ -397,12 +809,18 @@ function ensureSession(done) {
       snToken: snToken, authVersion: '', authCode: '', preCode: '', macAddr: FIXED_MAC,
       reserve1: '', openNum: 4, channel: 'default', matadata: '', signdata: ''
     }, { baseFields: false }, function (err2, active) {
-      if (err2) { return tryFallbackSeed(err2); }
+      if (err2) {
+        if (err2.portalCode) { return fetchSeedSession(err2); }
+        return retrySessionOnce(err2);
+      }
       session.userId = trim(active && active.userId);
       session.userToken = trim(active && active.userToken);
-      if (!session.userToken) { return tryFallbackSeed(new Error('el portal no activó el dispositivo')); }
+      if (!session.userToken) { return fetchSeedSession(new Error('el portal no activó el dispositivo')); }
       session.ready = true;
-      done(null, session);
+      session.seed = null;
+      session.usesSeed = false;
+      session.at = Date.now();
+      finishSession(null, session);
     });
   });
 }
@@ -476,21 +894,43 @@ function itemsFromTree(tree, rootKey) {
 }
 
 /* -------------------------------------------------------------- public API */
-function home(rootKey, done) {
+function home(rootKey, pageNum, done) {
+  if (typeof pageNum === 'function') { done = pageNum; pageNum = 1; }
   rootKey = ROOT_CODES[rootKey] ? rootKey : 'movies';
-  var cached = treeCache[rootKey];
+  pageNum = parseInt(pageNum, 10) || 1;
+  if (pageNum < 1) { pageNum = 1; }
+  var cacheKey = rootKey + ':' + pageNum;
+  var cached = treeCache[cacheKey];
   if (cached && Date.now() - cached.at < TREE_TTL) {
-    return done(null, { root: rootKey, items: cached.items, cached: true });
+    return done(null, { root: rootKey, pageNum: pageNum, items: cached.items, cached: true });
   }
   ensureSession(function (err) {
     if (err) { return done(err); }
     call('getNextColumns', {
-      columnCode: ROOT_CODES[rootKey], pageNum: 1, pageSize: 60, version: ''
+      columnCode: ROOT_CODES[rootKey], pageNum: pageNum, pageSize: 60, version: ''
     }, function (err2, tree) {
       if (err2) { return done(err2); }
       var items = itemsFromTree(tree, rootKey);
-      treeCache[rootKey] = { at: Date.now(), items: items };
-      done(null, { root: rootKey, items: items, cached: false });
+      treeCache[cacheKey] = { at: Date.now(), items: items };
+      done(null, { root: rootKey, pageNum: pageNum, items: items, cached: false });
+    });
+  });
+}
+
+/* Generic portal column fetch.  Used for roots that are not part of the six
+   home roots (novelas), where guessing a column code must fail softly. */
+function column(columnCode, pageNum, done) {
+  if (typeof pageNum === 'function') { done = pageNum; pageNum = 1; }
+  var code = trim(columnCode);
+  if (!code) { return done(new Error('columnCode requerido')); }
+  pageNum = Math.max(1, parseInt(pageNum, 10) || 1);
+  ensureSession(function (err) {
+    if (err) { return done(err); }
+    call('getNextColumns', {
+      columnCode: code, pageNum: pageNum, pageSize: 60, version: ''
+    }, function (err2, tree) {
+      if (err2) { return done(err2); }
+      done(null, { root: code, pageNum: pageNum, items: itemsFromTree(tree, '') });
     });
   });
 }
@@ -506,7 +946,7 @@ function search(value, done) {
   ensureSession(function (err) {
     if (err) { return done(err); }
     call('v3/searchByName', {
-      value: q, type: '0', columnId: '', filter: '', pageNum: 1, pageSize: 20
+      value: q, type: '0', columnId: '', filter: '', pageNum: 1, pageSize: 50
     }, function (err2, answer) {
       if (err2) { return done(err2); }
       var groups = answer && answer.searchItemList;
@@ -541,10 +981,13 @@ function detail(contentId, done) {
     }, function (err2, answer) {
       var cached = itemCache[id] || null;
       if (err2) {
-        /* Movies answer portal100006 ("episode does not exist"): the catalog
-           record already carries director/cast/synopsis/tags. */
-        if (err2.portalCode === 'portal100006' && cached) {
-          return done(null, { item: cached, episodes: [], seasons: [] });
+        /* Movies answer portal100006 ("episode does not exist") or portal error codes
+           because they do not have an episode tree in v4/getItemData. If cached is missing
+           (e.g. after service restart), synthesize a minimal item so playback and detail view
+           proceed without throwing. */
+        if (err2.portalCode || /portal/i.test(err2.message)) {
+          var fallbackItem = cached || { id: id, title: '', kind: 'película', episodes: [], seasons: [], portal: true };
+          return done(null, { item: fallbackItem, episodes: [], seasons: [] });
         }
         return done(err2);
       }
@@ -791,24 +1234,48 @@ function subtitleList(episode) {
   return out;
 }
 
+var PLAY_TTL = 60 * 1000;
+var playCache = {};
+var playWaiters = {};
+
 /* Shared startPlayVOD step: both the playback resolver and the media-info
  * call need the same episode/track list. */
 function loadPlay(contentId, seriesId, done) {
   var id = trim(contentId);
   if (!id) { return done(new Error('falta contentId')); }
+  var cacheKey = id + ':' + trim(seriesId);
+  if (playCache[cacheKey] && Date.now() < playCache[cacheKey].at + PLAY_TTL) {
+    return done(null, playCache[cacheKey].data);
+  }
+  if (playWaiters[cacheKey]) {
+    playWaiters[cacheKey].push(done);
+    return;
+  }
+  playWaiters[cacheKey] = [done];
+
+  function finishPlay(err, res) {
+    var waiters = playWaiters[cacheKey] || [];
+    delete playWaiters[cacheKey];
+    for (var i = 0; i < waiters.length; i++) {
+      try { waiters[i](err, res); } catch (eW) { /* ignore */ }
+    }
+  }
+
   ensureSession(function (err) {
-    if (err) { return done(err); }
+    if (err) { return finishPlay(err); }
     call('v10/startPlayVOD', {
       contentId: id,
       seriesContentId: trim(seriesId),
       startTime: 0, type: '1', columnId: 0, authType: ''
     }, function (err2, play) {
-      if (err2) { return done(err2); }
+      if (err2) { return finishPlay(err2); }
       var episode = play && play.episodeList && play.episodeList[0];
-      if (!episode) { return done(new Error('el portal no devolvió pistas de vídeo')); }
+      if (!episode) { return finishPlay(new Error('el portal no devolvió pistas de vídeo')); }
       var tracks = collectTracks(episode);
-      if (!tracks.length) { return done(new Error('el portal no devolvió pistas de vídeo')); }
-      done(null, { play: play, episode: episode, tracks: tracks });
+      if (!tracks.length) { return finishPlay(new Error('el portal no devolvió pistas de vídeo')); }
+      var res = { play: play, episode: episode, tracks: tracks };
+      playCache[cacheKey] = { at: Date.now(), data: res };
+      finishPlay(null, res);
     });
   });
 }
@@ -858,7 +1325,29 @@ function resolve(contentId, seriesId, options, done) {
       if (!cdns.length) { return done(new Error('el portal no expuso CDN de vod libre')); }
       var cdn = cdns[0];
       var ext = trim(track.videoFormat).toLowerCase() === 'ts' ? 'ts' : 'mp4';
-      var url = cdn.bases[0] + '/vod/' + trim(track.contentId) + '_media.' + ext;
+      var contentPath = '/vod/' + trim(track.contentId) + '_media.' + ext;
+
+      function cdnHeaders(auth) {
+        return {
+          'Content-Auth': auth,
+          'Content-License': license,
+          'User-Agent': UA_CDN,
+          App: APP_ID,
+          'App-Version': APK_VERSION
+        };
+      }
+
+      var url = cdn.bases[0] + contentPath;
+      /* The proxy already knows how to retry a failed CDN, but it needs the
+         full candidate list.  Use the spare address of the same CDN plus every
+         other free CDN, each with its own Content-Auth token. */
+      var backupUrls = [];
+      for (var ci = 0; ci < cdns.length; ci++) {
+        for (var bi = 0; bi < cdns[ci].bases.length; bi++) {
+          if (ci === 0 && bi === 0) { continue; }
+          backupUrls.push({ url: cdns[ci].bases[bi] + contentPath, headers: cdnHeaders(cdns[ci].auth) });
+        }
+      }
 
       var mime = ext === 'ts' ? 'video/mp2t' : 'video/mp4';
       var codec = trim(track.encodeFormat).toUpperCase();
@@ -872,13 +1361,8 @@ function resolve(contentId, seriesId, options, done) {
         availableTracks: availableTracks,
         trackIndex: index,
         audio: trim(track.audioInfo),
-        headers: {
-          'Content-Auth': cdn.auth,
-          'Content-License': license,
-          'User-Agent': UA_CDN,
-          App: APP_ID,
-          'App-Version': APK_VERSION
-        },
+        headers: cdnHeaders(cdn.auth),
+        backupUrls: backupUrls,
         subtitles: subtitleList(episode),
         name: text(play && play.name)
       });
@@ -1003,7 +1487,7 @@ function getLiveChannels(columnId, pageNum, pageSize, done) {
     pageSize = 20;
   }
   pageNum = Math.max(1, parseInt(pageNum, 10) || 1);
-  pageSize = Math.max(1, Math.min(50, parseInt(pageSize, 10) || 20));
+  pageSize = Math.max(1, Math.min(250, parseInt(pageSize, 10) || 20));
   ensureSession(function (err) {
     if (err) { return done(err); }
     /* Return one portal page at a time.  The client paints page one first,
@@ -1011,10 +1495,7 @@ function getLiveChannels(columnId, pageNum, pageSize, done) {
        blank TV screen while a large category (for example Deportes) loads. */
     var out = [];
     var seen = {};
-    post('v6/getLiveData', {
-      userToken: session.userToken,
-      userId: session.userId,
-      portalCode: PORTAL_CODE,
+    call('v6/getLiveData', {
       columnId: columnId || 76182,
       dataVersion: '',
       pageSize: pageSize,
@@ -1059,7 +1540,7 @@ function getLiveCategories(done) {
   }
   ensureSession(function (err) {
     if (err) { return done(err); }
-    call('getNextColumns', { columnCode: 'masnew_live', pageNum: 1, pageSize: 50, version: '' }, function (err2, res) {
+    call('getNextColumns', { columnCode: 'masnew_live', pageNum: 1, pageSize: 200, version: '' }, function (err2, res) {
       if (err2) { return done(err2); }
       var list = (res && res.recommendList) || [];
       var out = [];
@@ -1087,9 +1568,12 @@ function parseM3u(content) {
     if (line.indexOf('#EXTINF:') === 0) {
       var commaIdx = line.indexOf(',');
       var meta = line.slice(8, commaIdx > 0 ? commaIdx : undefined);
-      var title = commaIdx > 0 ? line.slice(commaIdx + 1).trim() : 'Canal';
-      var logoMatch = /tvg-logo="([^"]+)"/i.exec(meta);
-      var groupMatch = /group-title="([^"]+)"/i.exec(meta);
+      var title = commaIdx > 0 ? line.slice(commaIdx + 1).trim() : '';
+      var logoMatch = /tvg-logo=["']([^"']+)["']/i.exec(meta);
+      var groupMatch = /group-title=["']([^"']+)["']/i.exec(meta);
+      var nameMatch = /tvg-name=["']([^"']+)["']/i.exec(meta);
+      if (!title && nameMatch) { title = nameMatch[1]; }
+      if (!title) { title = 'Canal ' + (channels.length + 1); }
       cur = {
         name: title,
         logo: logoMatch ? logoMatch[1] : '',
@@ -1098,6 +1582,8 @@ function parseM3u(content) {
         now: 'En vivo',
         fav: false
       };
+    } else if (line.indexOf('#EXTGRP:') === 0 && cur && cur.group === 'Addon') {
+      cur.group = line.slice(8).trim() || 'Addon';
     } else if (line && line.indexOf('#') !== 0 && cur) {
       cur.url = line;
       cur.streamUrl = line;
@@ -1218,13 +1704,25 @@ function resolveLive(channelCode, done) {
   ensureSession(function (err) {
     if (err) { return done(err); }
 
-    function getStreamAddr(cb) {
+    function getStreamAddr(cb, sessionRetried) {
       firstCall([
         { path: 'v4/startPlayLive', bean: { channelCode: channelCode, type: '1' } },
         { path: 'v4/startPlayLive', bean: { channelCode: channelCode, columnId: '76182', type: '1' } },
         { path: 'v4/startPlayLive', bean: { channelCode: channelCode, columnId: 0, type: '1' } }
       ], function (err2, play) {
-        if (err2) { return cb(err2); }
+        if (err2) {
+          /* The portal sometimes invalidates the whole anonymous session when
+             all startPlayLive variants fail. Rebuild it once; without this,
+             the next catalog/detail/VOD request inherits the same bad token. */
+          if (!sessionRetried) {
+            resetSessionAfterLiveFailure();
+            return ensureSession(function (refreshErr) {
+              if (refreshErr) { return cb(err2); }
+              getStreamAddr(cb, true);
+            });
+          }
+          return cb(err2);
+        }
         var addrList = (play && play.liveAddressList) || [];
         var addr = null;
         for (var a = 0; a < addrList.length; a++) {
@@ -1313,6 +1811,20 @@ module.exports = {
   post: post,
   ensureSession: ensureSession,
   session: session,
+  seedStatus: function () {
+    var dead = 0;
+    var k;
+    for (k in deadSeeds) {
+      if (Object.prototype.hasOwnProperty.call(deadSeeds, k) && Date.now() - deadSeeds[k] < DEAD_SEED_MS) { dead++; }
+    }
+    return {
+      pool: usableSeeds().length,
+      total: seedPool.length,
+      freshAt: seedsAt,
+      usingSeed: !!session.usesSeed,
+      dead: dead
+    };
+  },
   constants: {
     APP_ID: APP_ID,
     APK_VERSION: APK_VERSION,

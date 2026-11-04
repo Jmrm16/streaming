@@ -170,19 +170,52 @@ function checkHost(host, done) {
     if (pending > 0) { return; }
     result.mismatch = result.system.ok && result.doh.ok && !hasCommon(result.system.ips, result.doh.ips);
 
-    /* Prefer the DoH answer: it is the one the bypass will use. */
-    var dialIp = first(result.doh.ips) || first(result.system.ips);
-    if (!dialIp) {
+    /* Cloudflare publishes several anycast addresses for the same hostname and
+       the portal client rotates them between calls.  Probing only the first one
+       reported "sin conexión" for every domain while the app could still reach
+       the portal through the second address, which is exactly the misleading
+       report users sent from blocked networks.  Probe every known address in
+       parallel and keep the first one that accepts the connection. */
+    var ips = [];
+    var seenIps = {};
+    var sources = [result.doh.ips, result.system.ips];
+    for (var si = 0; si < sources.length; si++) {
+      var sourceIps = sources[si] || [];
+      for (var ii = 0; ii < sourceIps.length; ii++) {
+        var candidateIp = sourceIps[ii];
+        if (candidateIp && !seenIps[candidateIp]) {
+          seenIps[candidateIp] = true;
+          ips.push(candidateIp);
+        }
+      }
+    }
+    result.tried = [];
+    if (!ips.length) {
       result.verdict = (!result.system.ok && !result.doh.ok) ? 'sin-salida' : 'sin-tcp';
       return done(result);
     }
-    tcpCheck(dialIp, 443, function (tcp) {
+
+    var tcpSettled = false;
+    var pendingTcp = ips.length;
+
+    function tcpFailed() {
+      if (tcpSettled) { return; }
+      tcpSettled = true;
+      result.tcp443 = {
+        ip: ips[0], port: 443, ok: false,
+        error: (result.tried[0] && result.tried[0].error) || 'sin respuesta',
+        tried: result.tried
+      };
+      result.verdict = 'sin-tcp';
+      done(result);
+    }
+
+    function tcpSucceeded(ip, tcp) {
+      if (tcpSettled) { return; }
+      tcpSettled = true;
       result.tcp443 = tcp;
-      if (!tcp.ok) {
-        result.verdict = 'sin-tcp';
-        return done(result);
-      }
-      httpsCheck(host, dialIp, function (http) {
+      result.dialIp = ip;
+      httpsCheck(host, ip, function (http) {
         result.http = http;
         if (!http.ok) { result.verdict = 'tls-falla'; return done(result); }
         if (result.mismatch) { result.verdict = 'dns-distinto'; return done(result); }
@@ -190,7 +223,19 @@ function checkHost(host, done) {
         result.verdict = 'ok';
         done(result);
       });
-    });
+    }
+
+    for (var pi = 0; pi < ips.length; pi++) {
+      (function (probeIp) {
+        tcpCheck(probeIp, 443, function (tcp) {
+          tcp.ip = probeIp;
+          result.tried.push(tcp);
+          pendingTcp--;
+          if (tcp.ok) { tcpSucceeded(probeIp, tcp); return; }
+          if (pendingTcp === 0) { tcpFailed(); }
+        });
+      })(ips[pi]);
+    }
   }
 
   var tSys = now();
@@ -390,7 +435,9 @@ function layerProbe(url, headers, done) {
     var host = parsed.hostname;
     var secure = parsed.protocol === 'https:';
 
-    function doRequest(ipList, ipIndex) {
+    /* Function expression, not a declaration: V8 3.28 (webOS 3.x) rejects a
+       declaration inside a block and the service never loads. */
+    var doRequest = function (ipList, ipIndex) {
       var connectHost = (ipList && ipList[ipIndex]) || host;
       var defaultPort = secure ? 443 : 80;
       var port = parsed.port ? parseInt(parsed.port, 10) : defaultPort;
@@ -422,7 +469,7 @@ function layerProbe(url, headers, done) {
         finish({ ok: false, error: err.code || err.message, ms: now() - t0 });
       });
       req.end();
-    }
+    };
 
     if (!host || dnsx2.isIpv4(host)) { return doRequest([host], 0); }
     var hit = dnsx2.cached(host);

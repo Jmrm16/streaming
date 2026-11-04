@@ -96,6 +96,20 @@ QUE HACER
 GUIA CON DIBUJOS
   Abre guia-instalacion.html con doble clic (funciona sin internet).
 
+SI INSTALAS DESDE EL CELULAR (webOS Dev Manager / app de la TV)
+  Tambien puedes instalar el archivo .ipk desde el celular. En ese caso el
+  instalador de Windows no participa y la TV puede no reconocer el servicio
+  hasta reiniciarse:
+    1. Instala el .ipk desde el celular.
+    2. Desenchufa la TV de la corriente 30 segundos (no basta con apagarla).
+    3. Enchufala y abre XuperTV.
+  Si la app dice "el servicio no arrancó" o el diagnostico solo muestra
+  "DNS seguro sin datos", "Codec: No confirmado" y "Modo Fluido sin datos",
+  es exactamente eso: falta ese reinicio. Vuelve a abrir la app despues.
+  En paises donde el portal bloquea por region (portal100024) la app ahora
+  reintenta sola con sesiones de respaldo; si aun asi falla, prueba una VPN
+  en el router.
+
 SI ALGO FALLA
   Mira el paso 5 de la guia. Casi siempre es:
     - el PC y la TV no estan en la misma red,

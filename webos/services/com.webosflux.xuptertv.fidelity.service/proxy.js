@@ -16,6 +16,7 @@ var crypto = require('crypto');
 var urlmod = require('url');
 var tsIndexer = require('./ts-indexer');
 var dnsx = require('./dnsx');
+var upstream = require('./upstream');
 
 var MAX_TOKENS = 6;
 var tokens = {};      // token -> { url, headers, at }
@@ -102,11 +103,26 @@ function resolveHostIp(entry, cb) {
   });
 }
 
+function normalizeBackups(list) {
+  var out = [];
+  if (!Array.isArray(list)) { return out; }
+  for (var i = 0; i < list.length; i++) {
+    var item = list[i];
+    if (!item) { continue; }
+    if (typeof item === 'string') {
+      out.push({ url: item, headers: null });
+    } else if (item.url) {
+      out.push({ url: item.url, headers: item.headers || null });
+    }
+  }
+  return out;
+}
+
 function add(target, headers, duration, resolvedIp, backupUrls) {
   var token = crypto.randomBytes(12).toString('hex');
   var entry = {
     url: target,
-    backupUrls: Array.isArray(backupUrls) ? backupUrls : [],
+    backupUrls: normalizeBackups(backupUrls),
     backupIndex: 0,
     headers: headers || {},
     duration: Number(duration) || 0,
@@ -168,10 +184,13 @@ function sendSubtitle(req, res, entry) {
         'Accept': '*/*',
         Host: parsed.host || (host + (port !== defaultPort ? ':' + port : ''))
       },
-      agent: secure ? httpsAgent : httpAgent
+      agent: upstream.agentFor(secure, connectHost, port) || (secure ? httpsAgent : httpAgent)
     };
     var failed = false;
-    var upstream = (secure ? https : http).request(options, function (up) {
+    /* Do not shadow the shared `upstream` module: it selected the agent
+       above. Shadowing it made every loopback subtitle request throw before
+       opening a socket, leaving the UI switched ON with no visible captions. */
+    var subtitleRequest = (secure ? https : http).request(options, function (up) {
       var parts = [];
       up.on('data', function (chunk) { parts.push(chunk); });
       up.on('end', function () {
@@ -187,8 +206,8 @@ function sendSubtitle(req, res, entry) {
         res.end(body);
       });
     });
-    upstream.setTimeout(20000, function () { try { upstream.abort(); } catch (eAbort) { /* ignore */ } });
-    upstream.on('error', function () {
+    subtitleRequest.setTimeout(20000, function () { try { subtitleRequest.abort(); } catch (eAbort) { /* ignore */ } });
+    subtitleRequest.on('error', function () {
       if (failed) { return; }
       failed = true;
       try {
@@ -196,8 +215,18 @@ function sendSubtitle(req, res, entry) {
         res.end('subtitle upstream error');
       } catch (e502) { /* ignore */ }
     });
-    upstream.end();
+    subtitleRequest.end();
   });
+}
+
+/* CacheFly-backed CDNs are the ones where the operator-level SNI block hits
+ * hardest (Chile, Argentina, Colombia).  The 1.6.x builds survived by forcing
+ * TLS and sending `cachefly.net` as SNI.  We keep the real hostname first and
+ * use that camouflage only as a retry, so a network that does not block the
+ * real name keeps normal TLS. */
+function isCacheFlyHost(host, ip) {
+  if (isCacheFlyIp(ip)) { return true; }
+  return /swzablvpm|kyalbhxgw|m3x8o50te|qnrgmzpcw|faolmbghu/i.test(String(host || ''));
 }
 
 function mediaRequest(entry, method, extraHeaders, resolvedIp) {
@@ -215,15 +244,12 @@ function mediaRequest(entry, method, extraHeaders, resolvedIp) {
     connectHost = host;
   }
 
+  /* Conexión transparente: respeta el protocolo original y el hostname real en
+     el SNI.  Si el reintento camuflado está activo para este recurso CacheFly,
+     se fuerza HTTPS y se envía `cachefly.net` como SNI (comportamiento 1.6.17). */
   var secure = parsed.protocol === 'https:';
-
-  /* In restrictive jurisdictions (e.g. Chile), carriers inspect unencrypted port 80
-     Host headers to block streams. VOD CDNs on CacheFly support HTTPS on port 443,
-     which encrypts the entire connection and circumvents DPI. */
-  var isCacheFly = isCacheFlyIp(connectHost) || /swzablvpm|kyalbhxgw|m3x8o50te|qnrgmzpcw|faolmbghu/i.test(host || '');
-  if (isCacheFly) {
-    secure = true;
-  }
+  var masked = !!(entry._maskSni && isCacheFlyHost(host, connectHost));
+  if (masked) { secure = true; }
 
   var headers = {};
   var k;
@@ -235,26 +261,21 @@ function mediaRequest(entry, method, extraHeaders, resolvedIp) {
   }
 
   var defaultPort = secure ? 443 : 80;
-  var port = (secure && parsed.port === '80') ? 443 : (parsed.port || defaultPort);
+  var port = (masked && parsed.port === '80') ? 443 : (parsed.port || defaultPort);
   headers.Host = parsed.host || (host + (port !== defaultPort ? ':' + port : ''));
-
-  var servername = host;
-  if (isCacheFly) {
-    servername = 'cachefly.net';
-  }
 
   return {
     secure: secure,
     options: {
       hostname: connectHost,
       host: connectHost,
-      servername: servername,
+      servername: masked ? 'cachefly.net' : host,
       rejectUnauthorized: false,
       port: port,
       path: parsed.path,
       method: method,
       headers: headers,
-      agent: secure ? httpsAgent : httpAgent
+      agent: upstream.agentFor(secure, connectHost, port) || (secure ? httpsAgent : httpAgent)
     }
   };
 }
@@ -394,10 +415,26 @@ function forward(req, res, entry, token) {
     var connRecord = { upstream: null, res: res, req: req, up: null };
     activeUpstreams.push(connRecord);
 
-    function cleanup() {
+    function untrack() {
       var idx = activeUpstreams.indexOf(connRecord);
       if (idx !== -1) { activeUpstreams.splice(idx, 1); }
-      destroyConnection(connRecord);
+    }
+    /* Tear down only the upstream connection.  The downstream response belongs
+       to req/res: destroying it here made every protocol/CDN retry write to a
+       dead socket and could truncate the tail of a piped stream. */
+    function cleanup() {
+      untrack();
+      if (connRecord.up) {
+        try { connRecord.up.unpipe(); } catch (e1) { /* ignore */ }
+        try { if (typeof connRecord.up.destroy === 'function') connRecord.up.destroy(); } catch (e2) { /* ignore */ }
+        try { if (connRecord.up.socket) connRecord.up.socket.destroy(); } catch (e3) { /* ignore */ }
+        connRecord.up = null;
+      }
+      try { if (connRecord.upstream) connRecord.upstream.abort(); } catch (e4) { /* ignore */ }
+      try { if (connRecord.upstream && connRecord.upstream.socket) connRecord.upstream.socket.destroy(); } catch (e5) { /* ignore */ }
+      connRecord.upstream = null;
+      connRecord.res = null;
+      connRecord.req = null;
     }
 
     req.on('close', cleanup);
@@ -414,6 +451,18 @@ function forward(req, res, entry, token) {
       upstream.setTimeout(0);
       if (upstream.socket) {
         try { upstream.socket.setTimeout(0); } catch (e1) { /* ignore */ }
+      }
+
+      /* DPI block pages usually arrive as 403/451 (HTML), not as a socket
+         error.  For CacheFly CDNs retry once with the 1.6.17 camouflage. */
+      if (!entry._maskSni && isCacheFlyHost(urlmod.parse(entry.url || '').hostname, ip) &&
+          (up.statusCode === 403 || up.statusCode === 451)) {
+        up.resume();
+        console.log('[proxy] CDN CacheFly respondió ' + up.statusCode + ', reintentando con SNI camuflado...');
+        entry._maskSni = true;
+        entry.resolvedIp = '';
+        cleanup();
+        return forward(req, res, entry, token);
       }
 
       var rawMime = (up.headers['content-type'] || '').toLowerCase();
@@ -466,9 +515,9 @@ function forward(req, res, entry, token) {
       res.writeHead(up.statusCode || 200, out);
 
       up.on('error', function () { cleanup(); });
-      up.on('close', function () { cleanup(); });
-      up.on('end', function () { cleanup(); });
-
+      /* Do not clean up on 'end'/'close': cleanup() unpipes, and unpiping from
+         inside an 'end' listener runs before pipe's own onend, so the response
+         would never be ended.  res 'finish'/'close' releases the entry. */
       up.pipe(res);
     });
 
@@ -498,19 +547,61 @@ function forward(req, res, entry, token) {
           entry.resolvedIp = dnsx.dial(h, hit.ips);
         }
       }
-      if (!res.headersSent && entry && entry.backupUrls && entry.backupIndex < entry.backupUrls.length) {
-        var nextUrl = entry.backupUrls[entry.backupIndex++];
-        console.log('[proxy] upstream falló (' + (uErr && (uErr.code || uErr.message)) + '), reintentando con CDN alternativa: ' + nextUrl);
-        entry.url = nextUrl;
+      /* Si el CDN es CacheFly, probar una vez el camuflaje de la 1.6.17 antes
+         de cambiar de protocolo: en Claro/ETB el bloqueo llega por SNI. */
+      if (!res.headersSent && entry && !entry._maskSni &&
+          isCacheFlyHost(urlmod.parse(entry.url || '').hostname, entry.resolvedIp)) {
+        console.log('[proxy] upstream CacheFly falló (' + (uErr && (uErr.code || uErr.message)) + '), reintentando con SNI camuflado cachefly.net...');
+        entry._maskSni = true;
         entry.resolvedIp = '';
         cleanup();
         return forward(req, res, entry, token);
+      }
+      /* Fallback adaptativo: si falla HTTP por bloqueo DPI del operador en el
+         puerto 80 (RST/timeout), reintenta por HTTPS; si falla HTTPS por la
+         pila TLS antigua de webOS 1/2/3, reintenta por HTTP compatible.  Se
+         hace una sola vez por recurso y sin destruir la respuesta del cliente. */
+      if (!res.headersSent && entry && !entry._retriedProtocol && /^https?:\/\//i.test(entry.url || '')) {
+        entry._retriedProtocol = true;
+        var isSecure = /^https:\/\//i.test(entry.url);
+        if (!isSecure) {
+          console.log('[proxy] upstream HTTP falló (' + (uErr && (uErr.code || uErr.message)) + '), reintentando con HTTPS por posible bloqueo DPI...');
+          entry.url = entry.url.replace(/^http:\/\//i, 'https://');
+          entry.resolvedIp = '';
+          cleanup();
+          return forward(req, res, entry, token);
+        }
+        console.log('[proxy] upstream HTTPS falló (' + (uErr && (uErr.code || uErr.message)) + '), reintentando con HTTP compatible...');
+        entry.url = entry.url.replace(/^https:\/\//i, 'http://');
+        entry.resolvedIp = '';
+        cleanup();
+        return forward(req, res, entry, token);
+      }
+      if (!res.headersSent && entry && entry.backupUrls && entry.backupIndex < entry.backupUrls.length) {
+        var next = entry.backupUrls[entry.backupIndex++];
+        var nextUrl = (next && typeof next === 'string') ? next : (next && next.url);
+        if (nextUrl) {
+          console.log('[proxy] upstream falló (' + (uErr && (uErr.code || uErr.message)) + '), reintentando con CDN alternativa: ' + nextUrl);
+          entry.url = nextUrl;
+          if (next && next.headers) { entry.headers = next.headers; }
+          entry.resolvedIp = '';
+          /* A different CDN deserves its own HTTP<->HTTPS attempt and its own
+             SNI decision (it may not be CacheFly). */
+          entry._retriedProtocol = false;
+          entry._maskSni = false;
+          cleanup();
+          return forward(req, res, entry, token);
+        }
       }
       if (!res.headersSent) {
         try {
           res.writeHead(502, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
           res.end('upstream error');
         } catch (e502) { /* ignore */ }
+      } else {
+        /* Mid-stream failure: abort the incomplete response instead of
+           leaving the TV waiting for the rest of the body. */
+        try { res.destroy(); } catch (eDestroy) { /* ignore */ }
       }
       cleanup();
     });
@@ -601,7 +692,7 @@ function start(cb) {
     server.setTimeout(0);
   }
   server.on('error', function (err) { cb(err); });
-  server.listen(0, function () {
+  server.listen(0, '127.0.0.1', function () {
     port = server.address().port;
     cb(null, port);
   });

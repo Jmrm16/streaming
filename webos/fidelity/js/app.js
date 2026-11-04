@@ -21,7 +21,7 @@
     return n;
   }
   function $(id) { return document.getElementById(id); }
-  function clear(n) { while (n.firstChild) { n.removeChild(n.firstChild); } }
+  function clear(n) { if (!n) { return; } while (n.firstChild) { n.removeChild(n.firstChild); } }
   function abs(n, x, y, w, h) {
     n.style.position = 'absolute';
     n.style.left = x + 'px';
@@ -803,6 +803,10 @@ function portalServiceCall(method, params, done, customTimeout) {
           applyPendingHistoryEpisode(item);
 
           item._detailsLoaded = true;
+        } else {
+          item._detailsLoaded = true;
+          if (!item.episodes) { item.episodes = []; }
+          if (!item.seasons) { item.seasons = []; }
         }
         var wait = item._detailWait || [];
         item._detailWait = [];
@@ -1016,7 +1020,7 @@ function portalServiceCall(method, params, done, customTimeout) {
   var LIVE_PANEL_WINDOW = 48;
   var playerVodInfo, vodInfobarPoster, vodInfobarTitle, vodTimeCurrent, vodTimeTotal, vodSeekbar, vodSeekProgress, vodSeekBuffered, vodSeekThumb, playerOsdIcon;
   var vodScrubbing = false, vodScrubTime = 0;
-  var welcomeTimer = null;
+  var welcomeTimer = null, welcomeWatchdog = null;
 
   /* ------------------------------------------------------------ focus core */
   function isVisible(node) {
@@ -1032,6 +1036,9 @@ function portalServiceCall(method, params, done, customTimeout) {
     }
     if (dialogPlaySettingsOpen) {
       return !!closest(node, '#dialog-playsettings');
+    }
+    if (dialogUpdateOpen) {
+      return !!closest(node, '#dialog-update');
     }
     if (playSettingViewOpen) {
       return !!closest(node, '#player-playsetting-view');
@@ -1218,6 +1225,10 @@ function portalServiceCall(method, params, done, customTimeout) {
     var now = Date.now();
     if (now - lastBackTime < 250) { return; }
     lastBackTime = now;
+    if (state.screen === 'welcome') {
+      finishWelcome();
+      return;
+    }
     /* The audio/subtitle dialog can now open from the details screen too. */
     if (dialogPlaySettingsOpen) {
       closePlaySettingsDialog();
@@ -1320,6 +1331,12 @@ function portalServiceCall(method, params, done, customTimeout) {
     var key = e.key || '';
     var handled = true;
 
+
+    if (state.screen === 'welcome') {
+      finishWelcome();
+      if (e.preventDefault) { e.preventDefault(); }
+      return;
+    }
     /* Back buttons */
     var isBack = (k === 461 || k === 27 || k === 8 || key === 'Back' || key === 'GoBack' || key === 'Escape');
     if (isBack) {
@@ -1331,6 +1348,15 @@ function portalServiceCall(method, params, done, customTimeout) {
       }
       if (state.episodeBrowserOpen) {
         closeEpisodeBrowser();
+        if (e.preventDefault) { e.preventDefault(); }
+        if (e.stopPropagation) { e.stopPropagation(); }
+        return;
+      }
+      if (dialogUpdateOpen) {
+        lastBackTime = Date.now();
+        if (!updateInProgress) {
+          closeUpdateDialog();
+        }
         if (e.preventDefault) { e.preventDefault(); }
         if (e.stopPropagation) { e.stopPropagation(); }
         return;
@@ -1607,27 +1633,67 @@ function portalServiceCall(method, params, done, customTimeout) {
   function startWelcome() {
     var img = $('welcome-loading-img');
     var frame = 1;
+    if (welcomeTimer) { clearInterval(welcomeTimer); welcomeTimer = null; }
+    if (welcomeWatchdog) { clearTimeout(welcomeWatchdog); welcomeWatchdog = null; }
+    welcomeWatchdog = setTimeout(function () {
+      finishWelcome();
+    }, 4500);
     welcomeTimer = setInterval(function () {
       frame++;
       if (frame > 16) { finishWelcome(); return; }
-      img.src = 'assets/original/welcome/img_welcome_loading' + frame + '.png';
+      if (img) {
+        img.src = 'assets/original/welcome/img_welcome_loading' + frame + '.png';
+      }
     }, 250);
   }
 
   function finishWelcome() {
+    if (welcomeWatchdog) { clearTimeout(welcomeWatchdog); welcomeWatchdog = null; }
     if (welcomeTimer) { clearInterval(welcomeTimer); welcomeTimer = null; }
-    if (!homeBuilt) { buildHome(); }
-    showScreen('home');
-    selectTab(0, false);
-    setFocus(liveFocus);
+    var welcomeEl = $('screen-welcome');
+    var homeEl = $('screen-home');
+    try {
+      if (!homeBuilt) { buildHome(); }
+    } catch (eHome) {
+      console.error('buildHome error:', eHome);
+    }
+    try {
+      showScreen('home');
+    } catch (eShow) {
+      console.error('showScreen error:', eShow);
+      if (welcomeEl) { welcomeEl.classList.remove('is-active'); }
+      if (homeEl) { homeEl.classList.add('is-active'); }
+      state.screen = 'home';
+    }
+    if (welcomeEl && welcomeEl.classList.contains('is-active')) {
+      welcomeEl.classList.remove('is-active');
+    }
+    if (homeEl && !homeEl.classList.contains('is-active')) {
+      homeEl.classList.add('is-active');
+      state.screen = 'home';
+    }
+    try {
+      selectTab(0, false);
+    } catch (eTab) {
+      console.error('selectTab error:', eTab);
+    }
+    try {
+      if (liveFocus) { setFocus(liveFocus); }
+    } catch (eFocus) {
+      console.error('setFocus error:', eFocus);
+    }
     /* The first launch shows the full tab labels even though the video holds
        focus; the rail collapses on the first focus change. */
-    var rail = $('home-tabs');
-    if (rail) { rail.classList.add('is-expanded'); rail.classList.remove('is-collapsed'); }
-    var railBg = document.querySelector('.home-sidebar-bg');
-    if (railBg) { railBg.classList.add('is-on'); }
-    var homeScreen = $('screen-home');
-    if (homeScreen) { homeScreen.classList.add('is-rail-open'); }
+    try {
+      var rail = $('home-tabs');
+      if (rail) { rail.classList.add('is-expanded'); rail.classList.remove('is-collapsed'); }
+      var railBg = document.querySelector('.home-sidebar-bg');
+      if (railBg) { railBg.classList.add('is-on'); }
+      var homeScreen = $('screen-home');
+      if (homeScreen) { homeScreen.classList.add('is-rail-open'); }
+    } catch (eRail) {
+      /* ignore */
+    }
   }
 
   /* =================================================================== HOME */
@@ -1904,7 +1970,14 @@ function portalServiceCall(method, params, done, customTimeout) {
          fails, removing the <img> reveals the authentic placeholder. */
       var pimg = el('img', 'p-img');
       pimg.setAttribute('data-poster-src', item.poster);
-      pimg.onerror = function () { this.style.display = 'none'; };
+      pimg.onerror = function () {
+        if (this.src && this.src.indexOf('https://') === 0 && !this._httpFallback) {
+          this._httpFallback = true;
+          this.src = this.src.replace('https://', 'http://');
+          return;
+        }
+        this.style.display = 'none';
+      };
       p.appendChild(pimg);
     }
     /* sel_poster_nohalo items (free, search, related) draw their own title,
@@ -2058,6 +2131,10 @@ function portalServiceCall(method, params, done, customTimeout) {
   var livePreviewTimer = null;
   var livePreviewChannel = '';
   var dialogAddonsOpen = false;
+  var dialogUpdateOpen = false;
+  var updatePendingInfo = null;
+  var updateDismissedSession = false;
+  var updateInProgress = false;
 
   function stopLivePreview() {
     livePreviewSeq++;
@@ -2227,10 +2304,11 @@ function portalServiceCall(method, params, done, customTimeout) {
     liveChannelLoadColumnId = requestedColumnId;
     liveChannelsLoading = true;
     liveChannelsLoaded = false;
-    CHANNELS.splice(0, CHANNELS.length);
-    state.channel = 0;
-    renderLiveRows(false);
-    renderPlayerChannels();
+    if (!CHANNELS.length) {
+      state.channel = 0;
+      renderLiveRows(false);
+      renderPlayerChannels();
+    }
 
     var pageNum = 1;
     var didReturnFirstPage = false;
@@ -2244,6 +2322,9 @@ function portalServiceCall(method, params, done, customTimeout) {
         if (requestSeq !== liveChannelRequestSeq) { return; }
         var pageChannels = payload && payload.channels ? payload.channels : [];
         if (!err && pageChannels.length) {
+          if (pageNum === 1) {
+            CHANNELS.splice(0, CHANNELS.length);
+          }
           var known = {};
           for (var k = 0; k < CHANNELS.length; k++) {
             if (CHANNELS[k] && CHANNELS[k].channelCode) {
@@ -2390,6 +2471,182 @@ function portalServiceCall(method, params, done, customTimeout) {
     } else if (state.screen === 'home' && state.tab === 0) {
       scheduleLivePreview(CHANNELS[index]);
     }
+  }
+
+  /* --- OTA Update Dialog & Manager logic --- */
+  function showToast(msg) {
+    var toast = $('app-toast');
+    if (!toast) {
+      toast = el('div', 'app-toast');
+      toast.id = 'app-toast';
+      var appEl = $('app') || document.body;
+      appEl.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.style.display = 'block';
+    toast.style.opacity = '1';
+    if (showToast._timer) { clearTimeout(showToast._timer); }
+    showToast._timer = setTimeout(function () {
+      toast.style.opacity = '0';
+      setTimeout(function () { toast.style.display = 'none'; }, 300);
+    }, 3200);
+  }
+
+  function openUpdateDialog(info) {
+    updatePendingInfo = info || {};
+    dialogUpdateOpen = true;
+    var dlg = $('dialog-update');
+    if (!dlg) { return; }
+    dlg.classList.add('is-active');
+
+    var title = $('du-title');
+    if (title) { title.textContent = 'Nueva versión disponible'; }
+
+    var sub = $('du-version-subtitle');
+    if (sub) {
+      sub.textContent = 'Versión ' + (info.latestVersion || '') + (info.releaseDate ? ' (' + info.releaseDate + ')' : '');
+    }
+
+    var changelog = $('du-changelog');
+    if (changelog) {
+      changelog.textContent = info.changelog || 'Mejoras de estabilidad, rendimiento y optimizaciones de catálogo.';
+    }
+
+    var statusBox = $('du-status-container');
+    if (statusBox) { statusBox.style.display = 'none'; }
+
+    var footer = $('du-footer-actions');
+    if (footer) {
+      clear(footer);
+      var btnUpdate = el('button', 'du-btn du-btn-primary focusable', 'Actualizar ahora');
+      btnUpdate.id = 'du-btn-update';
+      btnUpdate._activate = function () {
+        startAppUpdate();
+      };
+      var btnLater = el('button', 'du-btn du-btn-secondary focusable', 'Más tarde');
+      btnLater.id = 'du-btn-later';
+      btnLater._activate = function () {
+        updateDismissedSession = true;
+        closeUpdateDialog();
+      };
+      footer.appendChild(btnUpdate);
+      footer.appendChild(btnLater);
+      setFocus(btnUpdate);
+    }
+  }
+
+  function closeUpdateDialog() {
+    dialogUpdateOpen = false;
+    var dlg = $('dialog-update');
+    if (dlg) { dlg.classList.remove('is-active'); }
+    if (state.screen === 'home') {
+      var tab = document.querySelector('.home-tab.is-selected');
+      if (tab) { setFocus(tab); }
+      else { var f = firstFocusable(); if (f) { setFocus(f); } }
+    } else if (state.screen === 'settings') {
+      var cur = document.querySelector('.settings-item.is-selected');
+      if (cur) { setFocus(cur); }
+      else { var fs = firstFocusable(); if (fs) { setFocus(fs); } }
+    }
+  }
+
+  function startAppUpdate() {
+    if (!updatePendingInfo || !updatePendingInfo.ipkUrl) { return; }
+    updateInProgress = true;
+
+    var statusBox = $('du-status-container');
+    if (statusBox) { statusBox.style.display = 'block'; }
+
+    var progressBar = $('du-progress-bar');
+    var statusText = $('du-status-text');
+    var subText = $('du-status-subtext');
+
+    var footer = $('du-footer-actions');
+    if (footer) { clear(footer); }
+
+    if (progressBar) { progressBar.style.width = '4%'; }
+    if (statusText) { statusText.textContent = 'Iniciando descarga...'; }
+    if (subText) { subText.textContent = 'Por favor no apagues la TV ni salgas de la aplicación.'; }
+
+    var serviceId = vodApi.serviceId || 'com.webosflux.xuptertv.fidelity.service';
+
+    if (hasLuna() && window.PalmServiceBridge) {
+      try {
+        window.webOS.service.request('luna://' + serviceId, {
+          method: 'applyUpdate',
+          parameters: { ipkUrl: updatePendingInfo.ipkUrl, subscribe: true },
+          subscribe: true,
+          resubscribe: false,
+          onSuccess: function (payload) {
+            if (!payload) { return; }
+            if (payload.percent !== undefined && progressBar) {
+              progressBar.style.width = Math.min(100, Math.max(0, payload.percent)) + '%';
+            }
+            if (payload.message && statusText) {
+              statusText.textContent = payload.message;
+            }
+            if (payload.state === 'success') {
+              if (statusText) { statusText.textContent = '¡Actualización completada! Reiniciando XuperTV...'; }
+              if (progressBar) { progressBar.style.width = '100%'; }
+              setTimeout(function () {
+                try { window.location.reload(); } catch (eReload) {}
+              }, 4000);
+            }
+          },
+          onFailure: function (err) {
+            updateInProgress = false;
+            var errMsg = (err && err.errorText) || 'Error durante la instalación';
+            if (statusText) { statusText.textContent = 'Error: ' + errMsg; }
+            if (subText) { subText.textContent = 'Comprueba tu red o intenta más tarde.'; }
+            if (footer) {
+              clear(footer);
+              var btnClose = el('button', 'du-btn du-btn-secondary focusable', 'Cerrar');
+              btnClose._activate = function () {
+                closeUpdateDialog();
+              };
+              footer.appendChild(btnClose);
+              setFocus(btnClose);
+            }
+          }
+        });
+        return;
+      } catch (eLuna) {
+        updateInProgress = false;
+        if (statusText) { statusText.textContent = 'Error: ' + (eLuna && eLuna.message); }
+      }
+    } else {
+      if (statusText) { statusText.textContent = 'Modo simulador: actualizacion solo disponible en webOS'; }
+      updateInProgress = false;
+      if (footer) {
+        var btnSimClose = el('button', 'du-btn du-btn-secondary focusable', 'Cerrar');
+        btnSimClose._activate = function () { closeUpdateDialog(); };
+        footer.appendChild(btnSimClose);
+        setFocus(btnSimClose);
+      }
+    }
+  }
+
+  function checkForUpdates(silent, onResult) {
+    var currentVer = '2.2.44';
+    portalServiceCall('checkUpdate', { currentVersion: currentVer }, function (err, res) {
+      if (err) {
+        if (onResult) { onResult(err, null); }
+        if (!silent) {
+          showToast('No se pudo comprobar actualizaciones: ' + err);
+        }
+        return;
+      }
+      if (onResult) { onResult(null, res); }
+      if (res && res.updateAvailable) {
+        if (!silent || !updateDismissedSession) {
+          openUpdateDialog(res);
+        }
+      } else {
+        if (!silent) {
+          showToast('Tienes la versión más reciente (v' + currentVer + ')');
+        }
+      }
+    }, 15000);
   }
 
   /* --- Addon Manager Dialog logic --- */
@@ -2567,7 +2824,14 @@ function portalServiceCall(method, params, done, customTimeout) {
     if (art) {
       var img = el('img', 'bento-img');
       img.setAttribute('data-poster-src', art);
-      img.onerror = function () { this.style.display = 'none'; };
+      img.onerror = function () {
+        if (this.src && this.src.indexOf('https://') === 0 && !this._httpFallback) {
+          this._httpFallback = true;
+          this.src = this.src.replace('https://', 'http://');
+          return;
+        }
+        this.style.display = 'none';
+      };
       t.appendChild(img);
     }
     if (opts.shade) { t.appendChild(el('div', 'bento-shade')); }
@@ -2623,7 +2887,7 @@ function portalServiceCall(method, params, done, customTimeout) {
   }
 
   function appendCatalogGrid(page, items, startY, titleText) {
-    if (!items || !items.length) { return; }
+    if (!items || !items.length) { return startY; }
     var y = startY || 860;
     var sub = el('div', 'kids-subtitle', titleText || 'Catálogo');
     abs(sub, 192, y, 1249, 40);
@@ -2641,6 +2905,164 @@ function portalServiceCall(method, params, done, customTimeout) {
       var py = y + row * colH;
       page.appendChild(makePoster(items[k], px, py, 250, 360, { gold: true }));
     }
+    return y + Math.ceil(limit / maxCols) * colH + 25;
+  }
+
+  function appendCatalogRow(page, items, startY, titleText) {
+    if (!items || !items.length) { return startY; }
+    var y = startY || 860;
+    var sub = el('div', 'kids-subtitle', titleText || 'Catálogo');
+    abs(sub, 192, y, 1400, 40);
+    page.appendChild(sub);
+    y += 50;
+
+    var colW = 276;
+    var maxCols = 6;
+    var limit = Math.min(items.length, maxCols);
+    for (var k = 0; k < limit; k++) {
+      var px = 192 + k * colW;
+      page.appendChild(makePoster(items[k], px, y, 250, 360, { gold: true }));
+    }
+    return y + 360 + 35;
+  }
+
+  function appendCatalogSections(page, items, startY, options) {
+    if (!items || !items.length) { return startY; }
+    options = options || {};
+    var y = startY || 860;
+    var seen = {};
+    var b, s, i, g, u, p, f, rem;
+    if (options.bentoItems && options.bentoItems.length) {
+      for (b = 0; b < options.bentoItems.length; b++) {
+        if (options.bentoItems[b] && options.bentoItems[b].id) {
+          seen[String(options.bentoItems[b].id)] = true;
+        }
+      }
+    }
+
+    /* 1. Fila de más populares arriba si se solicita */
+    if (options.popularTitle) {
+      var sorted = items.slice().sort(function (a, b) {
+        var sa = parseFloat(a && a.score) || 0;
+        var sb = parseFloat(b && b.score) || 0;
+        return sb - sa;
+      });
+      var popular = [];
+      for (s = 0; s < sorted.length && popular.length < 6; s++) {
+        var it = sorted[s];
+        if (it && it.id && !seen[String(it.id)]) {
+          popular.push(it);
+          seen[String(it.id)] = true;
+        }
+      }
+      if (popular.length) {
+        y = appendCatalogRow(page, popular, y, options.popularTitle);
+      }
+    }
+
+    /* 2. Agrupar por fila del API */
+    var groups = {};
+    var rowOrder = [];
+    for (i = 0; i < items.length; i++) {
+      var item = items[i];
+      var r = item.row ? String(item.row).trim() : '';
+      if (!r || r.toLowerCase() === 'all' || r.toLowerCase() === 'todas' || r.toLowerCase() === 'todos') {
+        r = (item.genres && item.genres[0] && item.genres[0] !== 'Sin clasificar') ? item.genres[0] : '';
+      }
+      if (!r) { r = options.fallbackRow || 'Más títulos'; }
+      if (!groups[r]) {
+        groups[r] = [];
+        rowOrder.push(r);
+      }
+      groups[r].push(item);
+    }
+
+    var friendly = {
+      '2026 Peliculas teatrales': 'Estrenos en cartelera',
+      '2026': 'Novedades 2026',
+      'Máscara perfecta': 'Máscara perfecta (Especial)',
+      'Asesino en serie': 'Suspense y asesinos en serie',
+      'Películas TOP15 clasificadas': 'Películas TOP 15',
+      'Dramas clasificados TOP15': 'Series y dramas TOP 15',
+      'HBO Movie': 'Películas HBO',
+      'Prime Video Movie': 'Películas Prime Video',
+      'Apple TV+ Movie': 'Películas Apple TV+',
+      'Paramount + Movie': 'Películas Paramount+',
+      'Hulu Movie': 'Películas Hulu',
+      'Netflix Movie': 'Películas Netflix',
+      'Disney Movie': 'Películas Disney',
+      'Netflix Series': 'Series Netflix',
+      'Disney Series': 'Series Disney',
+      'HBO Series': 'Series HBO',
+      'Prime Video Series': 'Series Prime Video',
+      'Apple TV+ Series': 'Series Apple TV+',
+      'Paramount + Series': 'Series Paramount+',
+      'Hulu Series': 'Series Hulu',
+      'TV Series': 'Series de televisión',
+      'Serie Turquía': 'Series turcas',
+      'Drama Coreano': 'Dramas coreanos (K-Drama)',
+      'Telenovelas': 'Telenovelas populares',
+      'Vida familiar famosa': 'Familias famosas y dramas',
+      'Acción': 'Acción y aventura',
+      'Comedia': 'Comedias destacadas',
+      'Horror': 'Terror y horror',
+      'Ciencia ficción': 'Ciencia ficción y fantasía',
+      'Suspenso': 'Suspense y misterio',
+      'Crimen': 'Crimen y policíaco',
+      'Familia': 'Películas en familia',
+      'Fantastico': 'Fantasía épica',
+      'Romántico': 'Romance y drama',
+      'Animación Clásica': 'Animación clásica',
+      'Película de Animación': 'Películas de animación',
+      'Serie de Animación': 'Series animadas',
+      'Dragon Ball Collection': 'Colección Dragon Ball',
+      'Colección de Marvel': 'Colección Marvel',
+      'Coalition for DC': 'Universo DC',
+      'Anime Asiático': 'Anime asiático',
+      'Anime Europeo y Americano': 'Anime internacional',
+      'Película de Anime': 'Películas de anime',
+      'Serie de Anime': 'Series de anime'
+    };
+
+    var renderedAny = false;
+    for (g = 0; g < rowOrder.length; g++) {
+      var rName = rowOrder[g];
+      var list = groups[rName];
+      if (!list || !list.length) { continue; }
+      var pick = [];
+      var unvisited = [];
+      for (u = 0; u < list.length; u++) {
+        if (!seen[String(list[u].id)]) { unvisited.push(list[u]); }
+      }
+      for (p = 0; p < unvisited.length && pick.length < 6; p++) {
+        pick.push(unvisited[p]);
+        seen[String(unvisited[p].id)] = true;
+      }
+      if (pick.length < 6 && list.length >= 6) {
+        for (f = 0; f < list.length && pick.length < 6; f++) {
+          if (pick.indexOf(list[f]) === -1) { pick.push(list[f]); }
+        }
+      }
+      if (pick.length) {
+        var title = friendly[rName] || rName;
+        y = appendCatalogRow(page, pick, y, title);
+        renderedAny = true;
+      }
+    }
+
+    /* 3. Títulos restantes que no cupieron en ninguna fila */
+    var leftovers = [];
+    for (rem = 0; rem < items.length; rem++) {
+      if (!seen[String(items[rem].id)]) {
+        leftovers.push(items[rem]);
+      }
+    }
+    if (leftovers.length) {
+      y = appendCatalogGrid(page, leftovers, y, options.fallbackRow || 'Más títulos del catálogo');
+    } else if (!renderedAny) {
+      appendCatalogGrid(page, items, y, options.defaultTitle || 'Catálogo');
+    }
+    return y;
   }
 
   function buildFeaturedPage(page) {
@@ -2650,7 +3072,11 @@ function portalServiceCall(method, params, done, customTimeout) {
     bentoPage(page, items, { titles: real, dots: real ? 4 : 0, shade: real });
     var rest = all.slice(6);
     if (rest.length) {
-      appendCatalogGrid(page, rest, 860, 'Títulos destacados');
+      appendCatalogSections(page, rest, 860, {
+        popularTitle: 'Títulos más vistos',
+        bentoItems: items,
+        fallbackRow: 'Títulos destacados'
+      });
     }
   }
 
@@ -2661,7 +3087,11 @@ function portalServiceCall(method, params, done, customTimeout) {
     bentoPage(page, items, { titles: real, dots: real ? 4 : 0, shade: real });
     var rest = all.slice(6);
     if (rest.length) {
-      appendCatalogGrid(page, rest, 860, 'Más películas');
+      appendCatalogSections(page, rest, 860, {
+        popularTitle: 'Películas más populares',
+        bentoItems: items,
+        fallbackRow: 'Más películas'
+      });
     }
   }
 
@@ -2672,7 +3102,11 @@ function portalServiceCall(method, params, done, customTimeout) {
     bentoPage(page, items, { titles: real, dots: real ? 3 : 2, shade: real });
     var rest = all.slice(6);
     if (rest.length) {
-      appendCatalogGrid(page, rest, 860, 'Más series');
+      appendCatalogSections(page, rest, 860, {
+        popularTitle: 'Series más populares',
+        bentoItems: items,
+        fallbackRow: 'Más series'
+      });
     }
   }
 
@@ -2683,7 +3117,11 @@ function portalServiceCall(method, params, done, customTimeout) {
     bentoPage(page, items, { titles: real, dots: real ? 3 : 2, shade: real });
     var rest = all.slice(6);
     if (rest.length) {
-      appendCatalogGrid(page, rest, 860, 'Anime y animación');
+      appendCatalogSections(page, rest, 860, {
+        popularTitle: 'Anime más popular',
+        bentoItems: items,
+        fallbackRow: 'Anime y animación'
+      });
     }
   }
 
@@ -3849,6 +4287,34 @@ function portalServiceCall(method, params, done, customTimeout) {
     mail.appendChild(ico);
     mail.appendChild(el('span', null, 'escuchamos-tv@outlook.com'));
     p.appendChild(mail);
+
+    var updateBox = el('div', 'sp-about-update-box');
+    updateBox.appendChild(el('div', 'sp-about-update-title', 'Actualizaciones de XuperTV'));
+    updateBox.appendChild(el('div', 'sp-about-update-desc',
+      'Versión instalada: v2.2.44. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.'));
+    var btnCheckUpdate = el('button', 'sp-about-update-btn focusable', 'Buscar actualizaciones');
+    var msgUpdate = el('div', 'sp-about-update-msg');
+    btnCheckUpdate._activate = function () {
+      btnCheckUpdate.textContent = 'Comprobando...';
+      msgUpdate.textContent = '';
+      checkForUpdates(false, function (err, res) {
+        btnCheckUpdate.textContent = 'Buscar actualizaciones';
+        if (err) {
+          msgUpdate.textContent = 'Error: ' + ((err && err.message) || err);
+          msgUpdate.style.color = '#ef4444';
+        } else if (res && res.updateAvailable) {
+          msgUpdate.textContent = '¡Nueva versión disponible: v' + res.latestVersion + '!';
+          msgUpdate.style.color = '#22c55e';
+        } else {
+          msgUpdate.textContent = 'Tienes la versión más reciente (v2.2.44).';
+          msgUpdate.style.color = '#38bdf8';
+        }
+      });
+    };
+    updateBox.appendChild(btnCheckUpdate);
+    updateBox.appendChild(msgUpdate);
+    p.appendChild(updateBox);
+
     return p;
   }
 
@@ -6329,6 +6795,42 @@ function portalServiceCall(method, params, done, customTimeout) {
      players do not resume that socket after a long pause; opening its local
      URL again at the same offset is the reliable native resume operation. */
   var relayPaused = false;
+  var relayStartWatch = null;
+  var relayFellBack = false;
+
+  function relayContainer() {
+    var v = (window.webOS && window.webOS.systemInfo && window.webOS.systemInfo.version) || '';
+    if (!v && navigator.userAgent) {
+      var m = /Web0S|webOS[ /]([0-9]+(?:\.[0-9]+)?)/i.exec(navigator.userAgent);
+      if (m && m[1]) { v = m[1]; }
+    }
+    var major = parseFloat(v);
+    if (!isNaN(major) && major < 4) { return 'ts'; }
+    return 'mp4';
+  }
+
+  function isRelayUrl(url) {
+    return typeof url === 'string' && (url.indexOf(':8787/s/') !== -1 || url.indexOf(':8787/t/') !== -1);
+  }
+
+  function clearRelayStartWatch() {
+    if (relayStartWatch) { clearTimeout(relayStartWatch); relayStartWatch = null; }
+  }
+
+  function armRelayStartWatch(url) {
+    clearRelayStartWatch();
+    if (!isRelayUrl(url) || relayFellBack) { return; }
+    relayStartWatch = setTimeout(function () {
+      relayStartWatch = null;
+      if (!playerVideo || playerVideo.readyState >= 2) { return; }
+      console.warn('[relay] Watchdog: Modo Fluido no arrancó en 15 s, volviendo a Modo Normal...');
+      relayFellBack = true;
+      state.streamMode = 'normal';
+      safeLocalWrite(STREAM_MODE_KEY, 'normal');
+      setPlayerStatus('Modo Fluido no respondió, usando Modo Normal…');
+      restartCurrentPlayback();
+    }, 15000);
+  }
 
   function resumePlayerPlayback() {
     if (!playerVideo) { return; }
@@ -6460,6 +6962,7 @@ function portalServiceCall(method, params, done, customTimeout) {
   }
 
   function stopPlayerVideo() {
+    clearRelayStartWatch();
     if (state.playerMode === 'vod' && playerVideo) {
       var stopPosition = relayBaseUrl ? (relayStartOffset + (playerVideo.currentTime || 0)) : (playerVideo.currentTime || 0);
       var stopDuration = (playerVideo && isFinite(playerVideo.duration) && playerVideo.duration > 0) ? playerVideo.duration :
@@ -6552,13 +7055,15 @@ function portalServiceCall(method, params, done, customTimeout) {
     lastPlayingUrl = url;
     var mOrigin = /^(http:\/\/127\.0\.0\.1:\d+)/.exec(url);
     if (mOrigin) { lastProxyOrigin = mOrigin[1]; }
-    if (url.indexOf(':8787/s/') !== -1) {
+    if (isRelayUrl(url)) {
       relayBaseUrl = url.split('?')[0];
       var mStart = /[?&]start=(\d+)/.exec(url);
       relayStartOffset = mStart ? parseInt(mStart[1], 10) : 0;
+      armRelayStartWatch(url);
     } else {
       relayBaseUrl = '';
       relayStartOffset = 0;
+      clearRelayStartWatch();
     }
     setPlayerStatus('Conectando con el vídeo…');
     state.streamError = '';
@@ -6663,6 +7168,7 @@ function portalServiceCall(method, params, done, customTimeout) {
       }
     };
     playerVideo.onplaying = function () {
+      clearRelayStartWatch();
       hideNextEpisodeLoading();
       clearStatus();
     };
@@ -6777,6 +7283,10 @@ function portalServiceCall(method, params, done, customTimeout) {
       var params = { contentId: item.id };
       params.playbackMode = state.streamMode;
       params.forceRelay = state.streamMode === 'smooth' || state.streamMode === 'relay';
+      if (params.forceRelay) {
+        var container = relayContainer();
+        params.container = container;
+      }
       params.trackIndex = state.trackIndex || 0;
       /* Prefer the Spanish PID like the real app when mediaInfo already
          answered; the relay maps it with ffmpeg -map 0:a:<n>. */
@@ -7297,12 +7807,13 @@ function portalServiceCall(method, params, done, customTimeout) {
       setFocus(f, true);
       if (f._activate) { f._activate(); }
     });
-    buildSearch();
-    startServiceKeepAlive();
-    portalServiceCall('prewarm', {}, function () {});
+    try { buildSearch(); } catch (eSearch) { console.error('buildSearch error:', eSearch); }
+    try { startServiceKeepAlive(); } catch (eKa) {}
+    try { portalServiceCall('prewarm', {}, function () {}); } catch (ePw) {}
     startWelcome();
-    loadVodCatalog();
-    loadLiveChannels();
+    try { loadVodCatalog(); } catch (eVod) { console.error('loadVodCatalog error:', eVod); }
+    try { loadLiveChannels(); } catch (eLive) { console.error('loadLiveChannels error:', eLive); }
+    setTimeout(function () { try { checkForUpdates(true); } catch (eUp) {} }, 6000);
 
     window.__xuper = {
       version: '4.34.4',
@@ -7400,6 +7911,16 @@ function portalServiceCall(method, params, done, customTimeout) {
       purgeMemoryCache();
     }
   });
+
+  window.onerror = function (msg, url, line, col, err) {
+    try {
+      console.error('[XuperTV error] ' + msg + ' at ' + url + ':' + line + (col ? ':' + col : ''));
+      if (state && state.screen === 'welcome') {
+        finishWelcome();
+      }
+    } catch (eErr) {}
+    return false;
+  };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot);

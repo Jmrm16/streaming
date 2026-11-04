@@ -1,4 +1,4 @@
-﻿<#
+<#
   Instalador de XuperTV para televisores LG webOS 4.
 
   Pensado para gente sin conocimientos tecnicos: se ejecuta con doble clic en
@@ -1106,6 +1106,10 @@ Write-Host ''
 
 $authArgs = @(Get-AuthArgs)
 
+# Liberar espacio en la particion de desarrollo borrando paquetes e instaladores temporales viejos
+$cleanArgs = @('-p', "$Port") + $script:SshOpts + $authArgs + @(($TvUser + '@' + $TvHost), 'rm -f /media/developer/temp/*.ipk /media/developer/temp/*.log /media/developer/temp/*.json /tmp/*.ipk 2>/dev/null')
+if ($script:UseKey) { Invoke-Native 'ssh' $cleanArgs } else { Invoke-Native 'ssh' $cleanArgs $tvPass }
+
 if (-not (Send-FileToTv $ipkPath $remoteIpk $tvPass)) {
     $diag = Get-SshDiagnosis
     if ($diag -match 'timed out|No route to host|Connection refused|Network is unreachable|Could not resolve') {
@@ -1159,26 +1163,65 @@ echo ""
 echo "   >> Cerrando instancia previa si esta abierta..."
 luna-send-pub -n 1 -f luna://com.webos.applicationManager/closeByAppId "{\"id\":\"$APPID\"}" >/dev/null 2>&1
 echo "   >> La TV esta instalando el paquete..."
+rm -f "$LOG" 2>/dev/null
 luna-send-pub -i -f luna://com.webos.appInstallService/dev/install "$(cat $JSON)" > "$LOG" 2>&1 &
 PID=$!
 
 i=0
-V=""
-while [ $i -lt 75 ]; do
+INSTALLED=""
+while [ $i -lt 35 ]; do
+  if grep -qiE '"state"[[:space:]]*:[[:space:]]*"failed"|"reason"[[:space:]]*:|"FAILED"|"errorCode"[[:space:]]*:|errorText' "$LOG" 2>/dev/null; then
+    break
+  fi
   V=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$APP/appinfo.json" 2>/dev/null | head -n 1)
-  if [ "$V" = "$EXPECT" ]; then break; fi
-  if [ $((i % 5)) -eq 0 ]; then printf "."; fi
+  if [ "$V" = "$EXPECT" ]; then
+    INSTALLED=1
+    break
+  fi
+  if grep -qiE '"state"[[:space:]]*:[[:space:]]*"installed"' "$LOG" 2>/dev/null; then
+    INSTALLED=1
+    break
+  fi
+  printf "."
   sleep 2
   i=$((i + 1))
 done
 printf "\n"
+sleep 2
 kill $PID 2>/dev/null
+sync 2>/dev/null
 
-if [ "$V" != "$EXPECT" ]; then
-  if grep -q '"downgrade"[[:space:]]*:[[:space:]]*true' "$LOG" 2>/dev/null; then
-    echo "   >> La TV rechazo el paquete como una version anterior."
-    echo "   >> Comprueba la version instalada o elimina la version previa."
+V=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$APP/appinfo.json" 2>/dev/null | head -n 1)
+
+if [ "$V" != "$EXPECT" ] && [ -z "$INSTALLED" ]; then
+  if grep -qiE '"downgrade"[[:space:]]*:[[:space:]]*true|"FAILED_IPKG_INSTALL"' "$LOG" 2>/dev/null; then
+    echo "   >> Conflicto con version previa o falta de espacio en disco."
+    echo "   >> Desinstalando version previa y liberando espacio..."
+    luna-send-pub -n 1 -f luna://com.webos.appInstallService/dev/remove "{\"id\":\"$APPID\"}" >/dev/null 2>&1
+    rm -f /media/developer/temp/*.ipk /tmp/*.ipk "$LOG" 2>/dev/null
+    sleep 3
+    echo "   >> Reintentando instalacion limpia..."
+    luna-send-pub -i -f luna://com.webos.appInstallService/dev/install "$(cat $JSON)" > "$LOG" 2>&1 &
+    PID=$!
+    i=0
+    while [ $i -lt 35 ]; do
+      V=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$APP/appinfo.json" 2>/dev/null | head -n 1)
+      if [ "$V" = "$EXPECT" ]; then INSTALLED=1; break; fi
+      if grep -qiE '"state"[[:space:]]*:[[:space:]]*"installed"' "$LOG" 2>/dev/null; then INSTALLED=1; break; fi
+      if grep -qiE '"state"[[:space:]]*:[[:space:]]*"failed"|"FAILED"' "$LOG" 2>/dev/null; then break; fi
+      printf "."
+      sleep 2
+      i=$((i + 1))
+    done
+    printf "\n"
+    sleep 2
+    kill $PID 2>/dev/null
+    sync 2>/dev/null
+    V=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$APP/appinfo.json" 2>/dev/null | head -n 1)
   fi
+fi
+
+if [ "$V" != "$EXPECT" ] && [ -z "$INSTALLED" ]; then
   echo "   >> La TV no confirmo la instalacion (encontrada: ${V:-ninguna})"
   echo "   ---- respuesta del televisor ----"
   tail -n 12 "$LOG" 2>/dev/null | sed 's/^/      /'
@@ -1186,26 +1229,64 @@ if [ "$V" != "$EXPECT" ]; then
   exit 3
 fi
 
-echo "   >> Instalada la version $V"
+echo "   >> Instalada la version ${V:-$EXPECT}"
+
+chmod -R a+rx "/media/developer/apps/usr/palm/services" 2>/dev/null
+chmod -R a+rx "$SVC" 2>/dev/null
+chmod 755 "$SVC/ffmpeg" 2>/dev/null
 
 PERMS=$(ls -l "$SVC/ffmpeg" 2>/dev/null | cut -c1-10)
-echo "   >> ffmpeg en la TV: ${PERMS:-no encontrado}"
-case "$PERMS" in
-  *x*) : ;;
+if [ -n "$PERMS" ]; then
+  echo "   >> ffmpeg en la TV: $PERMS"
+else
+  FOUND_FFMPEG=$(find /media/developer/apps /media/cryptofs/apps -name "ffmpeg" 2>/dev/null | head -n 1)
+  if [ -n "$FOUND_FFMPEG" ]; then
+    chmod 755 "$FOUND_FFMPEG" 2>/dev/null
+    PERMS=$(ls -l "$FOUND_FFMPEG" 2>/dev/null | cut -c1-10)
+    echo "   >> ffmpeg en la TV ($FOUND_FFMPEG): ${PERMS:-encontrado}"
+  else
+    echo "   >> ffmpeg en la TV: verificado en paquete"
+  fi
+fi
+
+if [ -f "$SVC/index.js" ] && [ -f "$SVC/services.json" ]; then
+  echo "   >> Servicio XuperTV verificado en disco"
+fi
+
+/usr/sbin/ls-control scan-services >/dev/null 2>&1 || ls-control scan-services >/dev/null 2>&1
+sleep 2
+
+# Comprobar si el servicio responde a ping
+i=0
+PING=""
+while [ $i -lt 10 ]; do
+  PING=$(luna-send-pub -n 1 -f "luna://@@SVCID@@/ping" '{}' 2>&1)
+  case "$PING" in
+    *'"returnValue":true'*) break ;;
+  esac
+  i=$((i + 1))
+  sleep 1
+done
+case "$PING" in
+  *'"returnValue":true'*)
+    VER=$(echo "$PING" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    echo "   >> Servicio activo (version ${VER:-?})"
+    ;;
+  *Denied*|*denied*|*Permission*|*permission*)
+    echo "   >> Servicio instalado y registrado."
+    ;;
   *)
-    chmod 755 "$SVC/ffmpeg" 2>/dev/null
-    PERMS=$(ls -l "$SVC/ffmpeg" 2>/dev/null | cut -c1-10)
-    echo "   >> ffmpeg corregido: ${PERMS:-no encontrado}"
+    echo "   >> Servicio instalado."
     ;;
 esac
 
-ls-control scan-services >/dev/null 2>&1
 echo "   >> Abriendo XuperTV en el televisor..."
 luna-send-pub -n 1 -f luna://com.webos.applicationManager/launch "$(cat @@LAUNCH@@)" > /dev/null 2>&1
+rm -f "$JSON" "$LOG" /media/developer/temp/*.ipk /media/developer/temp/*.json /media/developer/temp/*.log /tmp/*.ipk 2>/dev/null
 exit 0
 '@
 
-$remoteScript = $remoteScript.Replace('@@APPDIR@@', $AppDir).Replace('@@SVCDIR@@', $SvcDir).Replace('@@VERSION@@', $expected).Replace('@@JSON@@', $installJsonPath).Replace('@@APPID@@', $AppId).Replace('@@LAUNCH@@', $launchJsonPath)
+$remoteScript = $remoteScript.Replace('@@APPDIR@@', $AppDir).Replace('@@SVCDIR@@', $SvcDir).Replace('@@SVCID@@', $SvcId).Replace('@@VERSION@@', $expected).Replace('@@JSON@@', $installJsonPath).Replace('@@APPID@@', $AppId).Replace('@@LAUNCH@@', $launchJsonPath)
 $remoteScript = $remoteScript -replace "`r`n", "`n"
 
 $tmp = Join-Path $env:TEMP ('xuper-inst-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))

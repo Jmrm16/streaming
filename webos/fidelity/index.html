@@ -7,6 +7,90 @@
 <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Xuper Hydra</title>
 <link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/ui-refresh.css">
+<link rel="stylesheet" href="css/clean.css">
+<!-- webOS 1.0-3.5 polyfills for legacy WebKit / Chromium -->
+<script>
+if (typeof Symbol === 'undefined') {
+  window.Symbol = Symbol = function (desc) { return '__sym_' + (desc || '') + '_' + Math.random(); };
+  Symbol.toPrimitive = window.Symbol.toPrimitive = '__toPrimitive__';
+  Symbol.iterator = window.Symbol.iterator = '__iterator__';
+  Symbol.toStringTag = window.Symbol.toStringTag = '__toStringTag__';
+} else if (!window.Symbol.toPrimitive) {
+  Symbol.toPrimitive = window.Symbol.toPrimitive = '__toPrimitive__';
+}
+if (!Array.prototype.includes) {
+  Array.prototype.includes = function (search, start) {
+    if (this == null) { throw new TypeError("this is null or not defined"); }
+    var o = Object(this), len = o.length >>> 0;
+    if (len === 0) { return false; }
+    var n = start | 0, k = Math.max(n >= 0 ? n : len - Math.abs(n), 0);
+    while (k < len) {
+      if (search === o[k] || (search !== search && o[k] !== o[k])) { return true; }
+      k++;
+    }
+    return false;
+  };
+}
+if (!String.prototype.includes) {
+  String.prototype.includes = function (search, start) {
+    if (typeof start !== "number") { start = 0; }
+    if (start + search.length > this.length) { return false; }
+    return this.indexOf(search, start) !== -1;
+  };
+}
+if (!String.prototype.startsWith) {
+  String.prototype.startsWith = function (search, pos) {
+    pos = !pos || pos < 0 ? 0 : +pos;
+    return this.substring(pos, pos + search.length) === search;
+  };
+}
+if (!String.prototype.endsWith) {
+  String.prototype.endsWith = function (search, len) {
+    if (len === undefined || len > this.length) { len = this.length; }
+    return this.substring(len - search.length, len) === search;
+  };
+}
+if (typeof Object.assign !== "function") {
+  Object.assign = function (target) {
+    if (target == null) { throw new TypeError("Cannot convert undefined or null to object"); }
+    var to = Object(target);
+    for (var i = 1; i < arguments.length; i++) {
+      var src = arguments[i];
+      if (src != null) {
+        for (var k in src) {
+          if (Object.prototype.hasOwnProperty.call(src, k)) { to[k] = src[k]; }
+        }
+      }
+    }
+    return to;
+  };
+}
+if (!Math.trunc) {
+  Math.trunc = function (v) { v = +v; return (v - v % 1) || (!isFinite(v) || v === 0 ? v : v < 0 ? -0 : 0); };
+}
+if (!Array.prototype.find) {
+  Array.prototype.find = function (pred, thisArg) {
+    if (this == null) { throw new TypeError("this is null or not defined"); }
+    var o = Object(this), len = o.length >>> 0;
+    for (var i = 0; i < len; i++) {
+      var val = o[i];
+      if (pred.call(thisArg, val, i, o)) { return val; }
+    }
+    return undefined;
+  };
+}
+if (!Array.prototype.findIndex) {
+  Array.prototype.findIndex = function (pred, thisArg) {
+    if (this == null) { throw new TypeError("this is null or not defined"); }
+    var o = Object(this), len = o.length >>> 0;
+    for (var i = 0; i < len; i++) {
+      if (pred.call(thisArg, o[i], i, o)) { return i; }
+    }
+    return -1;
+  };
+}
+</script>
 </head>
 <body>
 <div id="app">
@@ -17,8 +101,9 @@
        ============================================================ -->
   <section id="screen-welcome" class="screen is-active">
     <div class="welcome-name">Xuper Hydra</div>
-    <div class="welcome-version">v2.2.2</div>
+    <div class="welcome-version">v2.2.44</div>
     <div class="welcome-loading"><img id="welcome-loading-img" alt="" src="assets/original/welcome/img_welcome_loading1.png"></div>
+    <div class="welcome-free">100% GRATIS · Prohibida su venta · Grupo oficial: t.me/+9f4I_N2BqddkZGYx</div>
   </section>
 
   <!-- ============================================================
@@ -148,47 +233,37 @@
          list of rows, each row = title + horizontal grid of 306x72 pills.
          Rows are hidden when the portal has no data for them. -->
     <div class="player-playsetting-view" id="player-playsetting-view">
+      <div class="psv-header">
+        <div class="psv-header-info">
+          <div class="psv-header-title" id="psv-header-title"></div>
+          <div class="psv-header-sub" id="psv-header-sub"></div>
+        </div>
+      </div>
       <div class="psv-scroll scrollable" id="psv-scroll">
-        <!-- SELECCIÓN (series episodes: 20 per group + ranges) -->
+        <!-- Chapter picker (series only; JS hides it for movies). -->
         <div class="psv-row" id="psv-sec-selection">
-          <div class="psv-title">SELECCIÓN</div>
+          <div class="psv-title">CAPÍTULOS</div>
           <div id="psv-episodes-row"></div>
         </div>
 
-        <!-- IDIOMA (audio). The real panel shows a single Configuración pill;
-             the language list lives in the "Ajuste de reproducir" dialog. -->
-        <div class="psv-row" id="psv-sec-audio">
-          <div class="psv-title">IDIOMA</div>
-          <div class="psv-grid scrollable" id="psv-audio-row">
-            <button class="psv-btn focusable psv-btn-config" id="psv-btn-config">Configuración</button>
-          </div>
-        </div>
-
-        <!-- RESOLUCIÓN / MODO DE REPRODUCCIÓN -->
+        <!-- Two rows only: playback mode + audio, then screen format. -->
         <div class="psv-row" id="psv-sec-player">
-          <div class="psv-title">RESOLUCIÓN / MODO</div>
+          <div class="psv-title">REPRODUCCIÓN</div>
           <div class="psv-grid scrollable" id="psv-player-row">
-            <button class="psv-btn focusable" id="psv-btn-p2"><span class="psv-check">✔</span>Normal (Directo)</button>
-            <button class="psv-btn focusable" id="psv-btn-p1"><span class="psv-check">✔</span>Modo Fluido (Remux TV)</button>
+            <button class="psv-btn focusable" id="psv-btn-p2">Normal</button>
+            <button class="psv-btn focusable" id="psv-btn-p1">Modo Fluido</button>
+            <button class="psv-btn focusable psv-btn-config" id="psv-btn-config">Audio y subtítulos</button>
           </div>
+          <div class="psv-mode-help">Modo Fluido corrige películas con tirones. Puede tardar un poco más en iniciar.</div>
         </div>
 
-        <!-- FORMATO DE PANTALLA -->
         <div class="psv-row" id="psv-sec-aspect">
-          <div class="psv-title">FORMATO DE PANTALLA</div>
+          <div class="psv-title">PANTALLA</div>
           <div class="psv-grid scrollable" id="psv-aspect-row">
-            <button class="psv-btn focusable" data-aspect="cover"><span class="psv-check">✔</span>Pantalla completa</button>
-            <button class="psv-btn focusable" data-aspect="contain"><span class="psv-check">✔</span>Normal</button>
-            <button class="psv-btn focusable" data-aspect="16-9"><span class="psv-check">✔</span>16:9</button>
-            <button class="psv-btn focusable" data-aspect="4-3"><span class="psv-check">✔</span>4:3</button>
-          </div>
-        </div>
-
-        <!-- FEEDBACK -->
-        <div class="psv-row" id="psv-sec-feedback">
-          <div class="psv-title">FEEDBACK</div>
-          <div class="psv-grid scrollable" id="psv-feedback-row">
-            <button class="psv-btn focusable" id="psv-btn-feedback">Feedback</button>
+            <button class="psv-btn focusable" data-aspect="cover">Pantalla completa</button>
+            <button class="psv-btn focusable" data-aspect="contain">Normal</button>
+            <button class="psv-btn focusable" data-aspect="16-9">16:9</button>
+            <button class="psv-btn focusable" data-aspect="4-3">4:3</button>
           </div>
         </div>
       </div>
@@ -239,16 +314,18 @@
             <div class="dps-options" id="dps-size-options">
               <button class="dps-btn focusable is-selected" data-size="normal">Normal</button>
               <button class="dps-btn focusable" data-size="big">Grande</button>
+              <button class="dps-btn focusable" data-size="huge">Muy grande</button>
               <button class="dps-btn focusable" data-size="small">Pequeño</button>
             </div>
           </div>
           <!-- Subtitle Color Style -->
           <div class="dps-row dps-sub-subrow" id="dps-row-style">
-            <div class="dps-label">Estilo</div>
+            <div class="dps-label">Color</div>
             <div class="dps-options" id="dps-style-options">
               <button class="dps-btn focusable is-selected" data-style="white"><span class="dps-color-preview white">Aa</span></button>
               <button class="dps-btn focusable" data-style="yellow"><span class="dps-color-preview yellow">Aa</span></button>
-              <button class="dps-btn focusable" data-style="black"><span class="dps-color-preview black">Aa</span></button>
+              <button class="dps-btn focusable" data-style="cyan"><span class="dps-color-preview cyan">Aa</span></button>
+              <button class="dps-btn focusable" data-style="lime"><span class="dps-color-preview lime">Aa</span></button>
             </div>
           </div>
         </div>
@@ -257,6 +334,32 @@
         </div>
       </div>
     </div>
+
+  <!-- Modal Dialog: Actualizacion de la App (OTA) -->
+  <div class="dialog-update-overlay" id="dialog-update">
+    <div class="dialog-update-box">
+      <div class="du-header">
+        <div class="du-badge">ACTUALIZACIÓN DISPONIBLE</div>
+        <div class="du-title" id="du-title">Nueva versión disponible</div>
+        <div class="du-subtitle" id="du-version-subtitle">Versión 2.2.45</div>
+      </div>
+      <div class="du-body">
+        <div class="du-section-title">Novedades y mejoras:</div>
+        <div class="du-changelog scrollable" id="du-changelog"></div>
+        <div class="du-status" id="du-status-container" style="display:none;">
+          <div class="du-progress-bar-bg">
+            <div class="du-progress-bar-fill" id="du-progress-bar" style="width: 0%;"></div>
+          </div>
+          <div class="du-status-text" id="du-status-text">Descargando...</div>
+          <div class="du-status-subtext" id="du-status-subtext">Por favor no apagues la TV ni salgas de la aplicación.</div>
+        </div>
+      </div>
+      <div class="du-footer" id="du-footer-actions">
+        <button class="du-btn du-btn-primary focusable" id="du-btn-update">Actualizar ahora</button>
+        <button class="du-btn du-btn-secondary focusable" id="du-btn-later">Más tarde</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Modal Dialog: Administrador de Addons y Listas M3U -->
   <div class="dialog-addons-overlay" id="dialog-addons">
