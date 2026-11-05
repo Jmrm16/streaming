@@ -103,6 +103,7 @@ Antes de entregar cualquier cambio que afecte la app, comprobar:
 9. Que el autotest de `ffmpeg` siga diferido con `setTimeout` en `ffmpeg-relay.js`.
 10. Que `magis.js` conserve el rescate por semillas (`portal100024`) con pool, expiración y marcas de semilla muerta.
 11. Que ningún servicio declare una `function` dentro de un bloque (ver sección 5): webOS 3.x no carga el servicio.
+12. Que `version.json` y los tags/releases de GitHub se publiquen obligatoriamente con el IPK (ver sección 6).
 
 Si una tarea visual requiere tocar alguna de estas rutas o módulos protegidos,
 detenerse y pedir autorización explícita al usuario antes de hacerlo.
@@ -181,3 +182,14 @@ el televisor, el servicio **igual responde a `ping`** e informa `loadErrors`
 muestra esa información en Diagnóstico → fila "Servicio XuperTV". El resto de
 métodos afectados responde con el error exacto en lugar de quedarse sin
 contestar, que es lo que produce "ping no respondió en 25 segundos".
+
+---
+
+## 6. Publicación obligatoria de tags y releases en GitHub (Regla permanente)
+
+Para que los usuarios puedan actualizar la app vía OTA desde sus televisores o descargar la última versión de GitHub:
+- Al incrementar la versión o compilar un release, es **OBLIGATORIO** actualizar `version.json` (versión, `ipkUrl`, sha256 del IPK generado, changelog y fecha), `currentVer` en `webos/fidelity/js/app.js`, y `appinfo.json`.
+- Crear el tag de Git localmente y subirlo al repositorio remoto (`git tag -a vX.X.XX -m "..." && git push origin vX.X.XX`).
+- Crear la Release en GitHub con el archivo `.ipk` compilado adjunto (`gh release create vX.X.XX dist/com.webosflux.xuptertv.fidelity_X.X.XX_all.ipk --title "..." --notes "..."`).
+- **Excepción única:** SOLO se omitirá la subida del tag y la creación del release si el usuario indica explícitamente: **"no la subas"** o **"no subas el tag"**.
+

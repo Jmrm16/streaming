@@ -2818,7 +2818,7 @@ function portalServiceCall(method, params, done, customTimeout) {
   }
 
   function checkForUpdates(silent, onResult) {
-    var currentVer = '2.2.48';
+    var currentVer = '2.2.53';
 
     function paint(result) {
       if (onResult) { onResult(null, result); }

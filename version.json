@@ -1,9 +1,9 @@
 {
-  "version": "2.2.46",
+  "version": "2.2.53",
   "name": "XuperTV",
   "minWebos": "1.0.0",
-  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.46/com.webosflux.xuptertv.fidelity_2.2.46_all.ipk",
-  "sha256": "CF05BF8B8117710027E0A9212CB08E49DB459A07A19A7851013A478CEF37B4E0",
-  "changelog": "Restaurado el diseño de Mi Cuenta: accesos directos a Mi lista, Compartir APP y Agregar Addons M3U con navegación mejorada.",
-  "releaseDate": "2026-11-04"
+  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.53/com.webosflux.xuptertv.fidelity_2.2.53_all.ipk",
+  "sha256": "F873A6843ADB1966AAFB52F70A704EEFA227E418E3F2E545BD9235920A7AE318",
+  "changelog": "Nuevo modal de Categorías de Canales con diseño Dark Fidelity, íconos vectoriales SVG superiores, selector rápido en pantalla completa con [OK]/flechas, eliminación de línea lateral residual y optimización de zapping en webOS 3+.",
+  "releaseDate": "2026-11-05"
 }
