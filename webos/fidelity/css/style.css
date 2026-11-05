@@ -542,31 +542,6 @@ div, section, span { outline: none; }
   background-size: contain;
 }
 
-/* mLlFastBtn : left 129dp, bottom 67dp ; 53dp buttons, 27dp gaps */
-.live-fast {
-  position: absolute;
-  left: 193.5px; bottom: 100.5px;
-  height: 79.5px;
-  white-space: nowrap;
-}
-.live-fast .fast-btn {
-  position: relative;
-  display: inline-block;
-  width: 79.5px; height: 79.5px;
-  margin-right: 40.5px;             /* 27dp */
-  background-position: center center;
-  background-repeat: no-repeat;
-  background-size: 79.5px 79.5px;
-  vertical-align: top;
-}
-.live-fast .fast-btn:last-child { margin-right: 0; }
-.live-fast .fast-btn.f-all  { background-image: url(../assets/original/home/home_live_btn_all_normal.png); }
-.live-fast .fast-btn.f-fav  { background-image: url(../assets/original/home/home_live_btn_fav_normal.png); }
-.live-fast .fast-btn.f-srch { background-image: url(../assets/original/home/home_live_btn_search_normal.png); }
-.live-fast .fast-btn.f-all.is-focused  { background-image: url(../assets/original/home/home_live_btn_all_focus.png); }
-.live-fast .fast-btn.f-fav.is-focused  { background-image: url(../assets/original/home/home_live_btn_fav_focus.png); }
-.live-fast .fast-btn.f-srch.is-focused { background-image: url(../assets/original/home/home_live_btn_search_focus.png); }
-
 .live-arrow-up,
 .live-arrow-down {
   position: absolute;
