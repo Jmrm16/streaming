@@ -2104,6 +2104,10 @@ function portalServiceCall(method, params, done, customTimeout) {
         return true;
       }
       if (dir === 'down') {
+        if (state.channel < CHANNELS.length - 1) {
+          setChannel(state.channel + 1);
+          return true;
+        }
         setFocus(btnAll);
         return true;
       }
@@ -2193,8 +2197,49 @@ function portalServiceCall(method, params, done, customTimeout) {
     try { localStorage.setItem('xuper_m3u_addons', JSON.stringify(list || [])); } catch (e) {}
   }
 
-  var liveCategories = [];
-  var currentLiveCategory = null;
+  var DEFAULT_LIVE_CATEGORIES = [
+    { id: 76182, name: 'Todos', code: 'ba397e42-b664-11ed-8c55-768dd7bc60d3' },
+    { id: 76206, name: 'Deportes', code: 'dc520f12-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 87034, name: 'Vivo gratis', code: '77EA75EF523AB44B01D707781892485E' },
+    { id: 76205, name: 'Cine y Series', code: 'db7b71dc-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 77970, name: 'Más popular', code: '78C5EC9959371B7FEFE6E14AF48A1904' },
+    { id: 77690, name: 'Venezuela', code: '235F792997A0A714FCD96778BCF05172' },
+    { id: 76188, name: 'Colombia', code: 'd463893e-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76190, name: 'Ecuador', code: 'd66e9124-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76207, name: 'Chile', code: 'dd9600fe-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76197, name: 'México', code: 'd908f618-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76187, name: 'Perú', code: 'd425d4d6-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76202, name: 'Bolivia', code: 'daa53324-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76201, name: 'Uruguay', code: 'da865fe4-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 77688, name: 'Paraguay', code: 'CE922BD5FE46DFBDE587348E82E4F239' },
+    { id: 77689, name: 'Panamá', code: '313CC1DF490076FB3F72EA0086645764' },
+    { id: 77988, name: 'Puerto Rico', code: 'E07E20F2A12DB9436DCCB6F3B9B5024B' },
+    { id: 76191, name: 'España', code: 'd6962ea0-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 77691, name: 'Costa Rica', code: '30CBEC64059510DC85E03A61AEEE431A' },
+    { id: 76194, name: 'Estados Unidos', code: 'd862ef98-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 79127, name: 'Centroamérica', code: '427FC371C2D4A520799642758D171591' },
+    { id: 79134, name: 'Honduras', code: '983EFE77932E9378816362F80E7DD93E' },
+    { id: 79145, name: 'El Salvador', code: '5AA6C7CDB005B41F1E13BE66088FB351' },
+    { id: 79147, name: 'República Dominicana', code: 'EDB4CA7F458A2553ACBE9A607DD02934' },
+    { id: 76193, name: 'Noticias', code: 'd8332ccc-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 77977, name: 'Full HD', code: 'C4088392E9152F9E5C7D1671005951A2' },
+    { id: 76204, name: 'HD+(265)', code: 'db2f3830-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76198, name: 'PlayBack', code: 'd9fc1c26-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76186, name: 'NFL PASS', code: 'd3d9d2ca-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76184, name: 'NBA PASS', code: 'd36df230-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76195, name: 'MLB PASS', code: 'd881fb4a-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76196, name: 'Cultura', code: 'd89d00a2-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76183, name: 'Música', code: 'd314839e-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 79146, name: 'Infantil', code: '64334F25B2394B11A1FF1B060D6B377C' },
+    { id: 79148, name: 'Religioso', code: 'E75C698363490CE8F2441F43FB96E752' },
+    { id: 76192, name: '☆ Desde Internet', code: 'd69d9f50-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76200, name: 'EVENTOS PPV', code: 'da7619a4-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76189, name: '24/7', code: 'd51b21ac-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76208, name: '18+', code: 'ddc200aa-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 'addons', name: '➕ Addons M3U', isAddon: true }
+  ];
+  var liveCategories = DEFAULT_LIVE_CATEGORIES.slice(0);
+  var currentLiveCategory = liveCategories[0];
   var liveCategoriesLoaded = false;
   var liveChannelsLoaded = false;
   var liveChannelsLoading = false;
@@ -2278,37 +2323,23 @@ function portalServiceCall(method, params, done, customTimeout) {
   }
 
   function loadLiveCategories(done) {
-    if (liveCategoriesLoaded && liveCategories.length) {
-      if (done) { done(null, liveCategories); }
-      return;
-    }
     portalServiceCall('liveCategories', {}, function (err, payload) {
-      var cats = [];
-      if (payload && payload.categories && payload.categories.length) {
+      if (!err && payload && payload.returnValue !== false && payload.categories && payload.categories.length) {
+        var cats = [];
         for (var i = 0; i < payload.categories.length; i++) {
           var c = payload.categories[i];
           var nm = c.name;
           if (nm === 'ChannelList' || c.id === 76182) { nm = 'Todos'; }
           cats.push({ id: c.id, name: nm, code: c.code, isAddon: false });
         }
-      } else {
-        /* Fallback categories if portal takes time */
-        cats = [
-          { id: 76182, name: 'Todos' },
-          { id: 76206, name: 'Deportes' },
-          { id: 76205, name: 'Cine y Series' },
-          { id: 76188, name: 'Colombia' },
-          { id: 76191, name: 'España' },
-          { id: 76197, name: 'México' }
-        ];
+        cats.push({ id: 'addons', name: '➕ Addons M3U', isAddon: true });
+        liveCategories = cats;
+        liveCategoriesLoaded = true;
+        if (!currentLiveCategory) { currentLiveCategory = liveCategories[0]; }
+        renderPlayerCategories();
+        renderCategoryPicker();
       }
-      /* Append Addons Category */
-      cats.push({ id: 'addons', name: '➕ Addons M3U', isAddon: true });
-      liveCategories = cats;
-      liveCategoriesLoaded = true;
-      if (!currentLiveCategory) { currentLiveCategory = liveCategories[0]; }
-      renderPlayerCategories();
-      if (done) { done(null, liveCategories); }
+      if (done) { done(err, liveCategories); }
     });
   }
 
@@ -2374,7 +2405,7 @@ function portalServiceCall(method, params, done, customTimeout) {
 
   function loadLiveChannels(columnId, done) {
     var requestedColumnId = columnId || 76182;
-    /* buildLivePage and the initial boot can both ask for Todos.  Keep the
+    /* buildLivePage and the initial boot can both ask for Todos. Keep the
        existing request instead of clearing the first page while it streams. */
     if (liveChannelsLoading && liveChannelLoadColumnId === requestedColumnId) { return; }
     var requestSeq = ++liveChannelRequestSeq;
@@ -2393,12 +2424,13 @@ function portalServiceCall(method, params, done, customTimeout) {
       portalServiceCall('liveChannels', {
         columnId: requestedColumnId,
         pageNum: pageNum,
-        pageSize: 20
+        pageSize: 100
       }, function (err, payload) {
         /* A category was selected while this page was in flight. */
         if (requestSeq !== liveChannelRequestSeq) { return; }
-        var pageChannels = payload && payload.channels ? payload.channels : [];
-        if (!err && pageChannels.length) {
+        var isErr = err || !payload || payload.returnValue === false;
+        var pageChannels = (!isErr && payload && payload.channels) ? payload.channels : [];
+        if (!isErr && pageChannels.length) {
           if (pageNum === 1) {
             CHANNELS.splice(0, CHANNELS.length);
           }
@@ -2416,13 +2448,13 @@ function portalServiceCall(method, params, done, customTimeout) {
             }
           }
           liveChannelsLoaded = true;
+          renderLiveRows(false);
+          renderPlayerChannels();
+          if (state.channel >= CHANNELS.length) { state.channel = 0; }
+          if (CHANNELS[state.channel] && liveInfoText) {
+            liveInfoText.textContent = CHANNELS[state.channel].name;
+          }
           if (pageNum === 1) {
-            renderLiveRows(false);
-            renderPlayerChannels();
-            if (state.channel >= CHANNELS.length) { state.channel = 0; }
-            if (CHANNELS[state.channel] && liveInfoText) {
-              liveInfoText.textContent = CHANNELS[state.channel].name;
-            }
             if (state.screen === 'player' && state.playerMode === 'live') {
               updatePlayer();
             } else {
@@ -2434,23 +2466,19 @@ function portalServiceCall(method, params, done, customTimeout) {
         if (!didReturnFirstPage) {
           didReturnFirstPage = true;
           if (!liveCategoriesLoaded) { loadLiveCategories(); }
-          if (done) { done(err, payload); }
+          if (done) { done(isErr ? (err || 'Error cargando canales') : null, payload); }
         }
 
-        if (!err && payload && payload.hasMore && pageChannels.length) {
+        if (!isErr && payload && payload.hasMore && pageChannels.length) {
           pageNum++;
           /* Yield to webOS between pages so navigating the first block stays
              responsive while the rest of the catalogue arrives. */
-          setTimeout(fetchNextPage, 35);
+          setTimeout(fetchNextPage, 40);
           return;
         }
 
         liveChannelsLoading = false;
-        if (pageNum > 1) {
-          renderLiveRows(false);
-          renderPlayerChannels();
-        }
-        if (err && !liveChannelsLoaded) {
+        if (isErr && !liveChannelsLoaded) {
           setTimeout(function () {
             if (requestSeq === liveChannelRequestSeq) { loadLiveChannels(requestedColumnId); }
           }, 2500);
@@ -2818,7 +2846,7 @@ function portalServiceCall(method, params, done, customTimeout) {
   }
 
   function checkForUpdates(silent, onResult) {
-    var currentVer = '2.2.53';
+    var currentVer = '2.2.54';
 
     function paint(result) {
       if (onResult) { onResult(null, result); }
@@ -8296,6 +8324,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     startWelcome();
     try { loadVodCatalog(); } catch (eVod) { console.error('loadVodCatalog error:', eVod); }
     try { loadLiveChannels(); } catch (eLive) { console.error('loadLiveChannels error:', eLive); }
+    try { loadLiveCategories(); } catch (eCat) { console.error('loadLiveCategories error:', eCat); }
     setTimeout(function () { try { checkForUpdates(true); } catch (eUp) {} }, 6000);
 
     window.__xuper = {
