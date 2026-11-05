@@ -1,9 +1,9 @@
 {
-  "version": "2.2.55",
+  "version": "2.2.56",
   "name": "XuperTV",
   "minWebos": "1.0.0",
-  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.55/com.webosflux.xuptertv.fidelity_2.2.55_all.ipk",
-  "sha256": "4F8D3B5EAF98624BE9BED3F64CA657EB7338F84DFFE5BA707DFE9632F5A53A81",
-  "changelog": "Restauración de experiencia Live TV 2.2.52 sin botones inferiores que interferían con el zapping, consulta directa de actualizaciones a GitHub sin bloqueo de caché y todas las 38 categorías activas.",
+  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.56/com.webosflux.xuptertv.fidelity_2.2.56_all.ipk",
+  "sha256": "9210BBFCA6932375FC08490EA8F40EDBCE7496D432303EEAF7E6432BF4627431",
+  "changelog": "Compatibilidad universal Live TV webOS 3.x y webOS 4+: restablecido bus dual palm/luna con reintento automático, permisos ACG requeridos para webOS 4+, carga inmediata de canales en bloques de 20 como en 2.2.48, zapping ágil a 180ms y disponibilidad completa de las 38 categorías.",
   "releaseDate": "2026-11-05"
 }
