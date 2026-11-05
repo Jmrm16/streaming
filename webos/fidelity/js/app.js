@@ -2674,9 +2674,9 @@
     }
   }
   var ta = [
-    "https://cdn.jsdelivr.net/gh/cristianco7/XUPER-HYDRA-PORT-WEBOS@main/version.json",
-    "https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/feature/catalog-webos-compat/version.json",
     "https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/main/version.json",
+    "https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/feature/catalog-webos-compat/version.json",
+    "https://cdn.jsdelivr.net/gh/cristianco7/XUPER-HYDRA-PORT-WEBOS@main/version.json",
   ];
   function aa(e) {
     for (
@@ -2760,7 +2760,7 @@
     });
   }
   function oa(e, t) {
-    var a = "2.2.48";
+    var a = "2.2.60";
     function i(i) {
       (t && t(null, i),
         i && i.updateAvailable
@@ -4243,7 +4243,7 @@
           e(
             "div",
             "sp-about-update-desc",
-            "Versión instalada: v2.2.48. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.",
+            "Versión instalada: v2.2.60. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.",
           ),
         ));
       var s = e("div", "sp-about-update-row"),
@@ -4267,7 +4267,7 @@
                         "¡Nueva versión disponible: v" + t.latestVersion + "!"),
                       (d.style.color = "#22c55e"))
                     : ((d.textContent =
-                        "Tienes la versión más reciente (v2.2.48)."),
+                        "Tienes la versión más reciente (v2.2.60)."),
                       (d.style.color = "#38bdf8")));
             }));
         }),
