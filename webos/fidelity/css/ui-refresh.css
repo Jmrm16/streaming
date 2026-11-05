@@ -605,21 +605,7 @@
 
 /* --- Rail header / footer hints ------------------------------------------ */
 .home-tabs {
-  border-right: none;
-}
-.home-tabs.is-expanded {
   border-right: 1px solid rgba(255, 255, 255, .05);
-}
-.home-tabs.is-collapsed {
-  border-right: none !important;
-  border: none !important;
-  box-shadow: none !important;
-  width: 140px !important;
-}
-.home-tabs.is-collapsed::before,
-.home-tabs.is-collapsed::after {
-  display: none !important;
-  content: none !important;
 }
 .home-tabs::before {
   content: "MENÚ";

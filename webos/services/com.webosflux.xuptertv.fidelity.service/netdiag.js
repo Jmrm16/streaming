@@ -1,546 +1,453 @@
-/*
- * Network diagnostics for the XuperTV webOS port.
- *
- * WHY
- * ---
- * When a carrier blocks the service it does not usually block the video: it
- * poisons the DNS answer for the catalogue/CDN hostnames.  The TV then reports
- * a generic "stream could not be opened" error and there is no way for the
- * user to tell a blocked DNS from a dead server or a dead Wi-Fi link.
- *
- * This module answers, from inside the TV:
- *   - what the local (ISP) resolver says for every host,
- *   - what Cloudflare/Google DoH say for the same host,
- *   - whether a TCP connection to each address actually opens,
- *   - whether the DoH resolvers themselves are reachable.
- *
- * It only reads and reports.  It never changes playback and never resolves a
- * stream by itself: the DoH bypass lives in dnsx.js.
- *
- * ES5/CommonJS on purpose: webOS 4 ships an old Node.js inside its services.
- */
-'use strict';
-
-var https = require('https');
-var http = require('http');
-var dnsx = require('./dnsx');
-
+"use strict";
+var https = require("https"),
+  http = require("http"),
+  dnsx = require("./dnsx");
 try {
-  if (https.globalAgent) { https.globalAgent.maxSockets = 32; }
-  if (http.globalAgent) { http.globalAgent.maxSockets = 32; }
-} catch (eAgent) { /* ignore */ }
-
-var TCP_TIMEOUT = 3000;
-var HTTP_TIMEOUT = 4000;
-var MAX_HOSTS = 4;
-/* The whole report must fit in the Luna timeout plus a wide margin, even on a
-   TV whose resolver never answers. */
-var HOST_DEADLINE = 9000;
-var PROVIDER_DEADLINE = 4000;
-var GLOBAL_DEADLINE = 14000;
-var LAYER_DEADLINE = 5000;
-
-function now() { return Date.now(); }
-
-function parallel(tasks, done) {
-  var pending = tasks.length;
-  var results = [];
-  if (!pending) { return done(results); }
-  tasks.forEach(function (task, index) {
-    var settled = false;
-    task(function (value) {
-      if (settled) { return; }
-      settled = true;
-      results[index] = value;
-      pending--;
-      if (pending === 0) { done(results); }
+  (https.globalAgent && (https.globalAgent.maxSockets = 32),
+    http.globalAgent && (http.globalAgent.maxSockets = 32));
+} catch (e) {}
+var TCP_TIMEOUT = 3e3,
+  HTTP_TIMEOUT = 4e3,
+  MAX_HOSTS = 4,
+  HOST_DEADLINE = 9e3,
+  PROVIDER_DEADLINE = 4e3,
+  GLOBAL_DEADLINE = 14e3,
+  LAYER_DEADLINE = 5e3;
+function now() {
+  return Date.now();
+}
+function parallel(e, r) {
+  var t = e.length,
+    n = [];
+  if (!t) return r(n);
+  e.forEach(function (e, o) {
+    var s = !1;
+    e(function (e) {
+      s || ((s = !0), (n[o] = e), 0 === --t && r(n));
     });
   });
 }
-
-/* Hard cap for a single probe.  On webOS 4 the platform DNS stub (dns.lookup)
-   can stay pending for ever when the ISP resolver is silent, and then the
-   whole report never comes back: the viewer presses "Analizar red" and nothing
-   ever appears.  Every task must answer, even if the answer is "no sé". */
-function withDeadline(task, ms, fallback) {
-  return function (cb) {
-    var settled = false;
-    var timer = setTimeout(function () {
-      if (settled) { return; }
-      settled = true;
-      cb(fallback());
-    }, ms);
-    if (timer && typeof timer.unref === 'function') { timer.unref(); }
-    task(function (value) {
-      if (settled) { return; }
-      settled = true;
-      clearTimeout(timer);
-      cb(value);
-    });
+function withDeadline(e, r, t) {
+  return function (n) {
+    var o = !1,
+      s = setTimeout(function () {
+        o || ((o = !0), n(t()));
+      }, r);
+    (s && "function" == typeof s.unref && s.unref(),
+      e(function (e) {
+        o || ((o = !0), clearTimeout(s), n(e));
+      }));
   };
 }
-
-/* TCP: does the address accept a connection at all? */
-function tcpCheck(ip, port, done) {
-  if (!ip) { return done({ ip: ip, port: port, ok: false, error: 'sin direccion' }); }
-  dnsx.probe(ip, port, function (err, ms) {
-    done({
-      ip: ip,
-      port: port,
-      ok: !err,
-      ms: ms,
-      error: err ? (err.code || err.message) : ''
-    });
+function tcpCheck(e, r, t) {
+  if (!e) return t({ ip: e, port: r, ok: !1, error: "sin direccion" });
+  dnsx.probe(e, r, function (n, o) {
+    t({ ip: e, port: r, ok: !n, ms: o, error: n ? n.code || n.message : "" });
   });
 }
-
-/* TLS + HTTP: is the service answering on this address with this SNI? */
-function httpsCheck(host, ip, done) {
-  var finished = false;
-  var t0 = now();
-
-  function finish(value) {
-    if (finished) { return; }
-    finished = true;
-    done(value);
+function httpsCheck(e, r, t) {
+  var n = !1,
+    o = now();
+  function s(e) {
+    n || ((n = !0), t(e));
   }
-
   try {
-    var req = https.request({
-      hostname: ip,
-      servername: host,
-      rejectUnauthorized: false,
-      port: 443,
-      path: '/',
-      method: 'GET',
-      headers: {
-        'User-Agent': 'XuperTV/webOS',
-        Host: host,
-        Connection: 'close'
-      }
-    }, function (res) {
-      var status = res.statusCode;
-      res.resume();
-      res.on('end', function () {
-        finish({ host: host, ip: ip, ok: status > 0, status: status, ms: now() - t0 });
-      });
-    });
-
-    req.setTimeout(HTTP_TIMEOUT, function () {
-      try { req.abort(); } catch (eAbort) { /* ignore */ }
-      finish({ host: host, ip: ip, ok: false, error: 'tiempo agotado', ms: now() - t0 });
-    });
-    req.on('error', function (err) {
-      finish({ host: host, ip: ip, ok: false, error: err.code || err.message, ms: now() - t0 });
-    });
-    req.end();
-  } catch (eReq) {
-    finish({ host: host, ip: ip, ok: false, error: eReq.message || 'error https', ms: now() - t0 });
-  }
-}
-
-function first(list) { return list && list.length ? list[0] : ''; }
-
-/* A poisoned answer has NOTHING in common with the real one.  Cloudflare
- * rotates a subset of its two addresses, so a partial difference is normal and
- * must not be reported as a block. */
-function hasCommon(a, b) {
-  if (!a || !b) { return false; }
-  for (var i = 0; i < a.length; i++) {
-    if (b.indexOf(a[i]) !== -1) { return true; }
-  }
-  return false;
-}
-
-/* One host: local DNS, DoH, TCP and TLS on both answers. */
-function checkHost(host, done) {
-  var result = {
-    host: host,
-    system: { ok: false, ips: [], ms: 0, error: '' },
-    doh: { ok: false, ips: [], ms: 0, error: '' },
-    mismatch: false,
-    tcp443: null,
-    http: null,
-    verdict: 'unknown'
-  };
-  var pending = 2;
-
-  function afterResolvers() {
-    pending--;
-    if (pending > 0) { return; }
-    result.mismatch = result.system.ok && result.doh.ok && !hasCommon(result.system.ips, result.doh.ips);
-
-    /* Cloudflare publishes several anycast addresses for the same hostname and
-       the portal client rotates them between calls.  Probing only the first one
-       reported "sin conexión" for every domain while the app could still reach
-       the portal through the second address, which is exactly the misleading
-       report users sent from blocked networks.  Probe every known address in
-       parallel and keep the first one that accepts the connection. */
-    var ips = [];
-    var seenIps = {};
-    var sources = [result.doh.ips, result.system.ips];
-    for (var si = 0; si < sources.length; si++) {
-      var sourceIps = sources[si] || [];
-      for (var ii = 0; ii < sourceIps.length; ii++) {
-        var candidateIp = sourceIps[ii];
-        if (candidateIp && !seenIps[candidateIp]) {
-          seenIps[candidateIp] = true;
-          ips.push(candidateIp);
-        }
-      }
-    }
-    result.tried = [];
-    if (!ips.length) {
-      result.verdict = (!result.system.ok && !result.doh.ok) ? 'sin-salida' : 'sin-tcp';
-      return done(result);
-    }
-
-    var tcpSettled = false;
-    var pendingTcp = ips.length;
-
-    function tcpFailed() {
-      if (tcpSettled) { return; }
-      tcpSettled = true;
-      result.tcp443 = {
-        ip: ips[0], port: 443, ok: false,
-        error: (result.tried[0] && result.tried[0].error) || 'sin respuesta',
-        tried: result.tried
-      };
-      result.verdict = 'sin-tcp';
-      done(result);
-    }
-
-    function tcpSucceeded(ip, tcp) {
-      if (tcpSettled) { return; }
-      tcpSettled = true;
-      result.tcp443 = tcp;
-      result.dialIp = ip;
-      httpsCheck(host, ip, function (http) {
-        result.http = http;
-        if (!http.ok) { result.verdict = 'tls-falla'; return done(result); }
-        if (result.mismatch) { result.verdict = 'dns-distinto'; return done(result); }
-        if (!result.system.ok) { result.verdict = 'dns-local-falla'; return done(result); }
-        result.verdict = 'ok';
-        done(result);
-      });
-    }
-
-    for (var pi = 0; pi < ips.length; pi++) {
-      (function (probeIp) {
-        tcpCheck(probeIp, 443, function (tcp) {
-          tcp.ip = probeIp;
-          result.tried.push(tcp);
-          pendingTcp--;
-          if (tcp.ok) { tcpSucceeded(probeIp, tcp); return; }
-          if (pendingTcp === 0) { tcpFailed(); }
+    var i = https.request(
+      {
+        hostname: r,
+        servername: e,
+        rejectUnauthorized: !1,
+        port: 443,
+        path: "/",
+        method: "GET",
+        headers: {
+          "User-Agent": "XuperTV/webOS",
+          Host: e,
+          Connection: "close",
+        },
+      },
+      function (t) {
+        var n = t.statusCode;
+        (t.resume(),
+          t.on("end", function () {
+            s({ host: e, ip: r, ok: n > 0, status: n, ms: now() - o });
+          }));
+      },
+    );
+    (i.setTimeout(HTTP_TIMEOUT, function () {
+      try {
+        i.abort();
+      } catch (e) {}
+      s({ host: e, ip: r, ok: !1, error: "tiempo agotado", ms: now() - o });
+    }),
+      i.on("error", function (t) {
+        s({
+          host: e,
+          ip: r,
+          ok: !1,
+          error: t.code || t.message,
+          ms: now() - o,
         });
-      })(ips[pi]);
+      }),
+      i.end());
+  } catch (t) {
+    s({
+      host: e,
+      ip: r,
+      ok: !1,
+      error: t.message || "error https",
+      ms: now() - o,
+    });
+  }
+}
+function first(e) {
+  return e && e.length ? e[0] : "";
+}
+function hasCommon(e, r) {
+  if (!e || !r) return !1;
+  for (var t = 0; t < e.length; t++) if (-1 !== r.indexOf(e[t])) return !0;
+  return !1;
+}
+function checkHost(e, r) {
+  var t = {
+      host: e,
+      system: { ok: !1, ips: [], ms: 0, error: "" },
+      doh: { ok: !1, ips: [], ms: 0, error: "" },
+      mismatch: !1,
+      tcp443: null,
+      http: null,
+      verdict: "unknown",
+    },
+    n = 2;
+  function o() {
+    if (!(--n > 0)) {
+      t.mismatch =
+        t.system.ok && t.doh.ok && !hasCommon(t.system.ips, t.doh.ips);
+      for (
+        var o = [], s = {}, i = [t.doh.ips, t.system.ips], u = 0;
+        u < i.length;
+        u++
+      )
+        for (var c = i[u] || [], a = 0; a < c.length; a++) {
+          var h = c[a];
+          h && !s[h] && ((s[h] = !0), o.push(h));
+        }
+      if (((t.tried = []), !o.length))
+        return (
+          (t.verdict = t.system.ok || t.doh.ok ? "sin-tcp" : "sin-salida"),
+          r(t)
+        );
+      for (var p = !1, l = o.length, d = 0; d < o.length; d++)
+        (function (e) {
+          tcpCheck(e, 443, function (n) {
+            ((n.ip = e),
+              t.tried.push(n),
+              l--,
+              n.ok
+                ? f(e, n)
+                : 0 === l &&
+                  (p ||
+                    ((p = !0),
+                    (t.tcp443 = {
+                      ip: o[0],
+                      port: 443,
+                      ok: !1,
+                      error:
+                        (t.tried[0] && t.tried[0].error) || "sin respuesta",
+                      tried: t.tried,
+                    }),
+                    (t.verdict = "sin-tcp"),
+                    r(t))));
+          });
+        })(o[d]);
+    }
+    function f(n, o) {
+      p ||
+        ((p = !0),
+        (t.tcp443 = o),
+        (t.dialIp = n),
+        httpsCheck(e, n, function (e) {
+          return (
+            (t.http = e),
+            e.ok
+              ? t.mismatch
+                ? ((t.verdict = "dns-distinto"), r(t))
+                : t.system.ok
+                  ? ((t.verdict = "ok"), void r(t))
+                  : ((t.verdict = "dns-local-falla"), r(t))
+              : ((t.verdict = "tls-falla"), r(t))
+          );
+        }));
     }
   }
-
-  var tSys = now();
-  dnsx.systemLookup(host, function (err, ips) {
-    result.system.ms = now() - tSys;
-    if (err) {
-      result.system.error = err.code || err.message;
-    } else {
-      result.system.ok = true;
-      result.system.ips = ips;
-    }
-    afterResolvers();
+  var s = now();
+  dnsx.systemLookup(e, function (e, r) {
+    ((t.system.ms = now() - s),
+      e
+        ? (t.system.error = e.code || e.message)
+        : ((t.system.ok = !0), (t.system.ips = r)),
+      o());
   });
-
-  var tDoh = now();
-  dnsx.queryDoh(host, function (dohErr, dohIps) {
-    result.doh.ms = now() - tDoh;
-    if (dohErr) {
-      result.doh.error = dohErr.message;
-    } else {
-      result.doh.ok = true;
-      result.doh.ips = dohIps;
-    }
-    afterResolvers();
+  var i = now();
+  dnsx.queryDoh(e, function (e, r) {
+    ((t.doh.ms = now() - i),
+      e ? (t.doh.error = e.message) : ((t.doh.ok = !0), (t.doh.ips = r)),
+      o());
   });
 }
-
-/* A single query per provider, measured, to know whether DoH itself works. */
-function checkProvider(provider, done) {
-  var t0 = now();
-  tcpCheck(provider.ip, 443, function (tcp) {
-    if (!tcp.ok) {
-      return done({
-        ip: provider.ip,
-        sni: provider.sni,
-        reachable: false,
-        ms: tcp.ms,
-        error: tcp.error
+function checkProvider(e, r) {
+  now();
+  tcpCheck(e.ip, 443, function (t) {
+    if (!t.ok)
+      return r({
+        ip: e.ip,
+        sni: e.sni,
+        reachable: !1,
+        ms: t.ms,
+        error: t.error,
       });
-    }
-    done({
-      ip: provider.ip,
-      sni: provider.sni,
-      reachable: true,
-      ms: tcp.ms,
-      queryMs: 0,
-      error: ''
-    });
+    r({ ip: e.ip, sni: e.sni, reachable: !0, ms: t.ms, queryMs: 0, error: "" });
   });
 }
-
-function verdictOf(hosts, providers) {
-  /* Entries that hit the deadline carry no information: counting them as a
-     block would tell the viewer that the carrier is blocking when the truth is
-     that the TV never answered. */
-  var knownProviders = [];
-  var i;
-  for (i = 0; i < providers.length; i++) {
-    if (providers[i] && !providers[i].timeout) { knownProviders.push(providers[i]); }
+function verdictOf(e, r) {
+  var t,
+    n = [];
+  for (t = 0; t < r.length; t++) r[t] && !r[t].timeout && n.push(r[t]);
+  var o = [];
+  for (t = 0; t < e.length; t++)
+    e[t] && "sin-tiempo" !== e[t].verdict && o.push(e[t]);
+  if (!n.length || !o.length) return "incompleto";
+  var s = 0,
+    i = !1,
+    u = !1,
+    c = !1,
+    a = !1,
+    h = 0;
+  for (t = 0; t < n.length; t++) n[t].reachable && s++;
+  for (var p = 0; p < o.length; p++) {
+    var l = o[p];
+    (l.doh && l.doh.ok && (i = !0),
+      l.mismatch && (u = !0),
+      "dns-local-falla" === l.verdict && (c = !0),
+      ("sin-tcp" !== l.verdict && "tls-falla" !== l.verdict) ||
+        ((a = !0), h++));
   }
-  var knownHosts = [];
-  for (i = 0; i < hosts.length; i++) {
-    if (hosts[i] && hosts[i].verdict !== 'sin-tiempo') { knownHosts.push(hosts[i]); }
-  }
-  if (!knownProviders.length || !knownHosts.length) { return 'incompleto'; }
-
-  var reachable = 0;
-  var anyDoh = false;
-  var anyMismatch = false;
-  var anyLocalFail = false;
-  var anyTcpFail = false;
-  var tcpFailCount = 0;
-  for (i = 0; i < knownProviders.length; i++) {
-    if (knownProviders[i].reachable) { reachable++; }
-  }
-  for (var j = 0; j < knownHosts.length; j++) {
-    var host = knownHosts[j];
-    if (host.doh && host.doh.ok) { anyDoh = true; }
-    if (host.mismatch) { anyMismatch = true; }
-    if (host.verdict === 'dns-local-falla') { anyLocalFail = true; }
-    if (host.verdict === 'sin-tcp' || host.verdict === 'tls-falla') {
-      anyTcpFail = true;
-      tcpFailCount++;
-    }
-  }
-  if (!reachable) { return 'doh-bloqueado'; }
-  /* A rotating CDN always leaves one address cold; only a total failure means
-     the network cannot reach the service at all. */
-  if (anyTcpFail && tcpFailCount >= knownHosts.length) { return 'sin-salida'; }
-  if (anyMismatch) { return 'dns-distinto'; }
-  /* The ISP resolver answered nothing at all: that is a DNS block even when
-     DoH saves the day, and the viewer must be told so. */
-  if (anyLocalFail) { return 'dns-local-falla'; }
-  if (anyTcpFail) { return 'algun-servidor'; }
-  if (!anyDoh) { return 'doh-sin-respuesta'; }
-  return 'ok';
+  return s
+    ? a && h >= o.length
+      ? "sin-salida"
+      : u
+        ? "dns-distinto"
+        : c
+          ? "dns-local-falla"
+          : a
+            ? "algun-servidor"
+            : i
+              ? "ok"
+              : "doh-sin-respuesta"
+    : "doh-bloqueado";
 }
-
-/* run({hosts:[...], screen:{w,h,scale}}, cb) -> report */
-function run(options, cb) {
-  options = options || {};
-  var hosts = (options.hosts || []).filter(function (h) { return typeof h === 'string' && h; });
-  var extra = options.dnsxHosts || [];
-  for (var e = 0; e < extra.length; e++) {
-    if (hosts.indexOf(extra[e]) === -1) { hosts.push(extra[e]); }
+function run(e, r) {
+  for (
+    var t = ((e = e || {}).hosts || []).filter(function (e) {
+        return "string" == typeof e && e;
+      }),
+      n = e.dnsxHosts || [],
+      o = 0;
+    o < n.length;
+    o++
+  )
+    -1 === t.indexOf(n[o]) && t.push(n[o]);
+  t = t.slice(0, MAX_HOSTS);
+  var s = now(),
+    i = t.map(function (e) {
+      return withDeadline(
+        function (r) {
+          checkHost(e, r);
+        },
+        HOST_DEADLINE,
+        function () {
+          return {
+            host: e,
+            timeout: !0,
+            verdict: "sin-tiempo",
+            system: {
+              ok: !1,
+              ips: [],
+              ms: HOST_DEADLINE,
+              error: "sin respuesta",
+            },
+            doh: { ok: !1, ips: [], ms: HOST_DEADLINE, error: "sin respuesta" },
+            mismatch: !1,
+            tcp443: null,
+            http: null,
+          };
+        },
+      );
+    }),
+    u = dnsx.providers.map(function (e) {
+      return withDeadline(
+        function (r) {
+          checkProvider(e, r);
+        },
+        PROVIDER_DEADLINE,
+        function () {
+          return {
+            ip: e.ip,
+            sni: e.sni,
+            reachable: !1,
+            timeout: !0,
+            ms: PROVIDER_DEADLINE,
+            error: "sin respuesta",
+          };
+        },
+      );
+    }),
+    c = !1,
+    a = 2,
+    h = [],
+    p = [];
+  function l(t) {
+    c ||
+      ((c = !0),
+      clearTimeout(d),
+      r(null, {
+        at: now(),
+        tookMs: now() - s,
+        mode: dnsx.mode(),
+        verdict: verdictOf(p, h),
+        providers: h,
+        hosts: p,
+        cache: dnsx.summary(),
+        screen: e.screen || null,
+        partial: !!t,
+      }));
   }
-  hosts = hosts.slice(0, MAX_HOSTS);
-
-  var t0 = now();
-  var hostTasks = hosts.map(function (host) {
-    return withDeadline(function (done) { checkHost(host, done); }, HOST_DEADLINE, function () {
-      return {
-        host: host,
-        timeout: true,
-        verdict: 'sin-tiempo',
-        system: { ok: false, ips: [], ms: HOST_DEADLINE, error: 'sin respuesta' },
-        doh: { ok: false, ips: [], ms: HOST_DEADLINE, error: 'sin respuesta' },
-        mismatch: false,
-        tcp443: null,
-        http: null
-      };
-    });
-  });
-  var providerTasks = dnsx.providers.map(function (provider) {
-    return withDeadline(function (done) { checkProvider(provider, done); }, PROVIDER_DEADLINE, function () {
-      return {
-        ip: provider.ip,
-        sni: provider.sni,
-        reachable: false,
-        timeout: true,
-        ms: PROVIDER_DEADLINE,
-        error: 'sin respuesta'
-      };
-    });
-  });
-
-  var finished = false;
-  var pending = 2;
-  var provResults = [];
-  var hostResults = [];
-
-  function finish(partial) {
-    if (finished) { return; }
-    finished = true;
-    clearTimeout(globalTimer);
-    cb(null, {
-      at: now(),
-      tookMs: now() - t0,
-      mode: dnsx.mode(),
-      verdict: verdictOf(hostResults, provResults),
-      providers: provResults,
-      hosts: hostResults,
-      cache: dnsx.summary(),
-      screen: options.screen || null,
-      partial: !!partial
-    });
+  var d = setTimeout(function () {
+    l(!0);
+  }, GLOBAL_DEADLINE);
+  function f() {
+    --a > 0 || l(!1);
   }
-
-  /* Last resort: answer with whatever arrived.  A report that never comes back
-     leaves the panel empty, which is exactly what some TVs report. */
-  var globalTimer = setTimeout(function () { finish(true); }, GLOBAL_DEADLINE);
-  if (globalTimer && typeof globalTimer.unref === 'function') { globalTimer.unref(); }
-
-  function checkDone() {
-    pending--;
-    if (pending > 0) { return; }
-    finish(false);
-  }
-
-  parallel(providerTasks, function (providers) {
-    provResults = providers;
-    checkDone();
-  });
-  parallel(hostTasks, function (results) {
-    hostResults = results;
-    checkDone();
-  });
+  (d && "function" == typeof d.unref && d.unref(),
+    parallel(u, function (e) {
+      ((h = e), f());
+    }),
+    parallel(i, function (e) {
+      ((p = e), f());
+    }));
 }
-
-
-/* ─── Layer diagnostics: portal, session, live, VOD ─────────────────────── */
-
-/* Quick HEAD/GET to a URL via DoH-resolved IP.  Returns {ok, status, ms, error}. */
-function layerProbe(url, headers, done) {
-  if (!url) { return done({ ok: false, error: 'sin-url' }); }
-  var t0 = now();
-  var finished = false;
-  function finish(v) { if (finished) { return; } finished = true; done(v); }
-
-  var urlmod = require('url');
-  var dnsx2  = require('./dnsx');
-  var https2 = require('https');
-  var http2  = require('http');
-
+function layerProbe(e, r, t) {
+  if (!e) return t({ ok: !1, error: "sin-url" });
+  var n = now(),
+    o = !1;
+  function s(e) {
+    o || ((o = !0), t(e));
+  }
+  var i = require("url"),
+    u = require("./dnsx"),
+    c = require("https"),
+    a = require("http");
   try {
-    var parsed = urlmod.parse(url);
-    var host = parsed.hostname;
-    var secure = parsed.protocol === 'https:';
-
-    /* Function expression, not a declaration: V8 3.28 (webOS 3.x) rejects a
-       declaration inside a block and the service never loads. */
-    var doRequest = function (ipList, ipIndex) {
-      var connectHost = (ipList && ipList[ipIndex]) || host;
-      var defaultPort = secure ? 443 : 80;
-      var port = parsed.port ? parseInt(parsed.port, 10) : defaultPort;
-      var reqHeaders = { 'User-Agent': 'Ranger/4.9.4-17294ac0', Host: parsed.host || host };
-      for (var k in (headers || {})) {
-        if (Object.prototype.hasOwnProperty.call(headers, k)) { reqHeaders[k] = headers[k]; }
-      }
-      var reqOpts = {
-        hostname: connectHost, servername: host,
-        rejectUnauthorized: false, port: port,
-        path: parsed.path || '/', method: 'HEAD',
-        headers: reqHeaders
+    var h = i.parse(e),
+      p = h.hostname,
+      l = "https:" === h.protocol,
+      d = function (e, t) {
+        var o = (e && e[t]) || p,
+          i = l ? 443 : 80,
+          u = h.port ? parseInt(h.port, 10) : i,
+          f = { "User-Agent": "Ranger/4.9.4-17294ac0", Host: h.host || p };
+        for (var m in r || {})
+          Object.prototype.hasOwnProperty.call(r, m) && (f[m] = r[m]);
+        var v = {
+            hostname: o,
+            servername: p,
+            rejectUnauthorized: !1,
+            port: u,
+            path: h.path || "/",
+            method: "HEAD",
+            headers: f,
+          },
+          k = (l ? c : a).request(v, function (e) {
+            (e.resume(),
+              e.on("end", function () {
+                s({
+                  ok: e.statusCode >= 200 && e.statusCode < 500,
+                  status: e.statusCode,
+                  ms: now() - n,
+                });
+              }));
+          });
+        (k.setTimeout(HTTP_TIMEOUT, function () {
+          try {
+            k.abort();
+          } catch (e) {}
+          s({ ok: !1, error: "timeout", ms: now() - n });
+        }),
+          k.on("error", function (r) {
+            if (e && t + 1 < e.length) return d(e, t + 1);
+            s({ ok: !1, error: r.code || r.message, ms: now() - n });
+          }),
+          k.end());
       };
-      var mod = secure ? https2 : http2;
-      var req = mod.request(reqOpts, function (res) {
-        res.resume();
-        res.on('end', function () {
-          finish({ ok: res.statusCode >= 200 && res.statusCode < 500, status: res.statusCode, ms: now() - t0 });
-        });
-      });
-      req.setTimeout(HTTP_TIMEOUT, function () {
-        try { req.abort(); } catch (e) {}
-        finish({ ok: false, error: 'timeout', ms: now() - t0 });
-      });
-      req.on('error', function (err) {
-        if (ipList && (ipIndex + 1) < ipList.length) {
-          return doRequest(ipList, ipIndex + 1);
-        }
-        finish({ ok: false, error: err.code || err.message, ms: now() - t0 });
-      });
-      req.end();
-    };
-
-    if (!host || dnsx2.isIpv4(host)) { return doRequest([host], 0); }
-    var hit = dnsx2.cached(host);
-    if (hit && hit.ips && hit.ips.length) { return doRequest(hit.ips, 0); }
-    dnsx2.resolve(host, function (err, res) {
-      var list = (res && res.ips && res.ips.length) ? res.ips : [host];
-      doRequest(list, 0);
+    if (!p || u.isIpv4(p)) return d([p], 0);
+    var f = u.cached(p);
+    if (f && f.ips && f.ips.length) return d(f.ips, 0);
+    u.resolve(p, function (e, r) {
+      var t = r && r.ips && r.ips.length ? r.ips : [p];
+      d(t, 0);
     });
   } catch (e) {
-    finish({ ok: false, error: e.message || 'excepción', ms: now() - t0 });
+    s({ ok: !1, error: e.message || "excepción", ms: now() - n });
   }
 }
-
-/* Check whether the session object is fresh (has userId+userToken set). */
-function checkSession(session, done) {
-  if (!session) { return done({ ok: false, error: 'sin-sesion' }); }
-  var hasUser  = session.userId  && String(session.userId).length > 2;
-  var hasToken = session.userToken && String(session.userToken).length > 2;
-  done({
-    ok: !!(hasUser && hasToken),
-    userId:  hasUser  ? '✓' : '✗',
-    token:   hasToken ? '✓' : '✗',
-    ready:   !!session.ready,
-    error:   (!hasUser || !hasToken) ? (session.error || 'sesion-incompleta') : ''
+function checkSession(e, r) {
+  if (!e) return r({ ok: !1, error: "sin-sesion" });
+  var t = e.userId && String(e.userId).length > 2,
+    n = e.userToken && String(e.userToken).length > 2;
+  r({
+    ok: !(!t || !n),
+    userId: t ? "✓" : "✗",
+    token: n ? "✓" : "✗",
+    ready: !!e.ready,
+    error: t && n ? "" : e.error || "sesion-incompleta",
   });
 }
-
-/* Run layer probes for portal, live-CDN and VOD-CDN.
-   options = { portalUrl, liveUrl, vodUrl, liveHeaders, vodHeaders, session } */
-function runLayers(options, done) {
-  options = options || {};
-  var tasks = [];
-  var labels = [];
-
-  function probe(url, headers) {
-    return withDeadline(function (cb) { layerProbe(url, headers || {}, cb); }, LAYER_DEADLINE, function () {
-      return { ok: false, timeout: true, error: 'sin respuesta', ms: LAYER_DEADLINE };
-    });
+function runLayers(e, r) {
+  var t = [],
+    n = [];
+  function o(e, r) {
+    return withDeadline(
+      function (t) {
+        layerProbe(e, r || {}, t);
+      },
+      LAYER_DEADLINE,
+      function () {
+        return {
+          ok: !1,
+          timeout: !0,
+          error: "sin respuesta",
+          ms: LAYER_DEADLINE,
+        };
+      },
+    );
   }
-
-  if (options.portalUrl) {
-    labels.push('portal');
-    tasks.push(probe(options.portalUrl, null));
-  }
-
-  labels.push('session');
-  tasks.push(function (cb) { checkSession(options.session, cb); });
-
-  if (options.liveUrl) {
-    labels.push('live');
-    tasks.push(probe(options.liveUrl, options.liveHeaders || {}));
-  }
-
-  if (options.vodUrl) {
-    labels.push('vod');
-    tasks.push(probe(options.vodUrl, options.vodHeaders || {}));
-  }
-
-  parallel(tasks, function (results) {
-    var layers = {};
-    for (var i = 0; i < labels.length; i++) {
-      layers[labels[i]] = results[i] || { ok: false, timeout: true, error: 'sin-resultado' };
-    }
-    done(null, layers);
-  });
+  ((e = e || {}).portalUrl && (n.push("portal"), t.push(o(e.portalUrl, null))),
+    n.push("session"),
+    t.push(function (r) {
+      checkSession(e.session, r);
+    }),
+    e.liveUrl && (n.push("live"), t.push(o(e.liveUrl, e.liveHeaders || {}))),
+    e.vodUrl && (n.push("vod"), t.push(o(e.vodUrl, e.vodHeaders || {}))),
+    parallel(t, function (e) {
+      for (var t = {}, o = 0; o < n.length; o++)
+        t[n[o]] = e[o] || { ok: !1, timeout: !0, error: "sin-resultado" };
+      r(null, t);
+    }));
 }
-
 module.exports = {
   run: run,
   runLayers: runLayers,
   checkHost: checkHost,
   checkProvider: checkProvider,
-  verdictOf: verdictOf
+  verdictOf: verdictOf,
 };
