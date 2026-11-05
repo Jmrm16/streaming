@@ -1,6 +1,6 @@
 {
   "id": "com.webosflux.xuptertv.fidelity",
-  "version": "2.2.55",
+  "version": "2.2.56",
   "vendor": "webosflux",
   "type": "web",
   "main": "index.html",
@@ -12,5 +12,7 @@
   "bgImage": "",
   "spinnerOnLaunch": false,
   "uiRevision": 2,
-  "disableBackHistoryAPI": true
+  "disableBackHistoryAPI": true,
+  "requiredACG": [],
+  "requiredPermissions": []
 }

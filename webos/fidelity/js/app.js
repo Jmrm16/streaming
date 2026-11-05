@@ -534,24 +534,36 @@ function portalServiceCall(method, params, done, customTimeout) {
      the native bridge it only reports an error, so the desktop harness must
      skip the Luna branch entirely. */
   if (hasLuna() && window.PalmServiceBridge) {
-    try {
-      return window.webOS.service.request('luna://' + serviceId, {
-        method: method,
-        parameters: params || {},
-        timeout: customTimeout || parseInt(vodApi.timeoutMs, 10) || 20000,
-        onSuccess: function (payload) { finish(null, payload); },
-        onFailure: function (error) {
-          var errStr = (error && (error.errorText || error.message || (error.errorCode ? ('Código ' + error.errorCode) : ''))) ||
-            (typeof error === 'string' ? error : 'Error del servicio XuperTV');
-          finish(errStr, null);
+    var isLegacyWebOs = (typeof webOsMajorVersion === 'function' && webOsMajorVersion() > 0 && webOsMajorVersion() < 4);
+    var primaryScheme = isLegacyWebOs ? 'palm://' : 'luna://';
+    var fallbackScheme = isLegacyWebOs ? 'luna://' : 'palm://';
+    var callWithScheme = function (scheme) {
+      try {
+        return window.webOS.service.request(scheme + serviceId, {
+          method: method,
+          parameters: params || {},
+          timeout: customTimeout || parseInt(vodApi.timeoutMs, 10) || 20000,
+          onSuccess: function (payload) { finish(null, payload); },
+          onFailure: function (error) {
+            var errStr = (error && (error.errorText || error.message || (error.errorCode ? ('Código ' + error.errorCode) : ''))) ||
+              (typeof error === 'string' ? error : 'Error del servicio XuperTV');
+            if (scheme === primaryScheme && /not exist|not found|denied|unknown/i.test(String(errStr))) {
+              return callWithScheme(fallbackScheme);
+            }
+            finish(errStr, null);
+          }
+        });
+      } catch (e) {
+        if (scheme === primaryScheme) {
+          return callWithScheme(fallbackScheme);
         }
-      });
-    } catch (e) {
-      if (!vodApi.devServiceUrl) {
-        finish('Error comunicando con el servicio: ' + (e.message || e), null);
-        return false;
+        if (!vodApi.devServiceUrl) {
+          finish('Error comunicando con el servicio: ' + (e.message || e), null);
+          return false;
+        }
       }
-    }
+    };
+    return callWithScheme(primaryScheme);
   }
   /* Desktop harness: reach the same methods over plain HTTP when the Luna
      bridge is missing or rejected the request (webOSTV.js on a browser). */
@@ -567,8 +579,10 @@ function portalServiceCall(method, params, done, customTimeout) {
   function startServiceKeepAlive() {
     if (!hasLuna()) { return; }
     var serviceId = vodApi.serviceId || 'com.webosflux.xuptertv.fidelity.service';
+    var isLegacyWebOs = (typeof webOsMajorVersion === 'function' && webOsMajorVersion() > 0 && webOsMajorVersion() < 4);
+    var busPrefix = isLegacyWebOs ? 'palm://' : 'luna://';
     try {
-      window.webOS.service.request('luna://' + serviceId, {
+      window.webOS.service.request(busPrefix + serviceId, {
         method: 'keepAlive',
         parameters: { subscribe: true },
         resubscribe: true,
@@ -579,7 +593,7 @@ function portalServiceCall(method, params, done, customTimeout) {
 
     setInterval(function () {
       try {
-        window.webOS.service.request('luna://' + serviceId, {
+        window.webOS.service.request(busPrefix + serviceId, {
           method: 'heartbeat',
           parameters: {},
           onSuccess: function () {},
@@ -2394,7 +2408,7 @@ function portalServiceCall(method, params, done, customTimeout) {
       portalServiceCall('liveChannels', {
         columnId: requestedColumnId,
         pageNum: pageNum,
-        pageSize: 100
+        pageSize: 20
       }, function (err, payload) {
         /* A category was selected while this page was in flight. */
         if (requestSeq !== liveChannelRequestSeq) { return; }
@@ -2816,7 +2830,7 @@ function portalServiceCall(method, params, done, customTimeout) {
   }
 
   function checkForUpdates(silent, onResult) {
-    var currentVer = '2.2.55';
+    var currentVer = '2.2.56';
 
     function paint(result) {
       if (onResult) { onResult(null, result); }
@@ -6863,15 +6877,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     if (!playerChannels) { return; }
     var bar = playerChannels.querySelector('.pc-categories');
     if (!bar) { return; }
-    var cats = liveCategories && liveCategories.length ? liveCategories : [
-      { id: 76182, name: 'Todos' },
-      { id: 76206, name: 'Deportes' },
-      { id: 76205, name: 'Cine y Series' },
-      { id: 76188, name: 'Colombia' },
-      { id: 76191, name: 'España' },
-      { id: 76197, name: 'México' },
-      { id: 'addons', name: '➕ Addons M3U', isAddon: true }
-    ];
+    var cats = (liveCategories && liveCategories.length) ? liveCategories : DEFAULT_LIVE_CATEGORIES;
 
     /* The portal returns 38 columns.  Rebuilding all 39 pills on every filter
        detached the focused node mid-keypress, so the rail looked alive but the
@@ -7168,7 +7174,7 @@ function portalServiceCall(method, params, done, customTimeout) {
      version at all.  0 means "unknown" and keeps the modern fMP4 path. */
   var detectedWebOsMajor = null;
   function webOsMajorVersion() {
-    if (detectedWebOsMajor !== null) { return detectedWebOsMajor; }
+    if (typeof detectedWebOsMajor === 'number' && detectedWebOsMajor > 0) { return detectedWebOsMajor; }
     var v = '';
     try {
       if (window.webOS && window.webOS.systemInfo && window.webOS.systemInfo.version) {
@@ -8005,7 +8011,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     if (immediate) {
       doStart();
     } else {
-      liveChannelDebounceTimer = setTimeout(doStart, 320);
+      liveChannelDebounceTimer = setTimeout(doStart, 180);
     }
   }
 
@@ -8292,7 +8298,6 @@ function portalServiceCall(method, params, done, customTimeout) {
     startWelcome();
     try { loadVodCatalog(); } catch (eVod) { console.error('loadVodCatalog error:', eVod); }
     try { loadLiveChannels(); } catch (eLive) { console.error('loadLiveChannels error:', eLive); }
-    try { loadLiveCategories(); } catch (eCat) { console.error('loadLiveCategories error:', eCat); }
     setTimeout(function () { try { checkForUpdates(true); } catch (eUp) {} }, 6000);
 
     window.__xuper = {
