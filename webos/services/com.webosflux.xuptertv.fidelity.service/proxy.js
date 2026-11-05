@@ -1,807 +1,768 @@
-/*
- * Loopback media proxy for the webOS port.
- *
- * The CDN only serves a title with two headers (Content-Auth and
- * Content-License) that an HTML5 <video> element cannot set. This tiny server
- * listens on 127.0.0.1 and replays the request with those headers, so the app
- * can use a plain URL. Range requests are forwarded verbatim.
- *
- * The tokens live in memory only and expire with the service process.
- */
-'use strict';
-
-var http = require('http');
-var https = require('https');
-var crypto = require('crypto');
-var urlmod = require('url');
-var tsIndexer = require('./ts-indexer');
-var dnsx = require('./dnsx');
-var upstream = require('./upstream');
-
-var MAX_TOKENS = 6;
-var tokens = {};      // token -> { url, headers, at }
-var order = [];
-/* Subtitle files are small text downloads that must not disturb the active
- * media stream, so they get their own token table and route. */
-var subtitleTokens = {};
-var subtitleOrder = [];
-var MAX_SUBTITLES = 12;
-var server = null;
-var port = 0;
-
-var httpAgent = new http.Agent({ keepAlive: true, maxSockets: 4, keepAliveMsecs: 15000 });
-var httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 4, keepAliveMsecs: 15000, rejectUnauthorized: false });
-
-var activeToken = null;
-var activeUpstreams = [];
-
-/* Keep virtual HLS ranges on MPEG-TS packet boundaries.  The CDN already
- * supports Range and the proxy keeps its required headers private. */
-var TS_PACKET_BYTES = 188;
-var HLS_SEGMENT_SECONDS = 10;
-
-function destroyConnection(c) {
-  if (!c) { return; }
-  if (c.up) {
-    try { c.up.unpipe(); } catch (e1) { /* ignore */ }
-    try { if (typeof c.up.destroy === 'function') c.up.destroy(); } catch (e2) { /* ignore */ }
-    try { if (c.up.socket) c.up.socket.destroy(); } catch (e3) { /* ignore */ }
-    c.up = null;
-  }
-  try { if (c.upstream) c.upstream.abort(); } catch (e4) { /* ignore */ }
-  try { if (c.upstream && c.upstream.socket) c.upstream.socket.destroy(); } catch (e5) { /* ignore */ }
-  try { if (c.res && !c.res.finished) c.res.destroy(); } catch (e6) { /* ignore */ }
-  c.upstream = null;
-  c.res = null;
-  c.req = null;
-}
-
-function killActiveStreams() {
-  while (activeUpstreams.length > 0) {
-    var c = activeUpstreams.shift();
-    destroyConnection(c);
-  }
-}
-
-function remember(token, entry) {
-  tokens[token] = entry;
-  order.push(token);
-  while (order.length > MAX_TOKENS) {
-    var old = order.shift();
-    if (old) { delete tokens[old]; }
-  }
-}
-
-function isCacheFlyIp(ip) {
-  if (!ip) { return false; }
-  return /^66\.225\./.test(ip) || /^205\.234\./.test(ip) || /^167\.99\./.test(ip);
-}
-
-function resolveHostIp(entry, cb) {
-  if (!entry) { return cb(''); }
-  if (entry.resolvedIp && dnsx.isIpv4(entry.resolvedIp)) {
-    return cb(entry.resolvedIp);
-  }
-  var parsed = urlmod.parse(entry.url || '');
-  var host = parsed.hostname;
-  if (!host || dnsx.isIpv4(host)) {
-    entry.resolvedIp = host || '';
-    return cb(entry.resolvedIp);
-  }
-  var hit = dnsx.cached(host);
-  if (hit && hit.ips && hit.ips.length) {
-    entry.resolvedIp = dnsx.dial(host, hit.ips);
-    return cb(entry.resolvedIp);
-  }
-  dnsx.resolve(host, function (err, res) {
-    if (!err && res && res.ips && res.ips.length) {
-      entry.resolvedIp = dnsx.dial(host, res.ips);
-    } else {
-      entry.resolvedIp = host;
-    }
-    cb(entry.resolvedIp);
-  });
-}
-
-function normalizeBackups(list) {
-  var out = [];
-  if (!Array.isArray(list)) { return out; }
-  for (var i = 0; i < list.length; i++) {
-    var item = list[i];
-    if (!item) { continue; }
-    if (typeof item === 'string') {
-      out.push({ url: item, headers: null });
-    } else if (item.url) {
-      out.push({ url: item.url, headers: item.headers || null });
-    }
-  }
-  return out;
-}
-
-function add(target, headers, duration, resolvedIp, backupUrls) {
-  var token = crypto.randomBytes(12).toString('hex');
-  var entry = {
-    url: target,
-    backupUrls: normalizeBackups(backupUrls),
-    backupIndex: 0,
-    headers: headers || {},
-    duration: Number(duration) || 0,
-    contentLength: 0,
-    lengthWaiters: null,
-    resolvedIp: resolvedIp || '',
-    at: Date.now()
-  };
-  remember(token, entry);
-
-  var parsed = urlmod.parse(target || '');
-  if (parsed.hostname && !dnsx.isIpv4(parsed.hostname) && !entry.resolvedIp) {
-    var hit = dnsx.cached(parsed.hostname);
-    if (hit && hit.ips && hit.ips.length) {
-      entry.resolvedIp = dnsx.dial(parsed.hostname, hit.ips);
-    }
-    dnsx.resolve(parsed.hostname, function (err, res) {
-      if (!err && res && res.ips && res.ips.length) {
-        entry.resolvedIp = dnsx.dial(parsed.hostname, res.ips);
-      }
-    });
-  }
-
-  return token;
-}
-
-/* Registers a subtitle URL and returns a loopback URL the page can XHR.
- * The page cannot read the CDN directly (no Access-Control-Allow-Origin). */
-function addSubtitle(target) {
-  var token = crypto.randomBytes(12).toString('hex');
-  subtitleTokens[token] = { url: target, at: Date.now() };
-  subtitleOrder.push(token);
-  while (subtitleOrder.length > MAX_SUBTITLES) {
-    var old = subtitleOrder.shift();
-    if (old) { delete subtitleTokens[old]; }
-  }
-  return baseUrl() + '/sub/' + token + '.srt';
-}
-
-function forwardImg(req, res) {
-  var parsed = urlmod.parse(req.url || '', true);
-  var targetUrl = parsed.query && parsed.query.u;
-  if (!targetUrl || typeof targetUrl !== 'string') {
-    res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-    res.end('missing target url');
-    return;
-  }
-  var parsedTarget;
-  try {
-    parsedTarget = urlmod.parse(targetUrl);
-  } catch (eParse) {
-    res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-    res.end('invalid target url');
-    return;
-  }
-  if (parsedTarget.protocol !== 'http:' && parsedTarget.protocol !== 'https:') {
-    res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-    res.end('only http/https allowed');
-    return;
-  }
-  var isHttps = (parsedTarget.protocol === 'https:');
-  var client = isHttps ? https : http;
-  var agent = isHttps ? httpsAgent : httpAgent;
-  var reqOpts = {
-    protocol: parsedTarget.protocol,
-    hostname: parsedTarget.hostname,
-    port: parsedTarget.port || (isHttps ? 443 : 80),
-    path: parsedTarget.path || parsedTarget.pathname,
-    method: 'GET',
-    agent: agent,
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (SmartHub; SMART-TV; U; Linux/SmartTV)',
-      'Accept': 'image/*, */*'
-    }
-  };
-  var ended = false;
-  var sendErr = function (code, text) {
-    if (ended) { return; }
-    ended = true;
-    try {
-      res.writeHead(code, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-      res.end(text);
-    } catch (eEnd) {}
-  };
-  var upstream = client.request(reqOpts, function (upRes) {
-    var status = upRes.statusCode;
-    if ((status === 301 || status === 302 || status === 307 || status === 308) && upRes.headers.location) {
-      try { upRes.destroy(); } catch (eDest) {}
-      res.writeHead(302, {
-        'Location': '/img?u=' + encodeURIComponent(upRes.headers.location),
-        'Access-Control-Allow-Origin': '*'
-      });
-      res.end();
-      return;
-    }
-    if (status !== 200 && status !== 304) {
-      try { upRes.destroy(); } catch (eDest2) {}
-      sendErr(status || 502, 'upstream status ' + status);
-      return;
-    }
-    var headers = {
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=86400'
-    };
-    if (upRes.headers['content-type']) {
-      headers['Content-Type'] = upRes.headers['content-type'];
-    }
-    if (upRes.headers['content-length']) {
-      headers['Content-Length'] = upRes.headers['content-length'];
-    }
-    res.writeHead(status, headers);
-    upRes.pipe(res);
-  });
-  upstream.on('error', function (err) {
-    sendErr(502, 'image proxy error: ' + (err && err.message));
-  });
-  upstream.setTimeout(10000, function () {
-    try { upstream.abort(); } catch (eAbrt) {}
-    sendErr(504, 'image proxy timeout');
-  });
-}
-
-function sendSubtitle(req, res, entry) {
-  resolveHostIp(entry, function (ip) {
-    var parsed = urlmod.parse(entry.url || '');
-    var secure = parsed.protocol === 'https:';
-    var host = parsed.hostname;
-    var connectHost = ip || host;
-    var defaultPort = secure ? 443 : 80;
-    var port = parsed.port || defaultPort;
-    var servername = host;
-    var options = {
-      hostname: connectHost,
-      host: connectHost,
-      servername: servername,
-      rejectUnauthorized: false,
-      port: port,
-      path: parsed.path,
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Ranger/4.9.4-17294ac0',
-        'Accept': '*/*',
-        Host: parsed.host || (host + (port !== defaultPort ? ':' + port : ''))
-      },
-      agent: upstream.agentFor(secure, connectHost, port) || (secure ? httpsAgent : httpAgent)
-    };
-    var failed = false;
-    /* Do not shadow the shared `upstream` module: it selected the agent
-       above. Shadowing it made every loopback subtitle request throw before
-       opening a socket, leaving the UI switched ON with no visible captions. */
-    var subtitleRequest = (secure ? https : http).request(options, function (up) {
-      var parts = [];
-      up.on('data', function (chunk) { parts.push(chunk); });
-      up.on('end', function () {
-        if (failed) { return; }
-        var body = Buffer.concat(parts);
-        var ok = up.statusCode >= 200 && up.statusCode < 300;
-        res.writeHead(ok ? 200 : 502, {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Content-Length': body.length,
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'private, max-age=300'
-        });
-        res.end(body);
-      });
-    });
-    subtitleRequest.setTimeout(20000, function () { try { subtitleRequest.abort(); } catch (eAbort) { /* ignore */ } });
-    subtitleRequest.on('error', function () {
-      if (failed) { return; }
-      failed = true;
+"use strict";
+var http = require("http"),
+  https = require("https"),
+  crypto = require("crypto"),
+  urlmod = require("url"),
+  tsIndexer = require("./ts-indexer"),
+  dnsx = require("./dnsx"),
+  upstream = require("./upstream"),
+  MAX_TOKENS = 6,
+  tokens = {},
+  order = [],
+  subtitleTokens = {},
+  subtitleOrder = [],
+  MAX_SUBTITLES = 12,
+  server = null,
+  port = 0,
+  httpAgent = new http.Agent({
+    keepAlive: !0,
+    maxSockets: 4,
+    keepAliveMsecs: 15e3,
+  }),
+  httpsAgent = new https.Agent({
+    keepAlive: !0,
+    maxSockets: 4,
+    keepAliveMsecs: 15e3,
+    rejectUnauthorized: !1,
+  }),
+  activeToken = null,
+  activeUpstreams = [],
+  TS_PACKET_BYTES = 188,
+  HLS_SEGMENT_SECONDS = 10;
+function destroyConnection(e) {
+  if (e) {
+    if (e.up) {
       try {
-        res.writeHead(502, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-        res.end('subtitle upstream error');
-      } catch (e502) { /* ignore */ }
-    });
-    subtitleRequest.end();
+        e.up.unpipe();
+      } catch (e) {}
+      try {
+        "function" == typeof e.up.destroy && e.up.destroy();
+      } catch (e) {}
+      try {
+        e.up.socket && e.up.socket.destroy();
+      } catch (e) {}
+      e.up = null;
+    }
+    try {
+      e.upstream && e.upstream.abort();
+    } catch (e) {}
+    try {
+      e.upstream && e.upstream.socket && e.upstream.socket.destroy();
+    } catch (e) {}
+    try {
+      e.res && !e.res.finished && e.res.destroy();
+    } catch (e) {}
+    ((e.upstream = null), (e.res = null), (e.req = null));
+  }
+}
+function killActiveStreams() {
+  for (; activeUpstreams.length > 0;) {
+    destroyConnection(activeUpstreams.shift());
+  }
+}
+function remember(e, t) {
+  for (tokens[e] = t, order.push(e); order.length > MAX_TOKENS;) {
+    var r = order.shift();
+    r && delete tokens[r];
+  }
+}
+function isCacheFlyIp(e) {
+  return (
+    !!e &&
+    (/^66\.225\./.test(e) || /^205\.234\./.test(e) || /^167\.99\./.test(e))
+  );
+}
+function resolveHostIp(e, t) {
+  if (!e) return t("");
+  if (e.resolvedIp && dnsx.isIpv4(e.resolvedIp)) return t(e.resolvedIp);
+  var r = urlmod.parse(e.url || "").hostname;
+  if (!r || dnsx.isIpv4(r)) return ((e.resolvedIp = r || ""), t(e.resolvedIp));
+  var n = dnsx.cached(r);
+  if (n && n.ips && n.ips.length)
+    return ((e.resolvedIp = dnsx.dial(r, n.ips)), t(e.resolvedIp));
+  dnsx.resolve(r, function (n, o) {
+    (!n && o && o.ips && o.ips.length
+      ? (e.resolvedIp = dnsx.dial(r, o.ips))
+      : (e.resolvedIp = r),
+      t(e.resolvedIp));
   });
 }
-
-/* CacheFly-backed CDNs are the ones where the operator-level SNI block hits
- * hardest (Chile, Argentina, Colombia).  The 1.6.x builds survived by forcing
- * TLS and sending `cachefly.net` as SNI.  We keep the real hostname first and
- * use that camouflage only as a retry, so a network that does not block the
- * real name keeps normal TLS. */
-function isCacheFlyHost(host, ip) {
-  if (isCacheFlyIp(ip)) { return true; }
-  return /swzablvpm|kyalbhxgw|m3x8o50te|qnrgmzpcw|faolmbghu/i.test(String(host || ''));
-}
-
-function mediaRequest(entry, method, extraHeaders, resolvedIp) {
-  var parsed = urlmod.parse(entry.url || '');
-  var host = parsed.hostname;
-  var connectHost = resolvedIp || entry.resolvedIp;
-  if (!connectHost && host) {
-    var hit = dnsx.cached(host);
-    if (hit && hit.ips && hit.ips.length) {
-      connectHost = dnsx.dial(host, hit.ips);
-      entry.resolvedIp = connectHost;
-    }
+function normalizeBackups(e) {
+  var t = [];
+  if (!Array.isArray(e)) return t;
+  for (var r = 0; r < e.length; r++) {
+    var n = e[r];
+    n &&
+      ("string" == typeof n
+        ? t.push({ url: n, headers: null })
+        : n.url && t.push({ url: n.url, headers: n.headers || null }));
   }
-  if (!connectHost) {
-    connectHost = host;
+  return t;
+}
+function add(e, t, r, n, o) {
+  var s = crypto.randomBytes(12).toString("hex"),
+    a = {
+      url: e,
+      backupUrls: normalizeBackups(o),
+      backupIndex: 0,
+      headers: t || {},
+      duration: Number(r) || 0,
+      contentLength: 0,
+      lengthWaiters: null,
+      resolvedIp: n || "",
+      at: Date.now(),
+    };
+  remember(s, a);
+  var i = urlmod.parse(e || "");
+  if (i.hostname && !dnsx.isIpv4(i.hostname) && !a.resolvedIp) {
+    var l = dnsx.cached(i.hostname);
+    (l &&
+      l.ips &&
+      l.ips.length &&
+      (a.resolvedIp = dnsx.dial(i.hostname, l.ips)),
+      dnsx.resolve(i.hostname, function (e, t) {
+        !e &&
+          t &&
+          t.ips &&
+          t.ips.length &&
+          (a.resolvedIp = dnsx.dial(i.hostname, t.ips));
+      }));
   }
-
-  /* Conexión transparente: respeta el protocolo original y el hostname real en
-     el SNI.  Si el reintento camuflado está activo para este recurso CacheFly,
-     se fuerza HTTPS y se envía `cachefly.net` como SNI (comportamiento 1.6.17). */
-  var secure = parsed.protocol === 'https:';
-  var masked = !!(entry._maskSni && isCacheFlyHost(host, connectHost));
-  if (masked) { secure = true; }
-
-  var headers = {};
-  var k;
-  for (k in entry.headers) {
-    if (Object.prototype.hasOwnProperty.call(entry.headers, k)) { headers[k] = entry.headers[k]; }
+  return s;
+}
+function addSubtitle(e) {
+  var t = crypto.randomBytes(12).toString("hex");
+  for (
+    subtitleTokens[t] = { url: e, at: Date.now() }, subtitleOrder.push(t);
+    subtitleOrder.length > MAX_SUBTITLES;
+  ) {
+    var r = subtitleOrder.shift();
+    r && delete subtitleTokens[r];
   }
-  for (k in extraHeaders || {}) {
-    if (Object.prototype.hasOwnProperty.call(extraHeaders, k)) { headers[k] = extraHeaders[k]; }
-  }
-
-  var defaultPort = secure ? 443 : 80;
-  var port = (masked && parsed.port === '80') ? 443 : (parsed.port || defaultPort);
-  headers.Host = parsed.host || (host + (port !== defaultPort ? ':' + port : ''));
-
-  return {
-    secure: secure,
-    options: {
-      hostname: connectHost,
-      host: connectHost,
-      servername: masked ? 'cachefly.net' : host,
-      rejectUnauthorized: false,
-      port: port,
-      path: parsed.path,
-      method: method,
-      headers: headers,
-      agent: upstream.agentFor(secure, connectHost, port) || (secure ? httpsAgent : httpAgent)
-    }
-  };
+  return baseUrl() + "/sub/" + t + ".srt";
 }
-
-function sourceLength(entry, done) {
-  if (entry.contentLength > 0) { return done(null, entry.contentLength); }
-  if (entry.lengthWaiters) { entry.lengthWaiters.push(done); return; }
-  entry.lengthWaiters = [done];
-  resolveHostIp(entry, function (ip) {
-    var requestInfo = mediaRequest(entry, 'GET', { Range: 'bytes=0-0' }, ip);
-    var req = (requestInfo.secure ? https : http).request(requestInfo.options, function (up) {
-      var match = /\/(\d+)$/.exec(String(up.headers['content-range'] || ''));
-      var length = match ? parseInt(match[1], 10) : parseInt(up.headers['content-length'], 10);
-      up.resume();
-      var waiters = entry.lengthWaiters || [];
-      entry.lengthWaiters = null;
-      if (length > 0) { entry.contentLength = length; }
-      for (var i = 0; i < waiters.length; i++) {
-        waiters[i](length > 0 ? null : new Error('el CDN no informó el tamaño'), length);
-      }
-    });
-    req.setTimeout(15000, function () { try { req.abort(); } catch (eAbort) {} });
-    req.on('error', function (err) {
-      var waiters = entry.lengthWaiters || [];
-      entry.lengthWaiters = null;
-      for (var i = 0; i < waiters.length; i++) { waiters[i](err); }
-    });
-    req.end();
-  });
-}
-
-function readRange(entry, start, end, done) {
-  resolveHostIp(entry, function (ip) {
-    var info = mediaRequest(entry, 'GET', { Range: 'bytes=' + start + '-' + end }, ip);
-    var req = (info.secure ? https : http).request(info.options, function (up) {
-      var parts = []; up.on('data', function (c) { parts.push(c); });
-      up.on('end', function () { done(up.statusCode >= 200 && up.statusCode < 300 ? null : new Error('rango rechazado'), Buffer.concat(parts)); });
-    });
-    req.setTimeout(25000, function () { try { req.abort(); } catch (eAbort) {} });
-    req.on('error', function (err) { done(err); }); req.end();
-  });
-}
-
-function sendVirtualHls(req, res, token, entry) {
-  sourceLength(entry, function (err, length) {
-    if (err) {
-      res.writeHead(502, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-      res.end('no se pudo crear el manifiesto HLS');
-      return;
-    }
-    if (!entry.indexer) { entry.indexer = tsIndexer.create(length, function (start, end, cb) { readRange(entry, start, end, cb); }); entry.indexer.start(); }
-    var indexer = entry.indexer;
-    if (!indexer.segments.length && !indexer.complete) { indexer.when(function () { sendVirtualHls(req, res, token, entry); }); return; }
-    var lines = [
-      '#EXTM3U',
-      '#EXT-X-VERSION:4',
-      '#EXT-X-PLAYLIST-TYPE:VOD',
-      '#EXT-X-TARGETDURATION:' + HLS_SEGMENT_SECONDS,
-      '#EXT-X-MEDIA-SEQUENCE:0'
-    ];
-    for (var i = 0; i < indexer.segments.length; i++) {
-      var segment = indexer.segments[i];
-      lines.push('#EXTINF:' + segment.duration.toFixed(3) + ',');
-      lines.push('#EXT-X-BYTERANGE:' + (segment.end - segment.start + 1) + '@' + segment.start);
-      lines.push('stream.ts');
-    }
-    if (indexer.complete) { lines.push('#EXT-X-ENDLIST'); }
-    var body = lines.join('\n') + '\n';
-    res.writeHead(200, {
-      'Content-Type': 'application/vnd.apple.mpegurl',
-      'Content-Length': Buffer.byteLength(body),
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'no-store'
-    });
-    res.end(body);
-  });
-}
-
-/* Modern webOS HLS players strictly resolve a playlist's relative segment,
- * key and nested-playlist URLs against the loopback manifest URL.  Those
- * child requests must keep the portal's authorization headers too.  Rewrite
- * every URI to an opaque local route and proxy it with the parent token. */
-function base64Url(value) {
-  return new Buffer(String(value), 'utf8').toString('base64')
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function fromBase64Url(value) {
-  var raw = String(value).replace(/-/g, '+').replace(/_/g, '/');
-  while (raw.length % 4) { raw += '='; }
-  return new Buffer(raw, 'base64').toString('utf8');
-}
-
-function hlsChildUrl(token, manifestUrl, reference) {
-  if (!reference || reference.indexOf('data:') === 0) { return reference; }
-  return baseUrl() + '/hls/' + token + '/' + base64Url(urlmod.resolve(manifestUrl, reference));
-}
-
-function rewriteHlsManifest(body, token, manifestUrl) {
-  var lines = String(body || '').replace(/^\uFEFF/, '').split(/\r?\n/);
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i];
-    if (!line) { continue; }
-    if (line.charAt(0) !== '#') {
-      lines[i] = hlsChildUrl(token, manifestUrl, line);
-    } else if (line.indexOf('URI=') !== -1) {
-      lines[i] = line.replace(/URI=("|')([^"']+)\1/g, function (all, quote, reference) {
-        return 'URI=' + quote + hlsChildUrl(token, manifestUrl, reference) + quote;
+function sendSubtitle(e, t, r) {
+  resolveHostIp(r, function (e) {
+    var n = urlmod.parse(r.url || ""),
+      o = "https:" === n.protocol,
+      s = n.hostname,
+      a = e || s,
+      i = o ? 443 : 80,
+      l = n.port || i,
+      u = {
+        hostname: a,
+        host: a,
+        servername: s,
+        rejectUnauthorized: !1,
+        port: l,
+        path: n.path,
+        method: "GET",
+        headers: {
+          "User-Agent": "Ranger/4.9.4-17294ac0",
+          Accept: "*/*",
+          Host: n.host || s + (l !== i ? ":" + l : ""),
+        },
+        agent: upstream.agentFor(o, a, l) || (o ? httpsAgent : httpAgent),
+      },
+      c = !1,
+      p = (o ? https : http).request(u, function (e) {
+        var r = [];
+        (e.on("data", function (e) {
+          r.push(e);
+        }),
+          e.on("end", function () {
+            if (!c) {
+              var n = Buffer.concat(r),
+                o = e.statusCode >= 200 && e.statusCode < 300;
+              (t.writeHead(o ? 200 : 502, {
+                "Content-Type": "text/plain; charset=utf-8",
+                "Content-Length": n.length,
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "private, max-age=300",
+              }),
+                t.end(n));
+            }
+          }));
       });
-    }
-  }
-  return lines.join('\n');
-}
-
-function forward(req, res, entry, token) {
-  /* When switching to a different movie or episode, immediately abort all previous video streams */
-  if (activeToken !== token) {
-    killActiveStreams();
-    activeToken = token;
-  }
-
-  var rangeHeaders = {};
-  if (req.headers.range) { rangeHeaders.Range = req.headers.range; }
-  if (req.headers['if-range']) { rangeHeaders['If-Range'] = req.headers['if-range']; }
-
-  resolveHostIp(entry, function (ip) {
-    if (res.finished) { return; }
-
-    var requestInfo = mediaRequest(entry, req.method === 'HEAD' ? 'HEAD' : 'GET', rangeHeaders, ip);
-    var secure = requestInfo.secure;
-    var opts = requestInfo.options;
-
-    if (res.socket) {
-      try { res.socket.setNoDelay(true); } catch (eNd1) { /* ignore */ }
-    }
-
-    var connRecord = { upstream: null, res: res, req: req, up: null };
-    activeUpstreams.push(connRecord);
-
-    function untrack() {
-      var idx = activeUpstreams.indexOf(connRecord);
-      if (idx !== -1) { activeUpstreams.splice(idx, 1); }
-    }
-    /* Tear down only the upstream connection.  The downstream response belongs
-       to req/res: destroying it here made every protocol/CDN retry write to a
-       dead socket and could truncate the tail of a piped stream. */
-    function cleanup() {
-      untrack();
-      if (connRecord.up) {
-        try { connRecord.up.unpipe(); } catch (e1) { /* ignore */ }
-        try { if (typeof connRecord.up.destroy === 'function') connRecord.up.destroy(); } catch (e2) { /* ignore */ }
-        try { if (connRecord.up.socket) connRecord.up.socket.destroy(); } catch (e3) { /* ignore */ }
-        connRecord.up = null;
-      }
-      try { if (connRecord.upstream) connRecord.upstream.abort(); } catch (e4) { /* ignore */ }
-      try { if (connRecord.upstream && connRecord.upstream.socket) connRecord.upstream.socket.destroy(); } catch (e5) { /* ignore */ }
-      connRecord.upstream = null;
-      connRecord.res = null;
-      connRecord.req = null;
-    }
-
-    req.on('close', cleanup);
-    req.on('aborted', cleanup);
-    res.on('close', cleanup);
-    res.on('finish', cleanup);
-    res.on('error', cleanup);
-
-    var upstream = (secure ? https : http).request(opts, function (up) {
-      connRecord.up = up;
-      if (up.socket) {
-        try { up.socket.setNoDelay(true); } catch (eNd2) { /* ignore */ }
-      }
-      upstream.setTimeout(0);
-      if (upstream.socket) {
-        try { upstream.socket.setTimeout(0); } catch (e1) { /* ignore */ }
-      }
-
-      /* DPI block pages usually arrive as 403/451 (HTML), not as a socket
-         error.  For CacheFly CDNs retry once with the 1.6.17 camouflage. */
-      if (!entry._maskSni && isCacheFlyHost(urlmod.parse(entry.url || '').hostname, ip) &&
-          (up.statusCode === 403 || up.statusCode === 451)) {
-        up.resume();
-        console.log('[proxy] CDN CacheFly respondió ' + up.statusCode + ', reintentando con SNI camuflado...');
-        entry._maskSni = true;
-        entry.resolvedIp = '';
-        cleanup();
-        return forward(req, res, entry, token);
-      }
-
-      var rawMime = (up.headers['content-type'] || '').toLowerCase();
-      var contentType = 'video/mp2t';
-      if (rawMime.indexOf('mp4') !== -1) {
-        contentType = 'video/mp4';
-      } else if (rawMime.indexOf('mpegurl') !== -1 || (entry.url && entry.url.indexOf('.m3u8') !== -1)) {
-        contentType = 'application/vnd.apple.mpegurl';
-      }
-      var isM3u8 = (contentType === 'application/vnd.apple.mpegurl');
-
-      var out = {
-        'Content-Type': contentType,
-        'Accept-Ranges': up.headers['accept-ranges'] || 'bytes',
-        'Access-Control-Allow-Origin': '*',
-        /* This is a loopback-only authenticated proxy.  no-store makes the
-           webOS media pipeline discard every received range, leaving it with a
-           tiny buffer and visible micro-pauses.  A short private cache permits
-           normal read-ahead/retry without sharing the licensed response. */
-        'Cache-Control': isM3u8 ? 'no-cache, no-store' : 'private, max-age=120',
-        'Connection': 'keep-alive'
-      };
-      if (up.headers['content-length']) { out['Content-Length'] = up.headers['content-length']; }
-      if (up.headers['content-range']) { out['Content-Range'] = up.headers['content-range']; }
-
-      if (req.method === 'HEAD') {
-        res.writeHead(up.statusCode || 200, out);
-        res.end();
-        up.resume();
-        return;
-      }
-
-      if (isM3u8) {
-        var chunks = [];
-        up.on('data', function (chunk) { chunks.push(chunk); });
-        up.on('error', function () { cleanup(); });
-        up.on('end', function () {
-          var body = rewriteHlsManifest(Buffer.concat(chunks).toString('utf8'), token, entry.url);
-          delete out['Content-Length'];
-          delete out['Content-Range'];
-          out['Content-Length'] = Buffer.byteLength(body);
+    (p.setTimeout(2e4, function () {
+      try {
+        p.abort();
+      } catch (e) {}
+    }),
+      p.on("error", function () {
+        if (!c) {
+          c = !0;
           try {
-            res.writeHead(up.statusCode || 200, out);
-            res.end(body);
-          } catch (eManifest) { cleanup(); }
+            (t.writeHead(502, {
+              "Content-Type": "text/plain",
+              "Access-Control-Allow-Origin": "*",
+            }),
+              t.end("subtitle upstream error"));
+          } catch (e) {}
+        }
+      }),
+      p.end());
+  });
+}
+function isCacheFlyHost(e, t) {
+  return (
+    !!isCacheFlyIp(t) ||
+    /swzablvpm|kyalbhxgw|m3x8o50te|qnrgmzpcw|faolmbghu/i.test(String(e || ""))
+  );
+}
+function mediaRequest(e, t, r, n) {
+  var o = urlmod.parse(e.url || ""),
+    s = o.hostname,
+    a = n || e.resolvedIp;
+  if (!a && s) {
+    var i = dnsx.cached(s);
+    i &&
+      i.ips &&
+      i.ips.length &&
+      ((a = dnsx.dial(s, i.ips)), (e.resolvedIp = a));
+  }
+  a || (a = s);
+  var l = "https:" === o.protocol,
+    u = !(!e._maskSni || !isCacheFlyHost(s, a));
+  u && (l = !0);
+  var c,
+    p = {};
+  for (c in e.headers)
+    Object.prototype.hasOwnProperty.call(e.headers, c) && (p[c] = e.headers[c]);
+  for (c in r || {})
+    Object.prototype.hasOwnProperty.call(r, c) && (p[c] = r[c]);
+  var d = l ? 443 : 80,
+    h = u && "80" === o.port ? 443 : o.port || d;
+  return (
+    (p.Host = o.host || s + (h !== d ? ":" + h : "")),
+    {
+      secure: l,
+      options: {
+        hostname: a,
+        host: a,
+        servername: u ? "cachefly.net" : s,
+        rejectUnauthorized: !1,
+        port: h,
+        path: o.path,
+        method: t,
+        headers: p,
+        agent: upstream.agentFor(l, a, h) || (l ? httpsAgent : httpAgent),
+      },
+    }
+  );
+}
+function sourceLength(e, t) {
+  if (e.contentLength > 0) return t(null, e.contentLength);
+  e.lengthWaiters
+    ? e.lengthWaiters.push(t)
+    : ((e.lengthWaiters = [t]),
+      resolveHostIp(e, function (t) {
+        var r = mediaRequest(e, "GET", { Range: "bytes=0-0" }, t),
+          n = (r.secure ? https : http).request(r.options, function (t) {
+            var r = /\/(\d+)$/.exec(String(t.headers["content-range"] || "")),
+              n = r
+                ? parseInt(r[1], 10)
+                : parseInt(t.headers["content-length"], 10);
+            t.resume();
+            var o = e.lengthWaiters || [];
+            ((e.lengthWaiters = null), n > 0 && (e.contentLength = n));
+            for (var s = 0; s < o.length; s++)
+              o[s](n > 0 ? null : new Error("el CDN no informó el tamaño"), n);
+          });
+        (n.setTimeout(15e3, function () {
+          try {
+            n.abort();
+          } catch (e) {}
+        }),
+          n.on("error", function (t) {
+            var r = e.lengthWaiters || [];
+            e.lengthWaiters = null;
+            for (var n = 0; n < r.length; n++) r[n](t);
+          }),
+          n.end());
+      }));
+}
+function readRange(e, t, r, n) {
+  resolveHostIp(e, function (o) {
+    var s = mediaRequest(e, "GET", { Range: "bytes=" + t + "-" + r }, o),
+      a = (s.secure ? https : http).request(s.options, function (e) {
+        var t = [];
+        (e.on("data", function (e) {
+          t.push(e);
+        }),
+          e.on("end", function () {
+            n(
+              e.statusCode >= 200 && e.statusCode < 300
+                ? null
+                : new Error("rango rechazado"),
+              Buffer.concat(t),
+            );
+          }));
+      });
+    (a.setTimeout(25e3, function () {
+      try {
+        a.abort();
+      } catch (e) {}
+    }),
+      a.on("error", function (e) {
+        n(e);
+      }),
+      a.end());
+  });
+}
+function sendVirtualHls(e, t, r, n) {
+  sourceLength(n, function (o, s) {
+    if (o)
+      return (
+        t.writeHead(502, {
+          "Content-Type": "text/plain",
+          "Access-Control-Allow-Origin": "*",
+        }),
+        void t.end("no se pudo crear el manifiesto HLS")
+      );
+    n.indexer ||
+      ((n.indexer = tsIndexer.create(s, function (e, t, r) {
+        readRange(n, e, t, r);
+      })),
+      n.indexer.start());
+    var a = n.indexer;
+    if (a.segments.length || a.complete) {
+      for (
+        var i = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:4",
+            "#EXT-X-PLAYLIST-TYPE:VOD",
+            "#EXT-X-TARGETDURATION:" + HLS_SEGMENT_SECONDS,
+            "#EXT-X-MEDIA-SEQUENCE:0",
+          ],
+          l = 0;
+        l < a.segments.length;
+        l++
+      ) {
+        var u = a.segments[l];
+        (i.push("#EXTINF:" + u.duration.toFixed(3) + ","),
+          i.push("#EXT-X-BYTERANGE:" + (u.end - u.start + 1) + "@" + u.start),
+          i.push("stream.ts"));
+      }
+      a.complete && i.push("#EXT-X-ENDLIST");
+      var c = i.join("\n") + "\n";
+      (t.writeHead(200, {
+        "Content-Type": "application/vnd.apple.mpegurl",
+        "Content-Length": Buffer.byteLength(c),
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-store",
+      }),
+        t.end(c));
+    } else
+      a.when(function () {
+        sendVirtualHls(e, t, r, n);
+      });
+  });
+}
+function base64Url(e) {
+  return new Buffer(String(e), "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+function fromBase64Url(e) {
+  for (var t = String(e).replace(/-/g, "+").replace(/_/g, "/"); t.length % 4;)
+    t += "=";
+  return new Buffer(t, "base64").toString("utf8");
+}
+function hlsChildUrl(e, t, r) {
+  return r && 0 !== r.indexOf("data:")
+    ? baseUrl() + "/hls/" + e + "/" + base64Url(urlmod.resolve(t, r))
+    : r;
+}
+function rewriteHlsManifest(e, t, r) {
+  for (
+    var n = String(e || "")
+        .replace(/^\uFEFF/, "")
+        .split(/\r?\n/),
+      o = 0;
+    o < n.length;
+    o++
+  ) {
+    var s = n[o];
+    s &&
+      ("#" !== s.charAt(0)
+        ? (n[o] = hlsChildUrl(t, r, s))
+        : -1 !== s.indexOf("URI=") &&
+          (n[o] = s.replace(/URI=("|')([^"']+)\1/g, function (e, n, o) {
+            return "URI=" + n + hlsChildUrl(t, r, o) + n;
+          })));
+  }
+  return n.join("\n");
+}
+function forward(e, t, r, n) {
+  activeToken !== n && (killActiveStreams(), (activeToken = n));
+  var o = {};
+  (e.headers.range && (o.Range = e.headers.range),
+    e.headers["if-range"] && (o["If-Range"] = e.headers["if-range"]),
+    resolveHostIp(r, function (s) {
+      if (!t.finished) {
+        var a = mediaRequest(r, "HEAD" === e.method ? "HEAD" : "GET", o, s),
+          i = a.secure,
+          l = a.options;
+        if (t.socket)
+          try {
+            t.socket.setNoDelay(!0);
+          } catch (e) {}
+        var u = { upstream: null, res: t, req: e, up: null };
+        (activeUpstreams.push(u),
+          e.on("close", p),
+          e.on("aborted", p),
+          t.on("close", p),
+          t.on("finish", p),
+          t.on("error", p));
+        var c = (i ? https : http).request(l, function (o) {
+          if (((u.up = o), o.socket))
+            try {
+              o.socket.setNoDelay(!0);
+            } catch (e) {}
+          if ((c.setTimeout(0), c.socket))
+            try {
+              c.socket.setTimeout(0);
+            } catch (e) {}
+          if (
+            !r._maskSni &&
+            isCacheFlyHost(urlmod.parse(r.url || "").hostname, s) &&
+            (403 === o.statusCode || 451 === o.statusCode)
+          )
+            return (
+              o.resume(),
+              console.log(
+                "[proxy] CDN CacheFly respondió " +
+                  o.statusCode +
+                  ", reintentando con SNI camuflado...",
+              ),
+              (r._maskSni = !0),
+              (r.resolvedIp = ""),
+              p(),
+              forward(e, t, r, n)
+            );
+          var a = (o.headers["content-type"] || "").toLowerCase(),
+            i = "video/mp2t";
+          -1 !== a.indexOf("mp4")
+            ? (i = "video/mp4")
+            : (-1 !== a.indexOf("mpegurl") ||
+                (r.url && -1 !== r.url.indexOf(".m3u8"))) &&
+              (i = "application/vnd.apple.mpegurl");
+          var l = "application/vnd.apple.mpegurl" === i,
+            d = {
+              "Content-Type": i,
+              "Accept-Ranges": o.headers["accept-ranges"] || "bytes",
+              "Access-Control-Allow-Origin": "*",
+              "Cache-Control": l
+                ? "no-cache, no-store"
+                : "private, max-age=120",
+              Connection: "keep-alive",
+            };
+          if (
+            (o.headers["content-length"] &&
+              (d["Content-Length"] = o.headers["content-length"]),
+            o.headers["content-range"] &&
+              (d["Content-Range"] = o.headers["content-range"]),
+            "HEAD" === e.method)
+          )
+            return (
+              t.writeHead(o.statusCode || 200, d),
+              t.end(),
+              void o.resume()
+            );
+          if (l) {
+            var h = [];
+            return (
+              o.on("data", function (e) {
+                h.push(e);
+              }),
+              o.on("error", function () {
+                p();
+              }),
+              void o.on("end", function () {
+                var e = rewriteHlsManifest(
+                  Buffer.concat(h).toString("utf8"),
+                  n,
+                  r.url,
+                );
+                (delete d["Content-Length"],
+                  delete d["Content-Range"],
+                  (d["Content-Length"] = Buffer.byteLength(e)));
+                try {
+                  (t.writeHead(o.statusCode || 200, d), t.end(e));
+                } catch (e) {
+                  p();
+                }
+              })
+            );
+          }
+          (t.writeHead(o.statusCode || 200, d),
+            o.on("error", function () {
+              p();
+            }),
+            o.pipe(t));
         });
-        return;
+        if (((u.upstream = c), c.socket))
+          try {
+            c.socket.setNoDelay(!0);
+          } catch (e) {}
+        (c.setTimeout(25e3, function () {
+          if (!t.headersSent) {
+            try {
+              c.abort();
+            } catch (e) {}
+            try {
+              (t.writeHead(504, {
+                "Content-Type": "text/plain",
+                "Access-Control-Allow-Origin": "*",
+              }),
+                t.end("gateway timeout"));
+            } catch (e) {}
+          }
+          p();
+        }),
+          c.on("error", function (o) {
+            if (r && r.url) {
+              var s = urlmod.parse(r.url).hostname,
+                a = dnsx.cached(s);
+              a &&
+                a.ips &&
+                a.ips.length > 1 &&
+                (r.resolvedIp = dnsx.dial(s, a.ips));
+            }
+            if (
+              !t.headersSent &&
+              r &&
+              !r._maskSni &&
+              isCacheFlyHost(urlmod.parse(r.url || "").hostname, r.resolvedIp)
+            )
+              return (
+                console.log(
+                  "[proxy] upstream CacheFly falló (" +
+                    (o && (o.code || o.message)) +
+                    "), reintentando con SNI camuflado cachefly.net...",
+                ),
+                (r._maskSni = !0),
+                (r.resolvedIp = ""),
+                p(),
+                forward(e, t, r, n)
+              );
+            if (
+              !t.headersSent &&
+              r &&
+              !r._retriedProtocol &&
+              /^https?:\/\//i.test(r.url || "")
+            )
+              return (
+                (r._retriedProtocol = !0),
+                /^https:\/\//i.test(r.url)
+                  ? (console.log(
+                      "[proxy] upstream HTTPS falló (" +
+                        (o && (o.code || o.message)) +
+                        "), reintentando con HTTP compatible...",
+                    ),
+                    (r.url = r.url.replace(/^https:\/\//i, "http://")),
+                    (r.resolvedIp = ""),
+                    p(),
+                    forward(e, t, r, n))
+                  : (console.log(
+                      "[proxy] upstream HTTP falló (" +
+                        (o && (o.code || o.message)) +
+                        "), reintentando con HTTPS por posible bloqueo DPI...",
+                    ),
+                    (r.url = r.url.replace(/^http:\/\//i, "https://")),
+                    (r.resolvedIp = ""),
+                    p(),
+                    forward(e, t, r, n))
+              );
+            if (
+              !t.headersSent &&
+              r &&
+              r.backupUrls &&
+              r.backupIndex < r.backupUrls.length
+            ) {
+              var i = r.backupUrls[r.backupIndex++],
+                l = i && "string" == typeof i ? i : i && i.url;
+              if (l)
+                return (
+                  console.log(
+                    "[proxy] upstream falló (" +
+                      (o && (o.code || o.message)) +
+                      "), reintentando con CDN alternativa: " +
+                      l,
+                  ),
+                  (r.url = l),
+                  i && i.headers && (r.headers = i.headers),
+                  (r.resolvedIp = ""),
+                  (r._retriedProtocol = !1),
+                  (r._maskSni = !1),
+                  p(),
+                  forward(e, t, r, n)
+                );
+            }
+            if (t.headersSent)
+              try {
+                t.destroy();
+              } catch (e) {}
+            else
+              try {
+                (t.writeHead(502, {
+                  "Content-Type": "text/plain",
+                  "Access-Control-Allow-Origin": "*",
+                }),
+                  t.end("upstream error"));
+              } catch (e) {}
+            p();
+          }),
+          c.end());
       }
-
-      res.writeHead(up.statusCode || 200, out);
-
-      up.on('error', function () { cleanup(); });
-      /* Do not clean up on 'end'/'close': cleanup() unpipes, and unpiping from
-         inside an 'end' listener runs before pipe's own onend, so the response
-         would never be ended.  res 'finish'/'close' releases the entry. */
-      up.pipe(res);
-    });
-
-    connRecord.upstream = upstream;
-
-    if (upstream.socket) {
-      try { upstream.socket.setNoDelay(true); } catch (eNd3) { /* ignore */ }
-    }
-
-    /* Connect timeout only - aborted only if headers do not arrive in 25s */
-    upstream.setTimeout(25000, function () {
-      if (!res.headersSent) {
-        try { upstream.abort(); } catch (e) { /* ignore */ }
+      function p() {
+        var e;
+        if (
+          (-1 !== (e = activeUpstreams.indexOf(u)) &&
+            activeUpstreams.splice(e, 1),
+          u.up)
+        ) {
+          try {
+            u.up.unpipe();
+          } catch (e) {}
+          try {
+            "function" == typeof u.up.destroy && u.up.destroy();
+          } catch (e) {}
+          try {
+            u.up.socket && u.up.socket.destroy();
+          } catch (e) {}
+          u.up = null;
+        }
         try {
-          res.writeHead(504, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-          res.end('gateway timeout');
-        } catch (e504) { /* ignore */ }
-      }
-      cleanup();
-    });
-
-    upstream.on('error', function (uErr) {
-      if (entry && entry.url) {
-        var h = urlmod.parse(entry.url).hostname;
-        var hit = dnsx.cached(h);
-        if (hit && hit.ips && hit.ips.length > 1) {
-          entry.resolvedIp = dnsx.dial(h, hit.ips);
-        }
-      }
-      /* Si el CDN es CacheFly, probar una vez el camuflaje de la 1.6.17 antes
-         de cambiar de protocolo: en Claro/ETB el bloqueo llega por SNI. */
-      if (!res.headersSent && entry && !entry._maskSni &&
-          isCacheFlyHost(urlmod.parse(entry.url || '').hostname, entry.resolvedIp)) {
-        console.log('[proxy] upstream CacheFly falló (' + (uErr && (uErr.code || uErr.message)) + '), reintentando con SNI camuflado cachefly.net...');
-        entry._maskSni = true;
-        entry.resolvedIp = '';
-        cleanup();
-        return forward(req, res, entry, token);
-      }
-      /* Fallback adaptativo: si falla HTTP por bloqueo DPI del operador en el
-         puerto 80 (RST/timeout), reintenta por HTTPS; si falla HTTPS por la
-         pila TLS antigua de webOS 1/2/3, reintenta por HTTP compatible.  Se
-         hace una sola vez por recurso y sin destruir la respuesta del cliente. */
-      if (!res.headersSent && entry && !entry._retriedProtocol && /^https?:\/\//i.test(entry.url || '')) {
-        entry._retriedProtocol = true;
-        var isSecure = /^https:\/\//i.test(entry.url);
-        if (!isSecure) {
-          console.log('[proxy] upstream HTTP falló (' + (uErr && (uErr.code || uErr.message)) + '), reintentando con HTTPS por posible bloqueo DPI...');
-          entry.url = entry.url.replace(/^http:\/\//i, 'https://');
-          entry.resolvedIp = '';
-          cleanup();
-          return forward(req, res, entry, token);
-        }
-        console.log('[proxy] upstream HTTPS falló (' + (uErr && (uErr.code || uErr.message)) + '), reintentando con HTTP compatible...');
-        entry.url = entry.url.replace(/^https:\/\//i, 'http://');
-        entry.resolvedIp = '';
-        cleanup();
-        return forward(req, res, entry, token);
-      }
-      if (!res.headersSent && entry && entry.backupUrls && entry.backupIndex < entry.backupUrls.length) {
-        var next = entry.backupUrls[entry.backupIndex++];
-        var nextUrl = (next && typeof next === 'string') ? next : (next && next.url);
-        if (nextUrl) {
-          console.log('[proxy] upstream falló (' + (uErr && (uErr.code || uErr.message)) + '), reintentando con CDN alternativa: ' + nextUrl);
-          entry.url = nextUrl;
-          if (next && next.headers) { entry.headers = next.headers; }
-          entry.resolvedIp = '';
-          /* A different CDN deserves its own HTTP<->HTTPS attempt and its own
-             SNI decision (it may not be CacheFly). */
-          entry._retriedProtocol = false;
-          entry._maskSni = false;
-          cleanup();
-          return forward(req, res, entry, token);
-        }
-      }
-      if (!res.headersSent) {
+          u.upstream && u.upstream.abort();
+        } catch (e) {}
         try {
-          res.writeHead(502, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-          res.end('upstream error');
-        } catch (e502) { /* ignore */ }
-      } else {
-        /* Mid-stream failure: abort the incomplete response instead of
-           leaving the TV waiting for the rest of the body. */
-        try { res.destroy(); } catch (eDestroy) { /* ignore */ }
+          u.upstream && u.upstream.socket && u.upstream.socket.destroy();
+        } catch (e) {}
+        ((u.upstream = null), (u.res = null), (u.req = null));
       }
-      cleanup();
-    });
-
-    upstream.end();
-  });
+    }));
 }
-
-function handler(req, res) {
-  try { req.setTimeout(0); } catch (eT1) { /* ignore */ }
-  try { res.setTimeout(0); } catch (eT2) { /* ignore */ }
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-      'Access-Control-Allow-Headers': 'Range'
-    });
-    res.end();
-    return;
+function handler(e, t) {
+  try {
+    e.setTimeout(0);
+  } catch (e) {}
+  try {
+    t.setTimeout(0);
+  } catch (e) {}
+  if ("OPTIONS" === e.method)
+    return (
+      t.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "Range",
+      }),
+      void t.end()
+    );
+  if ("/media/abort" === e.url)
+    return (
+      killActiveStreams(),
+      (activeToken = null),
+      t.writeHead(200, {
+        "Content-Type": "text/plain",
+        "Access-Control-Allow-Origin": "*",
+      }),
+      void t.end("aborted")
+    );
+  var r = /^\/sub\/([a-f0-9]{24})\.srt$/.exec(e.url || "");
+  if (r) {
+    var n = subtitleTokens[r[1]];
+    return n
+      ? void sendSubtitle(e, t, n)
+      : (t.writeHead(410, {
+          "Content-Type": "text/plain",
+          "Access-Control-Allow-Origin": "*",
+        }),
+        void t.end("expired"));
   }
-  if (req.url === '/media/abort') {
-    killActiveStreams();
-    activeToken = null;
-    res.writeHead(200, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-    res.end('aborted');
-    return;
+  var o = /^\/hls\/([a-f0-9]{24})\/([A-Za-z0-9_-]+)$/.exec(
+    (e.url || "").split("?")[0],
+  );
+  if (o) {
+    var s = tokens[o[1]];
+    if (!s)
+      return (
+        t.writeHead(410, {
+          "Content-Type": "text/plain",
+          "Access-Control-Allow-Origin": "*",
+        }),
+        void t.end("expired")
+      );
+    var a = fromBase64Url(o[2]);
+    return /^https?:\/\//i.test(a)
+      ? void forward(
+          e,
+          t,
+          {
+            url: a,
+            headers: s.headers,
+            duration: 0,
+            backupUrls: s.backupUrls,
+            backupIndex: s.backupIndex,
+          },
+          o[1],
+        )
+      : (t.writeHead(400, {
+          "Content-Type": "text/plain",
+          "Access-Control-Allow-Origin": "*",
+        }),
+        void t.end("invalid hls child"));
   }
-  if (/^\/img(\?|$)/.test(req.url || '')) {
-    var remote = req.socket && req.socket.remoteAddress;
-    if (remote !== '127.0.0.1' && remote !== '::ffff:127.0.0.1' && remote !== '::1') {
-      res.writeHead(403, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-      res.end('Forbidden: local loopback only');
-      return;
-    }
-    forwardImg(req, res);
-    return;
-  }
-  var sub = /^\/sub\/([a-f0-9]{24})\.srt$/.exec(req.url || '');
-  if (sub) {
-    var subEntry = subtitleTokens[sub[1]];
-    if (!subEntry) {
-      res.writeHead(410, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-      res.end('expired');
-      return;
-    }
-    sendSubtitle(req, res, subEntry);
-    return;
-  }
-  var hls = /^\/hls\/([a-f0-9]{24})\/([A-Za-z0-9_-]+)$/.exec((req.url || '').split('?')[0]);
-  if (hls) {
-    var hlsEntry = tokens[hls[1]];
-    if (!hlsEntry) {
-      res.writeHead(410, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-      res.end('expired');
-      return;
-    }
-    var childUrl = fromBase64Url(hls[2]);
-    if (!/^https?:\/\//i.test(childUrl)) {
-      res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-      res.end('invalid hls child');
-      return;
-    }
-    forward(req, res, {
-      url: childUrl,
-      headers: hlsEntry.headers,
-      duration: 0,
-      backupUrls: hlsEntry.backupUrls,
-      backupIndex: hlsEntry.backupIndex
-    }, hls[1]);
-    return;
-  }
-  var m = /^\/media\/([a-f0-9]{24})(?:\/([^\?#]*))?(?:[?#].*)?$/.exec(req.url || '');
-  if (!m) {
-    res.writeHead(404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-    res.end('not found');
-    return;
-  }
-  var token = m[1];
-  var subpath = m[2] || '';
-  var entry = tokens[token];
-  if (!entry) {
-    res.writeHead(410, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-    res.end('expired');
-    return;
-  }
-  if (entry.url.indexOf('.m3u8') === -1 && subpath.indexOf('.m3u8') !== -1) {
-    sendVirtualHls(req, res, token, entry);
-    return;
-  }
-  forward(req, res, entry, token);
+  var i = /^\/media\/([a-f0-9]{24})(?:\/([^\?#]*))?(?:[?#].*)?$/.exec(
+    e.url || "",
+  );
+  if (!i)
+    return (
+      t.writeHead(404, {
+        "Content-Type": "text/plain",
+        "Access-Control-Allow-Origin": "*",
+      }),
+      void t.end("not found")
+    );
+  var l = i[1],
+    u = i[2] || "",
+    c = tokens[l];
+  if (!c)
+    return (
+      t.writeHead(410, {
+        "Content-Type": "text/plain",
+        "Access-Control-Allow-Origin": "*",
+      }),
+      void t.end("expired")
+    );
+  -1 !== c.url.indexOf(".m3u8") || -1 === u.indexOf(".m3u8")
+    ? forward(e, t, c, l)
+    : sendVirtualHls(e, t, l, c);
 }
-
-function start(cb) {
-  if (typeof cb !== 'function') { cb = function () {}; }
-  if (server && port) { return cb(null, port); }
-  server = http.createServer(handler);
-  server.timeout = 0;
-  if (typeof server.setTimeout === 'function') {
-    server.setTimeout(0);
-  }
-  server.on('error', function (err) { cb(err); });
-  server.listen(0, '127.0.0.1', function () {
-    port = server.address().port;
-    cb(null, port);
-  });
+function start(e) {
+  if (server && port) return e(null, port);
+  (((server = http.createServer(handler)).timeout = 0),
+    "function" == typeof server.setTimeout && server.setTimeout(0),
+    server.on("error", function (t) {
+      e(t);
+    }),
+    server.listen(0, "127.0.0.1", function () {
+      ((port = server.address().port), e(null, port));
+    }));
 }
-
 function baseUrl() {
-  return port ? 'http://127.0.0.1:' + port : '';
+  return port ? "http://127.0.0.1:" + port : "";
 }
-
 module.exports = {
   start: start,
   add: add,
   addSubtitle: addSubtitle,
   baseUrl: baseUrl,
-  port: function () { return port; },
-  killActiveStreams: killActiveStreams
+  port: function () {
+    return port;
+  },
+  killActiveStreams: killActiveStreams,
 };
-

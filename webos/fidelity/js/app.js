@@ -1,8415 +1,7777 @@
-/* =============================================================================
-   XuperTV 4.34.4  ->  LG webOS 4 (Chromium 53) fidelity reconstruction
-   -----------------------------------------------------------------------------
-   All geometry comes from the decoded Android resources:
-     res/layout/*.xml, res/values/{colors,dimens,styles}.xml, values-es/strings.xml
-   Scale: design_width 1920 / design_width_in_dp 1280  =>  1dp = 1.5px
-   Content that the APK loads from its backend (posters, channel logos, QR,
-   tab icons/order, home logo) is represented with the original "no data"
-   assets and flagged in the audit documents. VOD data may additionally come
-   from a separately configured, authorized API; no APK endpoint, credential
-   or DRM logic is reproduced here.
-   ============================================================================= */
-(function () {
-  'use strict';
-
-  /* ------------------------------------------------------------------ utils */
-  function el(tag, cls, text) {
-    var n = document.createElement(tag);
-    if (cls) { n.className = cls; }
-    if (text !== undefined && text !== null) { n.textContent = text; }
-    return n;
-  }
-  function $(id) { return document.getElementById(id); }
-  function clear(n) { if (!n) { return; } while (n.firstChild) { n.removeChild(n.firstChild); } }
-  function abs(n, x, y, w, h) {
-    n.style.position = 'absolute';
-    n.style.left = x + 'px';
-    n.style.top = y + 'px';
-    if (w !== undefined) { n.style.width = w + 'px'; }
-    if (h !== undefined) { n.style.height = h + 'px'; }
-    return n;
-  }
-  function closest(node, sel) {
-    while (node && node !== document) {
-      if (node.nodeType === 1 && node.matches && node.matches(sel)) { return node; }
-      node = node.parentNode;
-    }
-    return null;
-  }
-  function pad2(n) { return n < 10 ? '0' + n : '' + n; }
-  function norm(s) {
-    s = String(s).toLowerCase();
-    if (s.normalize) {
-      s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    }
-    return s;
-  }
-  function each(list, fn) { for (var i = 0; i < list.length; i++) { fn(list[i], i); } }
-
-  /* ------------------------------------------------------------- demo data */
-  /* Server-driven in the real APK. These records only exercise the layouts. */
-  var GENRES = ['Acción', 'Drama', 'Comedia', 'Suspenso', 'Aventura',
-                'Animación', 'Familiar', 'Ciencia ficción'];
-
-  var VOD = [];
-  var CATEGORY_BY_PREFIX = {
-    'Destacado': 'destacado', 'Película': 'pelicula', 'Serie': 'serie',
-    'Gratis': 'gratis', 'Infantil': 'infantil', 'UHD': 'uhd', 'Extra': 'extra'
-  };
-  function addVod(prefix, count, base) {
-    for (var i = 1; i <= count; i++) {
-      var g1 = GENRES[(base + i) % GENRES.length];
-      var g2 = GENRES[(base + i + 3) % GENRES.length];
-      VOD.push({
-        id: VOD.length + 1,
-        title: prefix + ' demo ' + pad2(i),
-        category: CATEGORY_BY_PREFIX[prefix] || '',
-        score: (7.9 + ((base + i) % 16) / 10).toFixed(1),
-        year: 2018 + ((base + i) % 7),
-        duration: (1 + ((base + i) % 2)) + ' h ' + (10 + ((base * 7 + i * 5) % 45)) + ' min',
-        genres: g1 === g2 ? [g1] : [g1, g2],
-        director: 'Director demo ' + pad2(i),
-        actors: 'Actor demo ' + pad2(i) + ', Actriz demo ' + pad2(i + 1),
-        synopsis: 'Sinopsis de demostración para ' + prefix.toLowerCase() + ' demo ' + pad2(i) +
-          '. Este texto sólo existe para comprobar el recorte a dos líneas, el interlineado y ' +
-          'la sangría de la etiqueta "Sinopsis :" definidos en activity_voddetails.',
-        kind: prefix.toLowerCase()
-      });
-    }
-  }
-  addVod('Destacado', 5, 1);
-  addVod('Película', 7, 2);
-  addVod('Serie', 7, 3);
-  addVod('Gratis', 5, 4);
-  addVod('Infantil', 8, 5);
-  addVod('UHD', 4, 6);
-  addVod('Extra', 4, 7);
-
-  /* ------------------------------------------------------------- VOD API
-     XMLHttpRequest is used deliberately: it works on Chromium 53, where
-     fetch/async functions are not a safe webOS 4 baseline. */
-  var vodApi = window.XUPERTV_API || {};
-  /* Desktop harness override: ?service=http://127.0.0.1:8910 */
-  var devServiceParam = /[?&]service=([^&]+)/.exec(window.location.search || '');
-  if (devServiceParam) { vodApi.devServiceUrl = decodeURIComponent(devServiceParam[1]); }
-  var vodApiState = { loading: false, source: 'demo', error: null };
-  var portalState = { refreshing: false, lastSync: 0, roots: 0, error: null };
-  var PORTAL_ROOTS = ['featured', 'movies', 'series', 'anime', 'kids', 'free'];
-
-  function apiArray(payload) {
-    if (Object.prototype.toString.call(payload) === '[object Array]') { return payload; }
-    if (!payload) { return []; }
-    var keys = ['items', 'movies', 'results', 'recommendList', 'movieList',
-                'totalMovieList', 'programList', 'data'];
-    for (var i = 0; i < keys.length; i++) {
-      if (Object.prototype.toString.call(payload[keys[i]]) === '[object Array]') {
-        return payload[keys[i]];
-      }
-      if (payload[keys[i]] && typeof payload[keys[i]] === 'object') {
-        var nested = apiArray(payload[keys[i]]);
-        if (nested.length) { return nested; }
-      }
-    }
-    return [];
-  }
-
-  function apiError(payload) {
-    if (!payload || typeof payload !== 'object') { return ''; }
-    var code = payload.returnCode || payload.code || payload.errorCode || '';
-    var message = payload.errorMessage || payload.message || payload.msg || '';
-    if (!code && !message) { return ''; }
-    return (code ? String(code) + ': ' : '') + (message ? String(message) : 'La API rechazó la petición');
-  }
-
-  function apiUrl(kind) {
-    var direct = vodApi[kind + 'Url'];
-    if (direct) { return String(direct); }
-    var base = String(vodApi.baseUrl || '').replace(/\/$/, '');
-    var path = String(vodApi[kind + 'Path'] || '');
-    return base && path ? base + (path.charAt(0) === '/' ? path : '/' + path) : '';
-  }
-
-  function xuperSession() {
-    var session = vodApi.session || {};
-    return {
-      userId: String(session.userId || ''),
-      userToken: String(session.userToken || ''),
-      portalCode: String(session.portalCode || ''),
-      homePageCode: String(session.homePageCode || ''),
-      version: String(session.version || '4.34.4')
-    };
-  }
-
-  function hasXuperSession() {
-    var session = xuperSession();
-    return !!(session.userId && session.userToken && session.portalCode);
-  }
-
-  function xuperPayload(kind, value) {
-    var session = xuperSession();
-    if (kind === 'catalog') {
-      return {
-        userId: session.userId,
-        userToken: session.userToken,
-        portalCode: session.portalCode,
-        homePageCode: session.homePageCode,
-        version: session.version
-      };
-    }
-    if (kind === 'search') {
-      return {
-        userToken: session.userToken,
-        userId: session.userId,
-        portalCode: session.portalCode,
-        columnId: '',
-        value: value || '',
-        type: '',
-        pageSize: 20,
-        pageNum: 1,
-        filter: ''
-      };
-    }
-    return {
-      userToken: session.userToken,
-      userId: session.userId,
-      portalCode: session.portalCode,
-      programId: value
-    };
-  }
-
-  function apiImage(value) {
-    if (!value) { return ''; }
-    value = String(value);
-    if (/^https?:\/\//i.test(value) || value.indexOf('data:') === 0) { return value; }
-    if (!vodApi.imageBaseUrl) { return value; }
-    return String(vodApi.imageBaseUrl).replace(/\/$/, '') + '/' + value.replace(/^\//, '');
-  }
-
-  function apiText(value, fallback) {
-    return value === undefined || value === null || value === '' ? fallback : String(value);
-  }
-
-  function isSeriesItem(item) {
-    if (!item) { return false; }
-    return item.type === 'teleplay' || item.type === 'series' || item.kind === 'serie' ||
-           (item.category && item.category.indexOf('serie') !== -1) ||
-           (item.episodes && item.episodes.length > 0) ||
-           (item.seasons && item.seasons.length > 0) ||
-           (item.volumeCount && parseInt(item.volumeCount, 10) > 1);
-  }
-
-  function normalizeVod(raw, index) {
-    raw = raw || {};
-    var genres = raw.genres || raw.genre || [];
-    if (typeof genres === 'string') { genres = genres.split(','); }
-    if (Object.prototype.toString.call(genres) !== '[object Array]') { genres = []; }
-    var names = [];
-    for (var i = 0; i < genres.length; i++) {
-      names.push(typeof genres[i] === 'string' ? genres[i] : (genres[i].name || ''));
-    }
-    var runtime = raw.duration || raw.runtime || raw.runtimeMinutes || '';
-    if (typeof runtime === 'number') { runtime = Math.floor(runtime / 60) + ' h ' + (runtime % 60) + ' min'; }
-    var type = apiText(raw.type || raw.programType, '');
-    var isSeries = type === 'teleplay' || type === 'series' || norm(apiText(raw.kind || '', '')) === 'serie' ||
-                   norm(apiText(raw.category || '', '')).indexOf('serie') !== -1 ||
-                   (raw.episodes && raw.episodes.length > 0) ||
-                   (raw.seasons && raw.seasons.length > 0) ||
-                   (raw.volumeCount && parseInt(raw.volumeCount, 10) > 1) ||
-                   (raw.volumnCount && parseInt(raw.volumnCount, 10) > 1);
-    return {
-      id: apiText(raw.id || raw.vodId || raw.programId || raw.program_id || raw.tmdb_id, 'api-' + index),
-      title: apiText(raw.title || raw.name || raw.programName || raw.programTitle || raw.original_title, 'Sin título'),
-      category: norm(apiText(raw.category || raw.section || raw.collection || raw.homeSection, '')),
-      score: apiText(raw.score || raw.vote_average || raw.rating || raw.movieRate || raw.programScore, '—'),
-      year: apiText(raw.year || raw.release_year || raw.programYear || (raw.releaseDate || raw.releaseTime || raw.release_date || '').slice(0, 4), '—'),
-      duration: apiText(runtime, '—'),
-      genres: names.length ? names : ['Sin clasificar'],
-      director: apiText(raw.director, '—'),
-      actors: apiText(raw.actors || raw.actorDisplay || raw.cast, '—'),
-      synopsis: apiText(raw.synopsis || raw.overview || raw.description || raw.programUpdateContent, 'Sin sinopsis disponible.'),
-      kind: isSeries ? 'serie' : apiText(raw.kind || raw.media_type, 'película'),
-      poster: apiImage(raw.posterUrl || raw.poster_url || raw.poster || raw.poster_path || raw.image || raw.imageUrl || raw.cover || raw.coverUrl || raw.programPoster || raw.programImage),
-      landscape: apiImage(raw.landscapeUrl || raw.landscape_url || raw.landscape || raw.wideImage || raw.bannerImage),
-      backdrop: apiImage(raw.backdropUrl || raw.backdrop_url || raw.backdrop || raw.backdrop_path),
-      streamUrl: raw.streamUrl || raw.stream_url || '',
-      /* Magis portal records (service / snapshot). */
-      type: type || (isSeries ? 'teleplay' : 'movie'),
-      row: apiText(raw.row, ''),
-      alias: apiText(raw.alias, ''),
-      country: apiText(raw.country || raw.originalCountry, ''),
-      releaseDate: apiText(raw.releaseDate || raw.releaseTime, ''),
-      tagline: apiText(raw.tagline || raw.viewPoint, ''),
-      volumeCount: parseInt(raw.volumeCount || raw.volumnCount, 10) || 0,
-      updateCount: parseInt(raw.updateCount, 10) || 0,
-      episodes: raw.episodes || [],
-      seasons: raw.seasons || [],
-      moreAudio: raw.moreAudio !== undefined ? raw.moreAudio : 0,
-      moreSubtitle: raw.moreSubtitle !== undefined ? raw.moreSubtitle : 0,
-      _portal: raw.portal === true || raw._portal === true || (vodApi && vodApi.mode === 'portal' && String(raw.id || '').length > 10)
-    };
-  }
-
-  function apiRequest(url, done, options) {
-    options = options || {};
-    var xhr = new XMLHttpRequest();
-    var finished = false;
-    var timeout = parseInt(vodApi.timeoutMs, 10) || 10000;
-    function finish(error, payload) {
-      if (finished) { return; }
-      finished = true;
-      done(error, payload);
-    }
-    xhr.open(options.method || 'GET', url, true);
-    xhr.timeout = timeout;
-    var headers = vodApi.headers || {};
-    for (var name in headers) {
-      if (Object.prototype.hasOwnProperty.call(headers, name)) { xhr.setRequestHeader(name, headers[name]); }
-    }
-    if (options.body !== undefined && !headers['Content-Type'] && !headers['content-type']) {
-      xhr.setRequestHeader('Content-Type', 'application/json;charset=utf-8');
-    }
-    xhr.onreadystatechange = function () {
-      if (xhr.readyState !== 4) { return; }
-      if (xhr.status < 200 || xhr.status >= 300) { finish('HTTP ' + xhr.status); return; }
-      try { finish(null, JSON.parse(xhr.responseText)); }
-      catch (err) { finish('La API no devolvió JSON válido'); }
-    };
-    xhr.onerror = function () { finish('Error de red o CORS'); };
-    xhr.ontimeout = function () { finish('Tiempo de espera agotado'); };
-    try { xhr.send(options.body === undefined ? null : JSON.stringify(options.body)); }
-    catch (err) { finish(err.message || 'No se pudo iniciar la petición'); }
-  }
-
-  /* Some portal catalogues publish every season as a separate series card
-     ("The Walking Dead T1", "The Walking Dead T2", ...).  Treat only an
-     explicit trailing season marker as a grouping signal; ordinary titles
-     such as spin-offs are left untouched. */
-  function catalogSeasonMarker(item) {
-    if (!item || !isSeriesItem(item)) { return null; }
-    var title = String(item.title || item.alias || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-    var match = /^(.*?)(?:\s*[-–:|]?\s*(?:temporada|season)\s*(\d+)|\s*[-–:|]?\s*[st]\s*0?(\d+))\s*$/i.exec(title);
-    if (!match || !match[1]) { return null; }
-    var number = parseInt(match[2] || match[3], 10);
-    if (!number || number > 99) { return null; }
-    return { title: match[1].replace(/\s+$/, ''), number: number };
-  }
-
-  function groupCatalogSeasons(items) {
-    var groups = {}, out = [];
-    for (var i = 0; i < items.length; i++) {
-      var marker = catalogSeasonMarker(items[i]);
-      if (!marker) { out.push(items[i]); continue; }
-      var key = norm(marker.title);
-      if (!groups[key]) { groups[key] = { title: marker.title, items: [] }; }
-      groups[key].items.push({ item: items[i], number: marker.number });
-    }
-    for (var key in groups) {
-      if (!groups.hasOwnProperty(key)) { continue; }
-      var group = groups[key];
-      if (group.items.length < 2) {
-        out.push(group.items[0].item);
-        continue;
-      }
-      group.items.sort(function (a, b) { return a.number - b.number; });
-      var main = group.items[0].item;
-      var allCats = {};
-      main._catalogSeasons = [];
-      main._seriesGroup = true;
-      main._seriesTitle = group.title;
-      main.title = group.title;
-      main.alias = group.title;
-      main.seasons = [];
-      for (var s = 0; s < group.items.length; s++) {
-        var part = group.items[s];
-        var cats = String(part.item.category || '').split(',');
-        for (var c = 0; c < cats.length; c++) { if (cats[c]) { allCats[cats[c]] = true; } }
-        var season = { id: part.item.id, number: part.number, title: group.title };
-        main._catalogSeasons.push(season);
-        main.seasons.push(season);
-      }
-      main.category = Object.keys(allCats).join(',');
-      out.push(main);
-    }
-    return out;
-  }
-
-  function replaceVod(records, source, portal) {
-    if (!records.length) { return false; }
-    var previous = {};
-    for (var p = 0; p < VOD.length; p++) { previous[String(VOD[p].id)] = VOD[p]; }
-    VOD.splice(0, VOD.length);
-    var normalizedItems = [];
-    for (var i = 0; i < records.length; i++) {
-      var item = normalizeVod(records[i], i + 1);
-      if (portal && records[i].portal !== false) { item._portal = true; }
-      var old = previous[String(item.id)];
-      if (old) {
-        /* Keep what the detail/player already learned about this title. */
-        if (old.episodes) { item.episodes = old.episodes; }
-        if (old.seasons) { item.seasons = old.seasons; }
-        if (old._detailsLoaded) { item._detailsLoaded = true; }
-        if (!item.streamUrl && old.streamUrl) { item.streamUrl = old.streamUrl; }
-      }
-      normalizedItems.push(item);
-    }
-    var catalogItems = groupCatalogSeasons(normalizedItems);
-    for (var n = 0; n < catalogItems.length; n++) {
-      VOD.push(catalogItems[n]);
-    }
-    if (state.detail) {
-      var foundDetail = false;
-      for (var d = 0; d < VOD.length; d++) {
-        if (String(VOD[d].id) === String(state.detail.id)) {
-          state.detail = VOD[d];
-          foundDetail = true;
-          break;
-        }
-      }
-      if (!foundDetail) { state.detail = VOD[0]; }
-    }
-    vodApiState.source = source;
-    vodApiState.error = null;
-    refreshVodViews();
-    return true;
-  }
-
-  /* A real catalog may not have every home section. Prefer the declared
-     category, then fall back to positional demo slices so the reconstructed
-     layouts always have content to show. */
-  function vodFor(category, count, fallbackStart) {
-    var out = [], i;
-    if (category) {
-      for (i = 0; i < VOD.length; i++) {
-        var cats = norm(VOD[i].category || '').split(',');
-        if (cats.indexOf(category) !== -1) { out.push(VOD[i]); }
-      }
-    }
-    if (!out.length) { out = VOD.slice(fallbackStart, fallbackStart + count); }
-    if (!out.length) { out = VOD.slice(0, count); }
-    /* Fill short sections with other catalog entries so the sample never shows
-       one poster repeated across a whole mosaic. A real backend normally sends
-       enough items per section; this only affects the bundled demo catalog. */
-    if (out.length < count && VOD.length) {
-      var seen = {};
-      for (i = 0; i < out.length; i++) { seen[String(out[i].id)] = true; }
-      var cursor = 0;
-      while (out.length < count && cursor < VOD.length * 2) {
-        var cand = VOD[cursor % VOD.length];
-        cursor++;
-        if (!seen[String(cand.id)]) {
-          out.push(cand);
-          seen[String(cand.id)] = true;
-        }
-      }
-    }
-    return out;
-  }
-
-  function refreshVodViews() {
-    if (homeBuilt) {
-      var rail = $('home-tabs');
-      var railWasExpanded = !!(rail && rail.classList.contains('is-expanded') && !rail.classList.contains('is-collapsed'));
-      var focusWasTab = !!(state.focus && state.focus._tab !== undefined);
-      var focusWasNotify = !!(state.focus && closest(state.focus, '#home-notify'));
-      var hadContentFocus = !!(state.focus && closest(state.focus, '.home-page'));
-      pages = [];
-      tabEls = [];
-      buildHome();
-      selectTab(state.tab, false);
-      if (state.screen === 'home') {
-        if (focusWasTab && tabEls[state.tab]) { setFocus(tabEls[state.tab], true); }
-        else if (focusWasNotify) {
-          var n = firstIn($('home-notify'));
-          if (n) { setFocus(n, true); }
-        } else if (hadContentFocus) {
-          var page = pages[TABS[state.tab].page];
-          var f = page ? firstIn(page) : null;
-          if (f) { setFocus(f, true); }
-        }
-        if (railWasExpanded && rail) {
-          /* The reference keeps the full labels on the first paint even while
-             the content holds focus; preserve that across a catalog refresh. */
-          rail.classList.add('is-expanded');
-          rail.classList.remove('is-collapsed');
-          var railBg = document.querySelector('.home-sidebar-bg');
-          if (railBg) { railBg.classList.add('is-on'); }
-        }
-      }
-    }
-    if (searchKeyboard) { buildSearch(); if (state.searchQuery) { runSearch(); } }
-    if (state.detail) { buildDetail(state.detail); }
-  }
-
-  function bundledCatalog() {
-    var data = window.XUPERTV_CATALOG;
-    return data ? apiArray(data) : [];
-  }
-
-  /* ------------------------------------------------------ portal service
-     The Magis portal answers no CORS preflight, so the page cannot call it.
-     The bundled Node service speaks the encrypted protocol and returns plain
-     JSON over Luna; devServiceUrl mirrors the same methods for desktop tests. */
-  function hasLuna() {
-    if (window.PalmServiceBridge && (!window.webOS || !window.webOS.service)) {
-      window.webOS = window.webOS || {};
-      window.webOS.service = {
-        request: function (uri, opts) {
-          opts = opts || {};
-          var bridge = new window.PalmServiceBridge();
-          bridge.onservicecallback = function (msg) {
-            var res;
-            try { res = JSON.parse(msg); } catch (e) { res = { returnValue: false, errorText: msg }; }
-            if (res.returnValue === false) {
-              if (opts.onFailure) { opts.onFailure(res); }
-            } else {
-              if (opts.onSuccess) { opts.onSuccess(res); }
-            }
-          };
-        var fullUri = opts.method ? (uri.replace(/\/$/, '') + '/' + opts.method) : uri;
-        bridge.call(fullUri, JSON.stringify(opts.parameters || {}));
-        return bridge;
-      }
-    };
-  }
-  return !!(window.webOS && window.webOS.service && window.webOS.service.request);
-}
-
-function queryString(params) {
-  var parts = [];
-  for (var k in params) {
-    if (Object.prototype.hasOwnProperty.call(params, k)) {
-      parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
-    }
-  }
-  return parts.join('&');
-}
-
-/* ls-hubd refuses a call when the app is missing from the service ACL, which
-   happens when the installed manifest is stale after an update.  "Denied
-   method netdiag for category /" means nothing to a viewer, so translate it
-   into the two things that actually fix it and keep the raw text in brackets
-   for whoever supports the TV. */
-var SERVICE_BLOCKED_HINT = 'La TV tiene bloqueado el servicio de XuperTV. ' +
-  'Desenchufa la TV 10 segundos y vuelve a abrir la app; si sigue igual, ' +
-  'reinstala con el instalador.';
-function describeServiceError(text) {
-  var raw = String(text == null ? '' : text);
-  if (/denied|permission|not permitted/i.test(raw)) {
-    return SERVICE_BLOCKED_HINT + ' (' + raw + ')';
-  }
-  return raw;
-}
-
-/* The network test can only judge the carrier by touching the real CDN, so the
-   page remembers the last raw CDN URLs the portal handed out.  Loopback proxy
-   URLs are useless here: they always answer, even when the carrier drops the
-   upstream connection. */
-var lastCdnProbe = { live: null, vod: null };
-function rememberCdnProbe(kind, payload) {
-  try {
-    if (!payload) { return; }
-    var url = payload.url || '';
-    if (!/^https?:\/\//i.test(url)) { return; }
-    if (/^https?:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(url)) { return; }
-    lastCdnProbe[kind] = { url: url, headers: payload.headers || {} };
-  } catch (eProbe) { /* ignore */ }
-}
-
-function portalServiceCall(method, params, done, customTimeout) {
-  var serviceId = vodApi.serviceId || 'com.webosflux.xuptertv.fidelity.service';
-  var settled = false;
-  var timeoutMs = customTimeout || parseInt(vodApi.timeoutMs, 10) || 20000;
-  var callTimer = null;
-  function finish(error, payload) {
-    if (settled) { return; }
-    settled = true;
-    if (callTimer) { clearTimeout(callTimer); callTimer = null; }
-    done(error ? describeServiceError(error) : error, payload);
-  }
-  callTimer = setTimeout(function () {
-    finish('El servicio de la TV no respondió en ' + Math.round(timeoutMs / 1000) + ' s. Desenchufa la TV de la corriente 10 segundos y vuelve a abrir la app.', null);
-  }, timeoutMs + 1000);
-  /* webOSTV.js defines webOS.service.request even in a plain browser; without
-     the native bridge it only reports an error, so the desktop harness must
-     skip the Luna branch entirely. */
-  if (hasLuna() && window.PalmServiceBridge) {
-    var isLegacyWebOs = (typeof webOsMajorVersion === 'function' && webOsMajorVersion() > 0 && webOsMajorVersion() < 4);
-    var primaryScheme = isLegacyWebOs ? 'palm://' : 'luna://';
-    var fallbackScheme = isLegacyWebOs ? 'luna://' : 'palm://';
-    var callWithScheme = function (scheme) {
-      try {
-        return window.webOS.service.request(scheme + serviceId, {
-          method: method,
-          parameters: params || {},
-          timeout: customTimeout || parseInt(vodApi.timeoutMs, 10) || 20000,
-          onSuccess: function (payload) { finish(null, payload); },
-          onFailure: function (error) {
-            var errStr = (error && (error.errorText || error.message || (error.errorCode ? ('Código ' + error.errorCode) : ''))) ||
-              (typeof error === 'string' ? error : 'Error del servicio XuperTV');
-            if (scheme === primaryScheme && /not exist|not found|denied|unknown/i.test(String(errStr))) {
-              return callWithScheme(fallbackScheme);
-            }
-            finish(errStr, null);
-          }
-        });
-      } catch (e) {
-        if (scheme === primaryScheme) {
-          return callWithScheme(fallbackScheme);
-        }
-        if (!vodApi.devServiceUrl) {
-          finish('Error comunicando con el servicio: ' + (e.message || e), null);
-          return false;
-        }
-      }
-    };
-    return callWithScheme(primaryScheme);
-  }
-  /* Desktop harness: reach the same methods over plain HTTP when the Luna
-     bridge is missing or rejected the request (webOSTV.js on a browser). */
-  if (vodApi.devServiceUrl) {
-    apiRequest(String(vodApi.devServiceUrl).replace(/\/$/, '') + '/' + method + '?' + queryString(params || {}),
-      function (error, payload) { finish(error, payload); }, null);
-    return true;
-  }
-  finish('El servicio XuperTV no está disponible', null);
-  return false;
-}
-
-  function startServiceKeepAlive() {
-    if (!hasLuna()) { return; }
-    var serviceId = vodApi.serviceId || 'com.webosflux.xuptertv.fidelity.service';
-    var isLegacyWebOs = (typeof webOsMajorVersion === 'function' && webOsMajorVersion() > 0 && webOsMajorVersion() < 4);
-    var busPrefix = isLegacyWebOs ? 'palm://' : 'luna://';
-    try {
-      window.webOS.service.request(busPrefix + serviceId, {
-        method: 'keepAlive',
-        parameters: { subscribe: true },
-        resubscribe: true,
-        onSuccess: function () {},
-        onFailure: function () {}
-      });
-    } catch (eSub) { /* ignore */ }
-
-    setInterval(function () {
-      try {
-        window.webOS.service.request(busPrefix + serviceId, {
-          method: 'heartbeat',
-          parameters: {},
-          onSuccess: function () {},
-          onFailure: function () {}
-        });
-      } catch (eHb) { /* ignore */ }
-    }, 15000);
-  }
-
-  function portalSnapshot() {
-    var data = window.XUPERTV_PORTAL;
-    return data ? apiArray(data) : [];
-  }
-
-  /* Open movies are kept only to exercise the detail -> player pipeline; they
-     are not portal titles, so they never go through the resolver. */
-  function openSamples() {
-    var all = bundledCatalog();
-    var out = [];
-    for (var i = 0; i < all.length; i++) {
-      if (all[i] && all[i].streamUrl) {
-        var rec = {};
-        for (var k in all[i]) {
-          if (Object.prototype.hasOwnProperty.call(all[i], k)) { rec[k] = all[i][k]; }
-        }
-        rec.category = 'demo';
-        rec.portal = false;
-        out.push(rec);
-      }
-    }
-    return out;
-  }
-
-  function applyPortalRefresh(roots) {
-    var byId = {}, order = [], cats = {};
-    function absorb(item) {
-      if (!item || !item.id) { return; }
-      var id = String(item.id);
-      if (!byId[id]) { byId[id] = item; order.push(id); }
-      else {
-        var cur = byId[id];
-        for (var k in item) {
-          if (Object.prototype.hasOwnProperty.call(item, k) &&
-              item[k] !== '' && item[k] !== '—' && item[k] !== null && item[k] !== undefined) {
-            cur[k] = item[k];
-          }
-        }
-      }
-      var list = String(item.category || '').split(',');
-      cats[id] = cats[id] || {};
-      for (var c = 0; c < list.length; c++) { if (list[c]) { cats[id][list[c]] = true; } }
-    }
-    for (var r = 0; r < PORTAL_ROOTS.length; r++) {
-      var list = roots[PORTAL_ROOTS[r]] || [];
-      for (var i = 0; i < list.length; i++) { list[i].portal = true; absorb(list[i]); }
-    }
-    if (!order.length) {
-      /* Refresh received no items (service offline or slow): preserve snapshot catalog! */
-      return;
-    }
-    var records = [];
-    for (var o = 0; o < order.length; o++) {
-      var rec = byId[order[o]];
-      rec.category = Object.keys(cats[order[o]]).join(',');
-      records.push(rec);
-    }
-    var demo = openSamples();
-    for (var d = 0; d < demo.length; d++) { records.push(demo[d]); }
-    if (records.length) { replaceVod(records, 'portal', true); }
-  }
-
-  function refreshPortalCatalog() {
-    if (portalState.refreshing) { return; }
-    portalState.refreshing = true;
-    portalState.error = null;
-    var fresh = {};
-    var index = 0;
-    var gotAny = false;
-    function next() {
-      if (index >= PORTAL_ROOTS.length) {
-        portalState.refreshing = false;
-        portalState.lastSync = Date.now();
-        applyPortalRefresh(fresh);
-        if (gotAny && portalState.retryTimer) {
-          clearTimeout(portalState.retryTimer);
-          portalState.retryTimer = null;
-        }
-        /* If the portal did not answer a single row the TV cannot log in or
-           request movie addresses: say it in plain words and try again on its
-           own instead of leaving a silent empty port (the "portal no responde
-           desde tu red" report, usually at night when the carrier throttles). */
-        if (!gotAny && !portalState.retryTimer) {
-          portalState.error = portalState.error || 'El portal de XuperTV no respondió desde tu red';
-          showToast('El portal de XuperTV no respondió. Reintentando en 20 segundos…');
-          portalState.retryTimer = setTimeout(function () {
-            portalState.retryTimer = null;
-            refreshPortalCatalog();
-          }, 20000);
-        }
-        return;
-      }
-      var root = PORTAL_ROOTS[index++];
-      var fetchRoot = function (attempt) {
-        portalServiceCall('home', { root: root }, function (error, payload) {
-          var loaded = !error && payload && payload.returnValue !== false && payload.items && payload.items.length;
-          if (loaded) {
-            fresh[root] = payload.items;
-            portalState.roots++;
-            gotAny = true;
-            return next();
-          }
-          /* Between 21:00 and midnight some carriers throttle the portal and a
-             single timeout used to drop a whole home row.  Retry the same root
-             once before giving up; the next root still follows. */
-          if (attempt < 2) {
-            setTimeout(function () { fetchRoot(attempt + 1); }, 900 * attempt);
-            return;
-          }
-          if (error) { portalState.error = error; }
-          next();
-        });
-      };
-      fetchRoot(1);
-    }
-    next();
-  }
-
-  function loadPortalCatalog() {
-    var snap = portalSnapshot();
-    if (snap.length) {
-      replaceVod(snap, 'portal-snapshot', true);
-    }
-    if (vodApi.refresh === false) {
-      if (!snap.length) { vodApiState.error = 'Sin snapshot del portal'; }
-      return;
-    }
-    refreshPortalCatalog();
-  }
-
-  function useBundledCatalog(source, error) {
-    var records = bundledCatalog();
-    if (!replaceVod(records, source || 'bundled')) {
-      vodApiState.error = error || 'No hay catálogo local ni remoto';
-      return false;
-    }
-    if (error) { vodApiState.error = error; }
-    return true;
-  }
-
-  function loadVodCatalog() {
-    if (!vodApi.enabled) { return; }
-    if (vodApi.mode === 'portal') { loadPortalCatalog(); return; }
-    if (vodApi.mode === 'static') { useBundledCatalog('bundled', null); return; }
-    var url = apiUrl('catalog');
-    if (vodApi.mode === 'xuper' && !hasXuperSession()) {
-      vodApiState.error = 'Falta la sesión XuperTV (userId, userToken y portalCode)';
-      return;
-    }
-    if (!url) {
-      if (vodApi.useBundledCatalog) { useBundledCatalog('bundled', null); }
-      else { vodApiState.error = 'Falta baseUrl/catalogUrl del catálogo autorizado'; }
-      return;
-    }
-    vodApiState.loading = true;
-    apiRequest(url, function (error, payload) {
-      vodApiState.loading = false;
-      var responseError = apiError(payload);
-      if (!error && !responseError && replaceVod(apiArray(payload), 'api')) { return; }
-      var message = error || responseError || 'La API no devolvió películas';
-      /* A remote endpoint that is offline must not leave the port empty. */
-      if (!useBundledCatalog('bundled-fallback', message)) {
-        vodApiState.error = message;
-      }
-    }, vodApi.mode === 'xuper' ? { method: 'POST', body: xuperPayload('catalog') } : null);
-  }
-
-  function mergeDetail(item, raw) {
-    var groupedId = item && item._seriesGroup ? item.id : null;
-    var groupedTitle = item && item._seriesGroup ? item._seriesTitle : null;
-    var full = normalizeVod(raw, item.id);
-    /* Catalog values remain useful when a detail response omits a field. */
-    for (var key in full) {
-      if (Object.prototype.hasOwnProperty.call(full, key) && full[key] !== '—' && full[key] !== '' &&
-          full[key] !== 'Sin sinopsis disponible.') {
-        item[key] = full[key];
-      }
-    }
-    if (groupedId !== null) {
-      item.id = groupedId;
-      item.title = groupedTitle;
-      item.alias = groupedTitle;
-      item.seasons = item._catalogSeasons || item.seasons;
-    }
-  }
-
-  function loadVodDetail(item, done) {
-    done = done || function () {};
-    if (!item) { return done(null); }
-    if (item._detailsLoaded) { return done(item); }
-    if (item._detailLoading) {
-      item._detailWait = item._detailWait || [];
-      item._detailWait.push(done);
-      return;
-    }
-    if (vodApi.mode === 'portal' && item._portal) {
-      item._detailLoading = true;
-      item._detailWait = [done];
-      portalServiceCall('detail', { contentId: item.id }, function (error, payload) {
-        item._detailLoading = false;
-        if (!error && payload && payload.returnValue !== false && payload.item) {
-          mergeDetail(item, payload.item);
-          item.episodes = payload.episodes || [];
-          item.seasons = item._catalogSeasons || payload.seasons || [];
-          /* The portal keys episodes by the season container, so remember
-             which container this list came from (item.id stays the series). */
-          if (!item.seasonId) { item.seasonId = item.id; }
-
-          /* Ordenar temporadas ascendentemente por numero */
-          if (item.seasons && item.seasons.length) {
-            item.seasons.sort(function (a, b) {
-              var na = parseInt(a.number, 10) || 0;
-              var nb = parseInt(b.number, 10) || 0;
-              return na - nb;
-            });
-          }
-
-          /* Si no hay temporadas pero el titulo o alias tiene T/S, asegurar al menos una temporada */
-          if ((!item.seasons || !item.seasons.length) && isSeriesItem(item)) {
-            var sNum = 1;
-            var sm = /S(\d+)/i.exec(item.alias || '') || /T(\d+)/i.exec(item.title || '');
-            if (sm) { sNum = parseInt(sm[1], 10) || 1; }
-            item.seasons = [{ id: item.id, number: sNum }];
-          }
-
-          /* Sincronizar indice de temporada activa con item.id */
-          if (item.seasons && item.seasons.length) {
-            var activeIdx = 0;
-            for (var s = 0; s < item.seasons.length; s++) {
-              if (item.seasons[s].id === item.id) {
-                activeIdx = s;
-                break;
-              }
-            }
-            state.detailSeason = activeIdx;
-          }
-
-          /* Episodio por defecto si no hay uno seleccionado */
-          if (item.episodes && item.episodes.length && !state.detailEpisode) {
-            state.detailEpisode = item.episodes[0];
-          }
-          applyPendingHistoryEpisode(item);
-
-          item._detailsLoaded = true;
-        } else {
-          item._detailsLoaded = true;
-          if (!item.episodes) { item.episodes = []; }
-          if (!item.seasons) { item.seasons = []; }
-        }
-        var wait = item._detailWait || [];
-        item._detailWait = [];
-        var hadWaiters = wait.length > 0;
-        for (var i = 0; i < wait.length; i++) { wait[i](item); }
-        if (state.detail === item && state.screen === 'detail') {
-          buildDetail(item);
-          if (!hadWaiters && (!playerVideo || !playerVideo.src || playerVideo.paused)) {
-            startPlayerVideo(item, state.detailEpisode);
-          }
-        }
-      });
-      return;
-    }
-    var endpoint = apiUrl('detail');
-    if (!vodApi.enabled || !endpoint) { return done(item); }
-    if (vodApi.mode === 'xuper' && !hasXuperSession()) { return done(item); }
-    item._detailLoading = true;
-    var url = endpoint.replace('{id}', encodeURIComponent(item.id));
-    apiRequest(url, function (error, payload) {
-      item._detailLoading = false;
-      if (!error) {
-        var records = apiArray(payload);
-        var raw = records.length ? records[0] : (payload && (payload.item || payload.movie || payload));
-        if (raw && typeof raw === 'object') {
-          mergeDetail(item, raw);
-          item._detailsLoaded = true;
-          if (state.detail === item && state.screen === 'detail') {
-            buildDetail(item);
-            if (!playerVideo || !playerVideo.src || playerVideo.paused) {
-              startPlayerVideo(item, state.detailEpisode);
-            }
-          }
-        }
-      }
-      done(item);
-    }, vodApi.mode === 'xuper' ? { method: 'POST', body: xuperPayload('detail', item.id) } : null);
-  }
-
-  /* Live TV is portal-driven.  Do not draw fictitious rows while the local
-     service starts: they looked like real channels until the user left and
-     returned to the TV tab. */
-  var CHANNELS = [];
-
-  /* Tab order and labels observed on the running app (WSA, 1920x1080).
-     The APK builds this list from its backend, so the icon artwork is not a
-     drawable in the APK; these glyphs are reconstructions of the observed
-     shapes (documented in DIFERENCIAS_PENDIENTES.md). */
-  var TAB_ICONS = {
-    tv: '<svg viewBox="0 0 33 33"><rect x="3.5" y="7" width="26" height="17" rx="2.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M11 24.5v3h11v-3" fill="none" stroke="currentColor" stroke-width="2.4"/></svg>',
-    thumb: '<svg viewBox="0 0 33 33"><path d="M12 15.5V28H7.6A2.6 2.6 0 0 1 5 25.4v-7.3a2.6 2.6 0 0 1 2.6-2.6H12z" fill="currentColor"/><path d="M14 15.6l4.3-9.2a2.2 2.2 0 0 1 4 1.6V13h5.6a2.9 2.9 0 0 1 2.8 3.6l-2 9A3.4 3.4 0 0 1 25.4 28H14z" fill="currentColor"/></svg>',
-    film: '<svg viewBox="0 0 33 33"><circle cx="16.5" cy="16.5" r="11.5" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="16.5" cy="16.5" r="2.4" fill="currentColor"/><circle cx="16.5" cy="9.5" r="2.1" fill="currentColor"/><circle cx="16.5" cy="23.5" r="2.1" fill="currentColor"/><circle cx="9.5" cy="16.5" r="2.1" fill="currentColor"/><circle cx="23.5" cy="16.5" r="2.1" fill="currentColor"/></svg>',
-    strip: '<svg viewBox="0 0 33 33"><rect x="4" y="7" width="25" height="19" rx="2" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M9 7v19M24 7v19" stroke="currentColor" stroke-width="1.8"/><rect x="5.6" y="9" width="2.4" height="2.6" fill="currentColor"/><rect x="5.6" y="15.2" width="2.4" height="2.6" fill="currentColor"/><rect x="5.6" y="21.4" width="2.4" height="2.6" fill="currentColor"/><rect x="25" y="9" width="2.4" height="2.6" fill="currentColor"/><rect x="25" y="15.2" width="2.4" height="2.6" fill="currentColor"/><rect x="25" y="21.4" width="2.4" height="2.6" fill="currentColor"/></svg>',
-    kids: '<svg viewBox="0 0 33 33"><circle cx="8.6" cy="8.6" r="4" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="24.4" cy="8.6" r="4" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="16.5" cy="18" r="9.6" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="13" cy="17" r="1.5" fill="currentColor"/><circle cx="20" cy="17" r="1.5" fill="currentColor"/><ellipse cx="16.5" cy="21.6" rx="2.4" ry="1.7" fill="currentColor"/></svg>',
-    anime: '<svg viewBox="0 0 33 33"><circle cx="8.5" cy="9" r="4.5" fill="currentColor"/><circle cx="24.5" cy="9" r="4.5" fill="currentColor"/><path d="M16.5 9c5.8 0 10.5 4.6 10.5 10.3 0 5.7-4.7 9.7-10.5 9.7S6 25 6 19.3C6 13.6 10.7 9 16.5 9z" fill="currentColor"/><circle cx="12.5" cy="18" r="1.6" fill="#0b0b0b"/><circle cx="20.5" cy="18" r="1.6" fill="#0b0b0b"/><ellipse cx="16.5" cy="23" rx="3" ry="2" fill="#0b0b0b"/></svg>',
-    compass: '<svg viewBox="0 0 33 33"><circle cx="16.5" cy="16.5" r="11.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M22 11l-3.2 7.8L11 22l3.2-7.8z" fill="currentColor"/></svg>',
-    novel: '<svg viewBox="0 0 33 33"><path d="M5 6.5h9.5c2.2 0 3.7 1 4.5 2.3.8-1.3 2.3-2.3 4.5-2.3H28v20h-5.5c-2.1 0-3.4.6-4.5 1.8-1.1-1.2-2.4-1.8-4.5-1.8H5z" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M18 9v19" stroke="currentColor" stroke-width="2.2"/></svg>',
-    history: '<svg viewBox="0 0 33 33"><circle cx="16.5" cy="17" r="10.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M16.5 10.5V17l5 3" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M8 7v6h6" fill="none" stroke="currentColor" stroke-width="2.4"/></svg>'
-  };
-
-  var TABS = [
-    { label: 'TV', page: 0, icon: 'tv' },
-    { label: 'DESTACADOS', page: 1, icon: 'thumb' },
-    { label: 'PELICULA', page: 2, icon: 'film' },
-    { label: 'SERIES', page: 3, icon: 'strip' },
-    { label: 'KIDS', page: 4, icon: 'kids' },
-    { label: 'ANIME', page: 5, icon: 'anime' },
-    { label: 'NOVELAS', page: 6, icon: 'novel' },
-    { label: 'EXPLORAR', page: 7, icon: 'compass' },
-    { label: 'HISTORIAL', page: -1, icon: 'history', action: 'history' }
-  ];
-
-  var SETTINGS_ITEMS = [
-    { id: 'profile', label: 'Mi cuenta', desc: 'Tu perfil en este televisor', group: 'Tu cuenta' },
-    { id: 'history', label: 'Mi lista', desc: 'Historial y favoritos', group: 'Tu cuenta' },
-    { id: 'addons', label: 'Agregar Addons', desc: 'Anime, Cine, Novelas y TDT', group: 'Contenido' },
-    { id: 'share', label: 'Compartir APP', desc: 'Instálala en otra TV', group: 'Aplicación' },
-    { id: 'playback', label: 'Configuración global', desc: 'Subtítulos y preferencias', group: 'Aplicación' },
-    { id: 'parent', label: 'Control parental', desc: 'Bloqueo de contenido adulto', group: 'Aplicación' },
-    { id: 'netdiag', label: 'Diagnóstico', desc: 'Pruebas de red y streaming', group: 'Sistema' },
-    { id: 'feedback', label: 'Ayuda y Feedback', desc: 'Comunidad y soporte', group: 'Sistema' },
-    { id: 'about', label: 'Sobre nosotros', desc: 'Versión y actualizaciones', group: 'Sistema' }
-  ];
-
-  var SETTINGS_MENU_ICONS = {
-    profile: '<svg viewBox="0 0 32 32"><circle cx="16" cy="10" r="5"/><path d="M6 27c.7-6 4.3-9 10-9s9.3 3 10 9"/></svg>',
-    history: '<svg viewBox="0 0 32 32"><rect x="4" y="4" width="9" height="9"/><rect x="19" y="4" width="9" height="9"/><rect x="4" y="19" width="9" height="9"/><rect x="19" y="19" width="9" height="9"/></svg>',
-    addons: '<svg viewBox="0 0 32 32"><rect x="5" y="5" width="9" height="9" rx="1.5"/><rect x="18" y="5" width="9" height="9" rx="1.5"/><rect x="5" y="18" width="9" height="9" rx="1.5"/><path d="M22.5 18v9M18 22.5h9"/></svg>',
-    share: '<svg viewBox="0 0 32 32"><circle cx="8" cy="16" r="3"/><circle cx="24" cy="7" r="3"/><circle cx="24" cy="25" r="3"/><path d="M10.6 14.5l10.8-6M10.6 17.5l10.8 6"/></svg>',
-    parent: '<svg viewBox="0 0 32 32"><rect x="7" y="14" width="18" height="14" rx="2"/><path d="M11 14V10a5 5 0 0 1 10 0v4"/><path d="M16 19v4"/></svg>',
-    playback: '<svg viewBox="0 0 32 32"><rect x="4" y="6" width="24" height="20" rx="3"/><path d="M13 11l8 5-8 5z"/></svg>',
-    netdiag: '<svg viewBox="0 0 32 32"><path d="M3 13a19 19 0 0 1 26 0"/><path d="M8 18a12 12 0 0 1 16 0"/><path d="M13 23a6 6 0 0 1 6 0"/><circle cx="16" cy="27.5" r="1.2"/></svg>',
-    feedback: '<svg viewBox="0 0 32 32"><path d="M6 4h15l5 5v19H6z"/><path d="M20 4v6h6M10 16h12M10 21h8"/></svg>',
-    about: '<svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="12"/><path d="M16 14v8M16 10h.1"/></svg>'
-  };
-
-  /* ---------------------------------------------------------------- state */
-  var state = {
-    screen: 'welcome',
-    tab: 0,
-    channel: 0,
-    focus: null,
-    detail: null,
-    detailReturn: null,
-    detailRange: 0,
-    detailSeason: 0,
-    detailNeedsRebuild: false,
-    playerReturn: null,
-    playerMode: 'live',
-    playerItem: null,
-    playerEpisode: null,
-    playerSeasonIndex: 0,
-    episodeBrowserOpen: false,
-    categoryPickerOpen: false,
-    browserSeason: 0,
-    streamError: '',
-    streamMode: 'normal',
-    trackIndex: 0,
-    channelsOpen: false,
-    infobar: true,
-    infoTimer: null,
-    searchQuery: '',
-    searchNumeric: false,
-    searchSeq: 0,
-    searchFocus: null,
-    playback: {
-      streamMode: 'normal',
-      screen: 0,
-      audio: 0,
-      subLang: 0,
-      size: 0,
-      style: 0,
-      subtitle: true
-    },
-    crOn: false,
-    favs: {}
-  };
-
-  /* A profile belongs to this TV only: no registration, credentials or
-     network account is required.  It intentionally stays small because old
-     webOS models have limited persistent storage. */
-  var LOCAL_PROFILE_KEY = 'xuper_local_profile_v1';
-  var LOCAL_PLAYBACK_KEY = 'xuper_global_playback_v1';
-  var localProfile = { id: '', createdAt: 0, history: [] };
-
-  function safeLocalRead(key, fallback) {
-    try {
-      var raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : fallback;
-    } catch (eRead) { return fallback; }
-  }
-
-  function safeLocalWrite(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (eWrite) { /* storage unavailable */ }
-  }
-
-  function loadLocalProfile() {
-    var savedPlayback = safeLocalRead(LOCAL_PLAYBACK_KEY, null);
-    if (savedPlayback) {
-      for (var pKey in state.playback) {
-        if (state.playback.hasOwnProperty(pKey) && savedPlayback[pKey] !== undefined) {
-          state.playback[pKey] = savedPlayback[pKey];
-        }
-      }
-    }
-    var savedProfile = safeLocalRead(LOCAL_PROFILE_KEY, null);
-    if (savedProfile && savedProfile.id) {
-      localProfile = savedProfile;
-      if (!localProfile.history || !localProfile.history.length) { localProfile.history = []; }
-    } else {
-      localProfile.id = 'TV-' + String(Date.now()).slice(-8);
-      localProfile.createdAt = Date.now();
-      safeLocalWrite(LOCAL_PROFILE_KEY, localProfile);
-    }
-    if (!localProfile.favs) { localProfile.favs = {}; }
-    state.favs = localProfile.favs;
-  }
-
-  function saveGlobalPlayback() {
-    safeLocalWrite(LOCAL_PLAYBACK_KEY, state.playback);
-  }
-
-  function toggleFavorite(item) {
-    if (!item || !item.id) { return false; }
-    var key = String(item.id);
-    var on = !state.favs[key];
-    if (on) { state.favs[key] = true; }
-    else { delete state.favs[key]; }
-    localProfile.favs = state.favs;
-    safeLocalWrite(LOCAL_PROFILE_KEY, localProfile);
-    return on;
-  }
-
-  loadLocalProfile();
-
-  var homeBuilt = false;
-  var pagesEl, pages = [], tabEls = [], notifyEl;
-  var liveRows = [], liveInfoText, liveMain, liveFocus, liveList;
-  var detailLeft, detailPlayer, detailButtons, detailBottom;
-  var searchKeyboard, searchHot, searchResults, searchEmpty, searchHotGrid,
-      searchResultGrid, searchInput, searchNav, searchKeys = [];
-  var settingsMenu, settingsRight, settingsPanels = {}, settingsItems = [];
-  var historyViewTab = 'history';
-  var playerStage, playerInfo, playerChannels, playerVideo, playerFrame, playerStatus, nextEpisodeLoading, playerModeHint, playerChannelRows = {};
-  /* Live category picker (all portal columns in one grid). */
-  var categoryPicker = null, pcatGrid = null, pcatSub = null;
-  /* Key of the category list currently painted in the rail, so switching a
-     category only updates classes instead of rebuilding (and detaching) the
-     focused pill. */
-  var renderedCategoryKey = '';
-  /* Older webOS models cannot keep a full 500–1000-row channel category in
-     memory.  The side panel therefore owns only this small moving window. */
-  var LIVE_PANEL_WINDOW = 48;
-  var playerVodInfo, vodInfobarPoster, vodInfobarTitle, vodTimeCurrent, vodTimeTotal, vodSeekbar, vodSeekProgress, vodSeekBuffered, vodSeekThumb, playerOsdIcon;
-  var vodScrubbing = false, vodScrubTime = 0;
-  var welcomeTimer = null, welcomeWatchdog = null;
-
-  /* ------------------------------------------------------------ focus core */
-  function isVisible(node) {
-    if (!node || !node.getBoundingClientRect) { return false; }
-    if (node.offsetParent === null) { return false; }
-    var r = node.getBoundingClientRect();
-    if (r.width < 1 || r.height < 1) { return false; }
-    if (state.episodeBrowserOpen) {
-      return !!closest(node, '#player-episodes');
-    }
-    if (state.categoryPickerOpen) {
-      return !!closest(node, '#player-categories');
-    }
-    if (dialogPlaySettingsOpen) {
-      return !!closest(node, '#dialog-playsettings');
-    }
-    if (dialogUpdateOpen) {
-      return !!closest(node, '#dialog-update');
-    }
-    if (playSettingViewOpen) {
-      return !!closest(node, '#player-playsetting-view');
-    }
-    var page = closest(node, '.home-page');
-    if (page && !page.classList.contains('is-current')) { return false; }
-    var panel = closest(node, '.settings-panel');
-    if (panel && !panel.classList.contains('is-active')) { return false; }
-    var hot = closest(node, '.search-hot');
-    if (hot && hot.classList.contains('is-hidden')) { return false; }
-    var res = closest(node, '.search-results');
-    if (res && !res.classList.contains('is-active')) { return false; }
-    var pc = closest(node, '.player-channels');
-    if (pc && !pc.classList.contains('is-active')) { return false; }
-    var ib = closest(node, '.player-infobar');
-    if (ib && !ib.classList.contains('is-active')) { return false; }
-    return true;
-  }
-
-  function focusables() {
-    var nodes = document.querySelectorAll('.focusable');
-    var out = [];
-    for (var i = 0; i < nodes.length; i++) {
-      if (isVisible(nodes[i])) { out.push(nodes[i]); }
-    }
-    return out;
-  }
-
-  function reveal(node) {
-    var box = closest(node, '.scrollable');
-    while (box) {
-      var er = node.getBoundingClientRect();
-      var br = box.getBoundingClientRect();
-      if (er.top < br.top) {
-        box.scrollTop -= (br.top - er.top) + 12;
-      } else if (er.bottom > br.bottom) {
-        box.scrollTop += (er.bottom - br.bottom) + 12;
-      }
-      if (box.scrollWidth > box.clientWidth + 1) {
-        if (er.left < br.left) {
-          box.scrollLeft -= (br.left - er.left) + 12;
-        } else if (er.right > br.right) {
-          box.scrollLeft += (er.right - br.right) + 12;
-        }
-      }
-      box = closest(box.parentNode, '.scrollable');
-    }
-  }
-
-  function setFocus(node, silent) {
-    if (!node) { return; }
-    if (state.focus === node) {
-      if (!silent) { reveal(node); }
-      return;
-    }
-    if (state.focus) { state.focus.classList.remove('is-focused'); }
-    state.focus = node;
-    node.classList.add('is-focused');
-    if (node._onFocus) { node._onFocus(); }
-    renderPlaySettingRowFocus();
-    /* The tab rail expands while it holds focus and collapses to icons as soon
-       as the content takes focus (observed on the running app). */
-    var rail = $('home-tabs');
-    if (rail && state.screen === 'home') {
-      var inRail = closest(node, '.home-tabs');
-      rail.classList.toggle('is-expanded', !!inRail);
-      rail.classList.toggle('is-collapsed', !inRail);
-      var railBg = document.querySelector('.home-sidebar-bg');
-      if (railBg) { railBg.classList.toggle('is-on', !!inRail); }
-      var homeScreen = $('screen-home');
-      if (homeScreen) { homeScreen.classList.toggle('is-rail-open', !!inRail); }
-    }
-    if (!silent) { reveal(node); }
-    schedulePosterMemoryPass();
-  }
-
-  function firstIn(container) {
-    var nodes = container.querySelectorAll('.focusable');
-    for (var i = 0; i < nodes.length; i++) {
-      if (isVisible(nodes[i])) { return nodes[i]; }
-    }
-    return null;
-  }
-
-  function moveFocus(dir) {
-    if (!state.focus) {
-      var f = focusables();
-      if (f.length) { setFocus(f[0]); }
-      return;
-    }
-    if (state.focus._onMove && state.focus._onMove(dir)) { return; }
-
-    var inPage = state.screen === 'home' && closest(state.focus, '.home-page');
-    var inSidebar = state.screen === 'home' && closest(state.focus, '.home-tabs');
-
-    var list = focusables();
-    var fr = state.focus.getBoundingClientRect();
-    var fx = fr.left + fr.width / 2;
-    var fy = fr.top + fr.height / 2;
-    var best = null;
-    var bestScore = 1e9;
-
-    for (var i = 0; i < list.length; i++) {
-      var c = list[i];
-      if (c === state.focus) { continue; }
-      /* Don't let sidebar tabs intercept left navigation while inside page content */
-      if (inPage && closest(c, '.home-tabs')) { continue; }
-      /* Don't let page content intercept navigation while inside sidebar tabs */
-      if (inSidebar && !closest(c, '.home-tabs')) { continue; }
-
-      var r = c.getBoundingClientRect();
-      var cx = r.left + r.width / 2;
-      var cy = r.top + r.height / 2;
-      var dx = cx - fx;
-      var dy = cy - fy;
-      var primary, secondary, overlap;
-
-      if (dir === 'left') {
-        if (dx > -4) { continue; }
-        primary = Math.max(0, fr.left - r.right);
-        secondary = Math.abs(dy);
-        overlap = (r.bottom > fr.top + 2 && r.top < fr.bottom - 2);
-      } else if (dir === 'right') {
-        if (dx < 4) { continue; }
-        primary = Math.max(0, r.left - fr.right);
-        secondary = Math.abs(dy);
-        overlap = (r.bottom > fr.top + 2 && r.top < fr.bottom - 2);
-      } else if (dir === 'up') {
-        if (dy > -4) { continue; }
-        primary = Math.max(0, fr.top - r.bottom);
-        secondary = Math.abs(dx);
-        overlap = (r.right > fr.left + 2 && r.left < fr.right - 2);
-      } else {
-        if (dy < 4) { continue; }
-        primary = Math.max(0, r.top - fr.bottom);
-        secondary = Math.abs(dx);
-        overlap = (r.right > fr.left + 2 && r.left < fr.right - 2);
-      }
-      var score = primary + secondary * 2 + (overlap ? 0 : 320);
-      if (score < bestScore) { bestScore = score; best = c; }
-    }
-
-    if (best) {
-      setFocus(best);
-      return;
-    }
-
-    /* Leftmost limit reached in page content: now focus sidebar tab */
-    if (dir === 'left' && inPage) {
-      if (tabEls[state.tab]) { setFocus(tabEls[state.tab]); }
-    }
-  }
-
-  /* ---------------------------------------------------------------- screen */
-  function showScreen(name) {
-    var screens = document.querySelectorAll('.screen');
-    for (var i = 0; i < screens.length; i++) {
-      screens[i].classList.remove('is-active');
-    }
-    var target = $('screen-' + name);
-    if (target) { target.classList.add('is-active'); }
-    state.screen = name;
-    if (name !== 'player' && state.episodeBrowserOpen) { closeEpisodeBrowser(true); }
-    if (name !== 'player' && state.categoryPickerOpen) { closeCategoryPicker(true); }
-    if (name !== 'player' && name !== 'detail') {
-      if (dialogPlaySettingsOpen) { closePlaySettingsDialog(); }
-      if (playSettingViewOpen) { closePlaySettingView(); }
-      var scrPlayer = $('screen-player');
-      if (scrPlayer) {
-        scrPlayer.classList.remove('is-mini');
-        scrPlayer.classList.remove('is-active');
-      }
-      stopPlayerVideo();
-      /* Really leaving the player: drop the subtitle cues as well. */
-      subtitleSeq++;
-      activeSubtitleCues = [];
-      if (playerSubtitles) { playerSubtitles.innerHTML = ''; }
-    }
-    schedulePosterMemoryPass();
-  }
-
-  var lastBackTime = 0;
-  function back() {
-    var now = Date.now();
-    if (now - lastBackTime < 250) { return; }
-    lastBackTime = now;
-    if (state.screen === 'welcome') {
-      finishWelcome();
-      return;
-    }
-    /* The audio/subtitle dialog can now open from the details screen too. */
-    if (dialogPlaySettingsOpen) {
-      closePlaySettingsDialog();
-      return;
-    }
-    if (state.screen === 'player') {
-      if (vodScrubbing) {
-        leaveVodScrub(false);
-        return;
-      }
-      if (state.categoryPickerOpen) {
-        lastBackTime = Date.now();
-        closeCategoryPicker();
-        return;
-      }
-      if (state.episodeBrowserOpen) {
-        lastBackTime = Date.now();
-        closeEpisodeBrowser();
-        return;
-      }
-      if (playSettingViewOpen) {
-        closePlaySettingView();
-        return;
-      }
-      if (state.channelsOpen) {
-        closeChannelPanel();
-      } else if (state.infobar) {
-        hideInfobar();
-      } else if (state.vodInfobarVisible) {
-        hideVodInfobar();
-      } else {
-        restorePlayerReturn();
-      }
-      return;
-    }
-    if (state.screen === 'detail') {
-      if (typeof closeSeasonPopup === 'function' && seasonPopup) {
-        closeSeasonPopup();
-        var sBtn = detailBottom ? detailBottom.querySelector('.detail-season') : null;
-        if (sBtn) { setFocus(sBtn); }
-        return;
-      }
-      var scr = $('screen-detail');
-      if (scr && scr.classList.contains('is-synopsis-open')) {
-        toggleSynopsis();
-        return;
-      }
-      stopPlayerVideo();
-      var scrPlayer = $('screen-player');
-      if (scrPlayer) {
-        scrPlayer.classList.remove('is-mini');
-        scrPlayer.classList.remove('is-active');
-      }
-      var ret = state.detailReturn;
-      if (ret && ret.screen === 'search') {
-        showScreen('search');
-        setFocus(ret.focus);
-      } else {
-        showScreen('home');
-        selectTab(state.tab, false);
-        if (ret && ret.focus && isVisible(ret.focus)) { setFocus(ret.focus); }
-        else if (tabEls[state.tab]) { setFocus(tabEls[state.tab]); }
-      }
-      return;
-    }
-    if (state.screen === 'search') {
-      clearSearchState();
-      showScreen('home');
-      selectTab(state.tab, false);
-      if (tabEls[state.tab]) { setFocus(tabEls[state.tab]); }
-      return;
-    }
-    if (state.screen === 'settings') {
-      showScreen('home');
-      selectTab(state.tab, false);
-      if (tabEls[state.tab]) { setFocus(tabEls[state.tab]); }
-      return;
-    }
-    if (state.screen === 'home') {
-      if (state.tab !== 0) {
-        selectTab(0, true);
-        if (tabEls[0]) { setFocus(tabEls[0]); }
-        return;
-      }
-      if (window.webOSTV && window.webOSTV.platformBack) {
-        window.webOSTV.platformBack();
-      } else if (window.PalmSystem && window.PalmSystem.platformBack) {
-        window.PalmSystem.platformBack();
-      }
-    }
-  }
-
-  function activate() {
-    if (!state.focus) { return; }
-    if (state.focus._activate) { state.focus._activate(); }
-  }
-
-  function handleKey(e) {
-    var k = e.keyCode || e.which;
-    var key = e.key || '';
-    var handled = true;
-
-
-    if (state.screen === 'welcome') {
-      finishWelcome();
-      if (e.preventDefault) { e.preventDefault(); }
-      return;
-    }
-    /* Back buttons */
-    var isBack = (k === 461 || k === 27 || k === 8 || key === 'Back' || key === 'GoBack' || key === 'Escape');
-    if (isBack) {
-      if (state.categoryPickerOpen) {
-        closeCategoryPicker();
-        if (e.preventDefault) { e.preventDefault(); }
-        if (e.stopPropagation) { e.stopPropagation(); }
-        return;
-      }
-      if (state.episodeBrowserOpen) {
-        closeEpisodeBrowser();
-        if (e.preventDefault) { e.preventDefault(); }
-        if (e.stopPropagation) { e.stopPropagation(); }
-        return;
-      }
-      if (dialogUpdateOpen) {
-        lastBackTime = Date.now();
-        if (!updateInProgress) {
-          closeUpdateDialog();
-        }
-        if (e.preventDefault) { e.preventDefault(); }
-        if (e.stopPropagation) { e.stopPropagation(); }
-        return;
-      }
-      if (dialogAddonsOpen) {
-        lastBackTime = Date.now();
-        closeAddonsDialog();
-        if (e.preventDefault) { e.preventDefault(); }
-        if (e.stopPropagation) { e.stopPropagation(); }
-        return;
-      }
-      if (dialogPlaySettingsOpen) {
-        /* LG sends a keyup after this keydown.  Mark it consumed, otherwise
-           that second event sees the dialog closed and exits the detail page. */
-        lastBackTime = Date.now();
-        closePlaySettingsDialog();
-        if (e.preventDefault) { e.preventDefault(); }
-        if (e.stopPropagation) { e.stopPropagation(); }
-        return;
-      }
-      if (playSettingViewOpen) {
-        lastBackTime = Date.now();
-        closePlaySettingView();
-        if (e.preventDefault) { e.preventDefault(); }
-        if (e.stopPropagation) { e.stopPropagation(); }
-        return;
-      }
-      back();
-      if (e.preventDefault) { e.preventDefault(); }
-      if (e.stopPropagation) { e.stopPropagation(); }
-      return;
-    }
-
-    /* Live category picker: a full-screen grid owns the d-pad while open. */
-    if (state.categoryPickerOpen) {
-      if (k === 37) { moveFocus('left'); }
-      else if (k === 38) { moveFocus('up'); }
-      else if (k === 39) { moveFocus('right'); }
-      else if (k === 40) { moveFocus('down'); }
-      else if (k === 13 || k === 32) { activate(); }
-      else { handled = false; }
-      if (handled && e.preventDefault) { e.preventDefault(); }
-      return;
-    }
-
-    /* Season/episode browser: it owns the d-pad while open. */
-    if (state.episodeBrowserOpen) {
-      var inSeasons = closest(state.focus, '#pe-seasons');
-      var inEpisodes = closest(state.focus, '#pe-episodes');
-      if (k === 37) {
-        if (inEpisodes && peSeasonsCol && peSeasonsCol.style.display !== 'none') {
-          var selSeason = peSeasons ? (peSeasons.children[state.browserSeason] || firstIn(peSeasons)) : null;
-          if (selSeason) { setFocus(selSeason); }
-        }
-      } else if (k === 39) {
-        if (inSeasons) {
-          var curEp = peEpisodes ? (peEpisodes.querySelector('.pe-ep.is-current') || firstIn(peEpisodes)) : null;
-          if (curEp) { setFocus(curEp); }
-        }
-      } else if (k === 38) {
-        moveFocus('up');
-      } else if (k === 40) {
-        moveFocus('down');
-      } else if (k === 13 || k === 32) {
-        activate();
-      } else {
-        handled = false;
-      }
-      if (handled && e.preventDefault) { e.preventDefault(); }
-      return;
-    }
-
-    /* Media Play / Pause / Seek keys on webOS & Android TV remotes */
-    var isPlay = (k === 415 || key === 'MediaPlay' || key === 'Play');
-    var isPause = (k === 19 || key === 'MediaPause' || key === 'Pause');
-    var isPlayPause = (k === 10252 || key === 'MediaPlayPause');
-    var isFwd = (k === 417 || key === 'MediaFastForward' || key === 'FastForward');
-    var isRwd = (k === 412 || key === 'MediaRewind' || key === 'Rewind');
-    var isStop = (k === 413 || key === 'MediaStop' || key === 'Stop');
-
-    if (state.screen === 'player') {
-      if (isPlay) {
-        if (playerVideo && playerVideo.paused) {
-          resumePlayerPlayback();
-          showOsdIcon('none');
-          showInfobar();
-        }
-        if (e.preventDefault) { e.preventDefault(); }
-        return;
-      }
-      if (isPause) {
-        if (playerVideo && !playerVideo.paused) {
-          try { playerVideo.pause(); } catch (ePause) {}
-          showOsdIcon('pause');
-          showInfobar();
-        }
-        if (e.preventDefault) { e.preventDefault(); }
-        return;
-      }
-      if (isPlayPause) {
-        togglePlayerPlayPause();
-        if (e.preventDefault) { e.preventDefault(); }
-        return;
-      }
-      if (isFwd) {
-        playerSeek(15);
-        if (e.preventDefault) { e.preventDefault(); }
-        return;
-      }
-      if (isRwd) {
-        playerSeek(-15);
-        if (e.preventDefault) { e.preventDefault(); }
-        return;
-      }
-      if (isStop) {
-        back();
-        if (e.preventDefault) { e.preventDefault(); }
-        return;
-      }
-    }
-
-    /* Menu / ContextMenu button to open in-player settings */
-    var isMenu = (k === 457 || k === 93 || k === 467 || key === 'Menu' || key === 'ContextMenu');
-    if (state.screen === 'player' && state.playerMode === 'vod' && isMenu) {
-      if (dialogPlaySettingsOpen) {
-        closePlaySettingsDialog();
-      } else if (playSettingViewOpen) {
-        closePlaySettingView();
-      } else {
-        openPlaySettingView();
-      }
-      if (e.preventDefault) { e.preventDefault(); }
-      return;
-    }
-
-    if (state.screen === 'player' && (k === 37 || k === 38 || k === 39 || k === 40)) {
-      if (dialogPlaySettingsOpen) {
-        if (k === 37) { moveFocus('left'); }
-        else if (k === 38) { moveFocus('up'); }
-        else if (k === 39) { moveFocus('right'); }
-        else if (k === 40) { moveFocus('down'); }
-        if (e.preventDefault) { e.preventDefault(); }
-        return;
-      }
-      if (playSettingViewOpen) {
-        schedulePlaySettingHide();
-        if (k === 37) { moveFocus('left'); }
-        else if (k === 38) { moveFocus('up'); }
-        else if (k === 39) { moveFocus('right'); }
-        else if (k === 40) { moveFocus('down'); }
-        if (e.preventDefault) { e.preventDefault(); }
-        return;
-      }
-      if (state.playerMode === 'vod') {
-        if (state.focus === vodSeekbar && vodScrubbing) {
-          if (k === 37) { moveVodScrub(-1); if (e.preventDefault) { e.preventDefault(); } return; }
-          if (k === 39) { moveVodScrub(1); if (e.preventDefault) { e.preventDefault(); } return; }
-          if (k === 38 || k === 40) { leaveVodScrub(false); if (e.preventDefault) { e.preventDefault(); } return; }
-        }
-        if (k === 37) { playerSeek(-10); if (e.preventDefault) { e.preventDefault(); } return; }
-        if (k === 39) { playerSeek(10); if (e.preventDefault) { e.preventDefault(); } return; }
-        if (k === 40) {
-          openPlaySettingView();
-          if (e.preventDefault) { e.preventDefault(); }
-          return;
-        }
-        if (k === 38) {
-          enterVodScrub();
-          if (e.preventDefault) { e.preventDefault(); }
-          return;
-        }
-      } else {
-        /* Some webOS remote events arrive after the panel has painted but
-           before its boolean state is restored.  Focus inside the visible
-           panel is the authoritative signal, so Up never zaps from channel 1
-           to the last channel while the channel list is on screen. */
-        var channelPanelHasFocus = state.focus && closest(state.focus, '.player-channels');
-        if (state.channelsOpen || channelPanelHasFocus) {
-          /* The category rail is a real focus area, not a channel row.  It
-             must receive the arrows first; otherwise Right was interpreted as
-             "close panel" and Down reused the currently playing channel. */
-          var focusIsCategory = state.focus && state.focus.classList &&
-            state.focus.classList.contains('pc-cat-pill');
-          if (focusIsCategory) {
-            if (k === 37) { moveFocus('left'); }
-            else if (k === 38) { moveFocus('up'); }
-            else if (k === 39) { moveFocus('right'); }
-            else if (k === 40) { moveFocus('down'); }
-            if (e.preventDefault) { e.preventDefault(); }
-            return;
-          }
-          if (k === 38) {
-            var curIdx = (state.focus && state.focus._channel !== undefined) ? state.focus._channel : state.channel;
-            if (curIdx === 0) {
-              var selCat = playerChannels ? (playerChannels.querySelector('.pc-cat-pill.is-selected') || playerChannels.querySelector('.pc-cat-pill')) : null;
-              if (selCat) { setFocus(selCat); }
-            } else {
-              var prev = curIdx - 1;
-              focusPlayerChannel(prev);
-            }
-            if (e.preventDefault) { e.preventDefault(); }
-            return;
-          }
-          if (k === 40) {
-            var curIdx = (state.focus && state.focus._channel !== undefined) ? state.focus._channel : state.channel;
-            var next = Math.min(CHANNELS.length - 1, curIdx + 1);
-            focusPlayerChannel(next);
-            if (e.preventDefault) { e.preventDefault(); }
-            return;
-          }
-          if (k === 39) { closeChannelPanel(); if (e.preventDefault) { e.preventDefault(); } return; }
-        } else {
-          if (k === 38) {
-            if (state.channel > 0) { setChannel(state.channel - 1, false); }
-            else if (CHANNELS.length) { setChannel(CHANNELS.length - 1, false); }
-            showInfobar();
-            if (e.preventDefault) { e.preventDefault(); }
-            return;
-          }
-          if (k === 40) {
-            if (state.channel < CHANNELS.length - 1) { setChannel(state.channel + 1, false); }
-            else if (CHANNELS.length) { setChannel(0, false); }
-            showInfobar();
-            if (e.preventDefault) { e.preventDefault(); }
-            return;
-          }
-          if (k === 37 || k === 39) {
-            openChannelPanel();
-            if (e.preventDefault) { e.preventDefault(); }
-            return;
-          }
-          if (state.infobar) { scheduleInfoHide(); } else { showInfobar(); }
-        }
-      }
-    }
-
-    if (k === 37) { moveFocus('left'); }
-    else if (k === 38) { moveFocus('up'); }
-    else if (k === 39) { moveFocus('right'); }
-    else if (k === 40) { moveFocus('down'); }
-    else if (k === 13 || k === 32) {
-      if (state.episodeBrowserOpen) {
-        activate();
-        return;
-      }
-      if (dialogPlaySettingsOpen) {
-        activate();
-      } else if (playSettingViewOpen) {
-        schedulePlaySettingHide();
-        activate();
-      } else if (state.screen === 'player' && state.playerMode === 'vod' &&
-                 state.focus === vodSeekbar && vodScrubbing) {
-        /* OK belongs to the focused timeline, not to Play/Pause. */
-        leaveVodScrub(true);
-      } else if (state.screen === 'player' && state.streamError && playerVideo && playerVideo.src &&
-                 !closest(state.focus, '.player-channels')) {
-        /* OK retries the failed stream, but only from the video surface: with
-           the channel panel open it must activate the focused row/pill, or a
-           dead channel made every category unfilterable. */
-        resumePlayerPlayback();
-        state.streamError = '';
-        setPlayerStatus('');
-      } else if (state.screen === 'player' && state.playerMode === 'vod') {
-        togglePlayerPlayPause();
-      } else {
-        activate();
-      }
-    }
-    else { handled = false; }
-    if (handled && e.preventDefault) { e.preventDefault(); }
-  }
-
-  /* ================================================================ WELCOME */
-  function startWelcome() {
-    var img = $('welcome-loading-img');
-    var frame = 1;
-    if (welcomeTimer) { clearInterval(welcomeTimer); welcomeTimer = null; }
-    if (welcomeWatchdog) { clearTimeout(welcomeWatchdog); welcomeWatchdog = null; }
-    welcomeWatchdog = setTimeout(function () {
-      finishWelcome();
-    }, 4500);
-    welcomeTimer = setInterval(function () {
-      frame++;
-      if (frame > 16) { finishWelcome(); return; }
-      if (img) {
-        img.src = 'assets/original/welcome/img_welcome_loading' + frame + '.png';
-      }
-    }, 250);
-  }
-
-  function finishWelcome() {
-    if (welcomeWatchdog) { clearTimeout(welcomeWatchdog); welcomeWatchdog = null; }
-    if (welcomeTimer) { clearInterval(welcomeTimer); welcomeTimer = null; }
-    var welcomeEl = $('screen-welcome');
-    var homeEl = $('screen-home');
-    try {
-      if (!homeBuilt) { buildHome(); }
-    } catch (eHome) {
-      console.error('buildHome error:', eHome);
-    }
-    try {
-      showScreen('home');
-    } catch (eShow) {
-      console.error('showScreen error:', eShow);
-      if (welcomeEl) { welcomeEl.classList.remove('is-active'); }
-      if (homeEl) { homeEl.classList.add('is-active'); }
-      state.screen = 'home';
-    }
-    if (welcomeEl && welcomeEl.classList.contains('is-active')) {
-      welcomeEl.classList.remove('is-active');
-    }
-    if (homeEl && !homeEl.classList.contains('is-active')) {
-      homeEl.classList.add('is-active');
-      state.screen = 'home';
-    }
-    try {
-      selectTab(0, false);
-    } catch (eTab) {
-      console.error('selectTab error:', eTab);
-    }
-    try {
-      if (liveFocus) { setFocus(liveFocus); }
-    } catch (eFocus) {
-      console.error('setFocus error:', eFocus);
-    }
-    /* The first launch shows the full tab labels even though the video holds
-       focus; the rail collapses on the first focus change. */
-    try {
-      var rail = $('home-tabs');
-      if (rail) { rail.classList.add('is-expanded'); rail.classList.remove('is-collapsed'); }
-      var railBg = document.querySelector('.home-sidebar-bg');
-      if (railBg) { railBg.classList.add('is-on'); }
-      var homeScreen = $('screen-home');
-      if (homeScreen) { homeScreen.classList.add('is-rail-open'); }
-    } catch (eRail) {
-      /* ignore */
-    }
-  }
-
-  /* =================================================================== HOME */
-  var pageDefs = [buildLivePage, buildFeaturedPage, buildMoviesPage, buildSeriesPage,
-                  buildKidsPage, buildAnimePage, buildNovelsPage, buildExplorePage];
-  var pagesBuilt = {};
-
-  function ensurePageBuilt(idx) {
-    if (pagesBuilt[idx] || !pages[idx] || !pageDefs[idx]) { return; }
-    pagesBuilt[idx] = true;
-    pageDefs[idx](pages[idx]);
-  }
-
-  function buildHome() {
-    homeBuilt = true;
-    pagesEl = $('home-pages');
-    notifyEl = $('home-notify');
-    clear(pagesEl);
-    pages = [];
-    pagesBuilt = {};
-
-    /* Create placeholder wrappers for each tab, but build DOM only on demand */
-    for (var i = 0; i < pageDefs.length; i++) {
-      var page = el('div', 'home-page scrollable');
-      if (i === 0) { page.classList.add('is-current'); }
-      pagesEl.appendChild(page);
-      pages.push(page);
-    }
-
-    var initialTab = (TABS[state.tab] && TABS[state.tab].page >= 0) ? TABS[state.tab].page : 0;
-    ensurePageBuilt(initialTab);
-
-    buildTabs();
-    buildNotify();
-  }
-
-  function buildTabs() {
-    var host = $('home-tabs');
-    clear(host);
-    host.classList.add('scrollable');
-    host.classList.add('is-expanded');
-    tabEls = [];
-    for (var i = 0; i < TABS.length; i++) {
-      var item = el('div', 'tab-item focusable');
-      item.appendChild(el('div', 'tab-pill'));
-      var icon = el('div', 'tab-icon');
-      icon.innerHTML = TAB_ICONS[TABS[i].icon] || '';
-      item.appendChild(icon);
-      var title = el('div', 'tab-title', TABS[i].label);
-      item.appendChild(title);
-      item._tab = i;
-      item._activate = (function (idx) {
-        return function () {
-          if (TABS[idx].action === 'history') {
-            historyViewTab = 'history';
-            openSettings();
-            showSettingsPanel(1, true);
-            return;
-          }
-          selectTab(idx, false);
-          if (idx === 0) {
-            var row = liveRows.filter(function (r) { return r._channel === state.channel; })[0];
-            if (row) { setFocus(row); }
-            else if (liveRows.length) { setFocus(liveRows[0]); }
-            else if (liveFocus) { setFocus(liveFocus); }
-          } else if (TABS[idx].page >= 0) {
-            var page = pages[TABS[idx].page];
-            var f = firstIn(page);
-            if (f) { setFocus(f); }
-          }
-        };
-      })(i);
-      item._onMove = (function (idx) {
-        return function (dir) {
-          if (dir === 'up') {
-            if (idx > 0 && tabEls[idx - 1]) {
-              setFocus(tabEls[idx - 1]);
-              selectTab(idx - 1, false);
-            }
-            return true;
-          }
-          if (dir === 'down') {
-            if (idx < tabEls.length - 1 && tabEls[idx + 1]) {
-              setFocus(tabEls[idx + 1]);
-              selectTab(idx + 1, false);
-            }
-            return true;
-          }
-          if (dir === 'left') {
-            return true;
-          }
-          if (dir === 'right') {
-            if (TABS[idx].action === 'history') {
-              historyViewTab = 'history';
-              openSettings();
-              showSettingsPanel(1, true);
-              return true;
-            }
-            selectTab(idx, false);
-            if (idx === 0) {
-              var row = liveRows.filter(function (r) { return r._channel === state.channel; })[0];
-              if (row) { setFocus(row); }
-              else if (liveRows.length) { setFocus(liveRows[0]); }
-              else if (liveFocus) { setFocus(liveFocus); }
-            } else if (TABS[idx].page >= 0) {
-              var page = pages[TABS[idx].page];
-              var f = firstIn(page);
-              if (f) { setFocus(f); }
-            }
-            return true;
-          }
-          return false;
-        };
-      })(i);
-      host.appendChild(item);
-      tabEls.push(item);
-    }
-  }
-
-  var NOTIFY_ICONS = {
-    search: '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" fill="currentColor"/></svg>',
-    filter: '<svg viewBox="0 0 24 24"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z" fill="currentColor"/></svg>',
-    personal: '<svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" fill="currentColor"/></svg>'
-  };
-
-  function buildNotify() {
-    clear(notifyEl);
-    /* Keep the compact controls used in the home screen: search, filter and
-       profile.  The record shortcut and message bell are intentionally not
-       shown here; history lives under Mi lista. */
-    var defs = [
-      { cls: 'search', icon: 'assets/original/home/icon_notify_search.png', small: true },
-      { cls: 'filter', icon: 'assets/original/search/icon_category_filter_n.png', small: true },
-      { cls: 'personal', icon: 'assets/original/home/icon_notify_personal.png', small: true }
-    ];
-    for (var i = 0; i < defs.length; i++) {
-      var d = defs[i];
-      var item = el('div', 'notify-item focusable ' + d.cls + (d.small ? ' is-small' : ''));
-      var nn = el('div', 'n-normal');
-      if (NOTIFY_ICONS[d.cls]) {
-        nn.innerHTML = NOTIFY_ICONS[d.cls];
-      }
-      nn.style.backgroundImage = 'url(' + d.icon + ')';
-      item.appendChild(nn);
-      if (d.cls === 'personal') {
-        item._activate = function () { openSettings(); };
-      } else if (d.cls === 'search') {
-        item._activate = function () { openSearch(); };
-      } else {
-        item._activate = function () { openCategoryPicker(); };
-      }
-      notifyEl.appendChild(item);
-    }
-    var div = el('div', 'notify-divider');
-    notifyEl.appendChild(div);
-    var wifi = el('div', 'notify-wifi');
-    wifi.innerHTML = '<svg viewBox="0 0 30 22"><path d="M15 19.5a2.1 2.1 0 1 1 0-4.2 2.1 2.1 0 0 1 0 4.2z" fill="currentColor"/><path d="M8.4 12.2a9.6 9.6 0 0 1 13.2 0" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M4.2 7.6a15.6 15.6 0 0 1 21.6 0" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
-    notifyEl.appendChild(wifi);
-    var time = el('div', 'notify-time');
-    time.id = 'notify-time';
-    notifyEl.appendChild(time);
-    updateClock();
-    setInterval(updateClock, 30000);
-  }
-
-  function updateClock() {
-    var t = $('notify-time');
-    if (!t) { return; }
-    var d = new Date();
-    var h = d.getHours();
-    var ap = h >= 12 ? 'PM' : 'AM';
-    h = h % 12;
-    if (h === 0) { h = 12; }
-    var m = d.getMinutes();
-    t.textContent = h + ':' + pad2(m) + ' ' + ap;
-  }
-
-  function selectTab(index, focusContent) {
-    var def = TABS[index];
-    /* Action rows are opened with OK/Right. Merely moving through the rail
-       must not throw the user out of Home before they confirm the choice. */
-    if (!def || def.action) { return; }
-    var prevPage = TABS[state.tab] ? TABS[state.tab].page : def.page;
-    state.tab = index;
-    for (var i = 0; i < tabEls.length; i++) {
-      tabEls[i].classList.toggle('is-selected', i === index);
-    }
-    if (def.page >= 0) {
-      ensurePageBuilt(def.page);
-    }
-    if (def.page === 0) {
-      scheduleLivePreview(CHANNELS[state.channel]);
-    } else {
-      stopLivePreview();
-    }
-    for (var p = 0; p < pages.length; p++) {
-      pages[p].classList.remove('is-entering', 'from-left', 'from-right');
-      pages[p].classList.toggle('is-current', p === def.page);
-    }
-    /* Same slide direction as the ViewPager; the page itself is the only
-       visible layer, which keeps its raster sharp on webOS. */
-    if (def.page !== prevPage && pages[def.page]) {
-      var pg = pages[def.page];
-      pg.classList.add('is-entering', def.page > prevPage ? 'from-right' : 'from-left');
-      setTimeout(function () {
-        pg.classList.remove('is-entering', 'from-left', 'from-right');
-      }, 320);
-    }
-    if (focusContent) {
-      if (def.page === 0) {
-        var row = liveRows.filter(function (r) { return r._channel === state.channel; })[0];
-        if (row) { setFocus(row); }
-        else if (liveRows.length) { setFocus(liveRows[0]); }
-        else if (liveFocus) { setFocus(liveFocus); }
-      } else {
-        var f = firstIn(pages[def.page]);
-        if (f) { setFocus(f); }
-      }
-    }
-    schedulePosterMemoryPass();
-  }
-
-  /* --------------------------------------------------------------- posters */
-  /* Chromium 53 retains decoded poster bitmaps very aggressively.  Keep the
-     DOM/focus graph intact, but attach each source only when its tile is near
-     the visible viewport and release it again when changing page/screen. */
-  var posterMemoryTimer = null;
-  function schedulePosterMemoryPass() {
-    if (posterMemoryTimer) { clearTimeout(posterMemoryTimer); }
-    posterMemoryTimer = setTimeout(function () {
-      posterMemoryTimer = null;
-      refreshPosterMemory();
-    }, 80);
-  }
-  function posterBelongsToVisiblePage(img) {
-    if (state.screen === 'home') {
-      var homePage = closest(img, '.home-page');
-      return !!(homePage && homePage.classList.contains('is-current'));
-    }
-    if (state.screen === 'search') {
-      var results = closest(img, '.search-results');
-      var hot = closest(img, '.search-hot');
-      return !!((results && results.classList.contains('is-active')) ||
-                (hot && !hot.classList.contains('is-hidden')));
-    }
-    if (state.screen === 'detail') {
-      /* Related titles live inside the active detail screen, not a home page. */
-      var detailScreen = closest(img, '#screen-detail');
-      return !!(detailScreen && detailScreen.classList.contains('is-active'));
-    }
-    return false;
-  }
-  function refreshPosterMemory() {
-    var imgs = document.querySelectorAll('img[data-poster-src]');
-    var viewW = window.innerWidth || 1920;
-    var viewH = window.innerHeight || 1080;
-    for (var i = 0; i < imgs.length; i++) {
-      var img = imgs[i];
-      var tile = closest(img, '.poster, .bento');
-      var r = tile && tile.getBoundingClientRect ? tile.getBoundingClientRect() : null;
-      var near = posterBelongsToVisiblePage(img) && r &&
-        r.bottom > -420 && r.top < viewH + 420 && r.right > -320 && r.left < viewW + 320;
-      if (near) {
-        if (!img.getAttribute('src')) {
-          img.style.display = '';
-          img.src = img.getAttribute('data-poster-src');
-        }
-      } else if (img.getAttribute('src')) {
-        /* Removing the source gives Starfish a chance to release the decoded
-           texture instead of keeping whole catalog pages resident in RAM. */
-        img.removeAttribute('src');
-        try { img.src = ''; } catch (eRelease) { /* ignore */ }
-      }
-    }
-  }
-
-  function makePoster(item, x, y, w, h, opts) {
-    opts = opts || {};
-    var p = el('div', 'poster focusable' + (opts.gold ? ' gold' : '') + (opts.type3 ? ' type3' : ''));
-    abs(p, x, y, w, h);
-    if (item.poster) {
-      /* Keep the original no-data bitmap underneath: if the remote poster
-         fails, removing the <img> reveals the authentic placeholder. */
-      var pimg = el('img', 'p-img');
-      pimg.setAttribute('data-poster-src', item.poster);
-      pimg.onerror = function () {
-        if (this.src && this.src.indexOf('https://') === 0 && !this._httpFallback) {
-          this._httpFallback = true;
-          this.src = this.src.replace('https://', 'http://');
-          return;
-        }
-        this.style.display = 'none';
-      };
-      p.appendChild(pimg);
-    }
-    /* sel_poster_nohalo items (free, search, related) draw their own title,
-       so the PosterView title/shadow children stay hidden. */
-    if (!opts.gold) {
-      p.appendChild(el('div', 'p-shade'));
-      p.appendChild(el('div', 'p-title', item.title));
-    }
-    p._item = item;
-    p._activate = function () { openDetail(item); };
-    schedulePosterMemoryPass();
-    return p;
-  }
-
-  function addPosters(page, areaLeft, areaTop, list, items) {
-    var area = el('div', 'poster-area');
-    abs(area, areaLeft, areaTop, 1830, 940.5);
-    var source = (items && items.length) ? items : VOD;
-    if (!source.length) { page.appendChild(area); return area; }
-    for (var i = 0; i < list.length; i++) {
-      var d = list[i];
-      area.appendChild(makePoster(source[i % source.length], d.x, d.y, d.w, d.h, d.opts));
-    }
-    page.appendChild(area);
-    return area;
-  }
-
-  /* ------------------------------------------------------------- home live */
-  function buildLivePage(page) {
-    liveMain = el('div', 'live-main');
-    livePreviewVideo = document.createElement('video');
-    livePreviewVideo.className = 'live-preview-video';
-    livePreviewVideo.preload = 'auto';
-    livePreviewVideo.muted = true;
-    livePreviewVideo.volume = 0;
-    livePreviewVideo.setAttribute('muted', 'muted');
-    livePreviewVideo.setAttribute('playsinline', '');
-    livePreviewVideo.setAttribute('webkit-playsinline', '');
-    liveMain.appendChild(livePreviewVideo);
-    liveMain.appendChild(el('div', 'live-frame'));
-    liveMain.appendChild(el('div', 'live-logo'));
-    livePreviewStatus = el('div', 'live-preview-status');
-    liveMain.appendChild(livePreviewStatus);
-    page.appendChild(liveMain);
-
-    var info = el('div', 'live-info');
-    liveInfoText = el('div', 'live-channel');
-    /* mTvChannel is layout_toLeftOf mIvFullScreen (alignParentRight), so the
-       channel name is right-aligned, not left-aligned. */
-    liveInfoText.style.right = '112.5px';
-    info.appendChild(liveInfoText);
-    var full = el('div', 'live-fullscreen');
-    full._activate = function () { openPlayer('live'); };
-    info.appendChild(full);
-    liveMain.appendChild(info);
-
-    var up = el('div', 'live-arrow-up');
-    var down = el('div', 'live-arrow-down');
-    page.appendChild(up);
-    page.appendChild(down);
-
-    liveList = el('div', 'live-list scrollable');
-    page.appendChild(liveList);
-    renderLiveRows(false);
-    loadLiveChannels();
-
-    liveFocus = el('div', 'live-focus focusable');
-    liveFocus._onMove = function (dir) {
-      if (dir === 'up') {
-        if (state.channel > 0) { setChannel(state.channel - 1); }
-        return true;
-      }
-      if (dir === 'down') {
-        if (state.channel < CHANNELS.length - 1) {
-          setChannel(state.channel + 1);
-        }
-        return true;
-      }
-      if (dir === 'right') {
-        var row = liveRows.filter(function (r) { return r._channel === state.channel; })[0];
-        if (row) { setFocus(row); }
-        else if (liveRows.length) { setFocus(liveRows[0]); }
-        return true;
-      }
-      if (dir === 'left') {
-        var tabs = $('home-tabs');
-        if (tabs) {
-          tabs.classList.add('is-expanded');
-          var cur = tabs.querySelector('.tab-item.is-selected');
-          if (cur) { setFocus(cur); }
-          else if (tabEls[0]) { setFocus(tabEls[0]); }
-        } else if (tabEls[0]) {
-          setFocus(tabEls[0]);
-        }
-        return true;
-      }
-      return false;
-    };
-    liveFocus._activate = function () { openPlayer('live'); };
-    page.appendChild(liveFocus);
-  }
-
-  /* --- Live TV Categories & Addons (M3U / IPTV) --- */
-  var PRESET_ADDONS = [
-    {
-      id: 'es_tdt',
-      name: 'España - Canales Nacionales y TDT',
-      url: 'https://iptv-org.github.io/iptv/countries/es.m3u',
-      desc: '320+ canales: La 1, La 2, Antena 3, Telecinco, laSexta, autonómicas'
-    },
-    {
-      id: 'latam_spa',
-      name: 'Latinoamérica y Deportes (Hispano)',
-      url: 'https://iptv-org.github.io/iptv/languages/spa.m3u',
-      desc: 'Canales en español de Colombia, México, Argentina, Chile y Perú'
-    },
-    {
-      id: 'sports_iptv',
-      name: 'Deportes Internacionales',
-      url: 'https://iptv-org.github.io/iptv/categories/sports.m3u',
-      desc: 'Transmisiones deportivas y canales de competiciones'
-    },
-    {
-      id: 'movies_iptv',
-      name: 'Cine y Series 24/7',
-      url: 'https://iptv-org.github.io/iptv/categories/movies.m3u',
-      desc: 'Cine clásico, cine de acción y canales continuos de series'
-    }
-  ];
-
-  function getSavedAddons() {
-    try {
-      var raw = localStorage.getItem('xuper_m3u_addons');
-      if (raw) {
-        var parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length) { return parsed; }
-      }
-    } catch (e) {}
-    /* Default seed: España TDT so user has working external addon out of the box */
-    var initial = [PRESET_ADDONS[0]];
-    try { localStorage.setItem('xuper_m3u_addons', JSON.stringify(initial)); } catch (e2) {}
-    return initial;
-  }
-
-  function saveSavedAddons(list) {
-    try { localStorage.setItem('xuper_m3u_addons', JSON.stringify(list || [])); } catch (e) {}
-  }
-
-  var DEFAULT_LIVE_CATEGORIES = [
-    { id: 76182, name: 'Todos', code: 'ba397e42-b664-11ed-8c55-768dd7bc60d3' },
-    { id: 76206, name: 'Deportes', code: 'dc520f12-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 87034, name: 'Vivo gratis', code: '77EA75EF523AB44B01D707781892485E' },
-    { id: 76205, name: 'Cine y Series', code: 'db7b71dc-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 77970, name: 'Más popular', code: '78C5EC9959371B7FEFE6E14AF48A1904' },
-    { id: 77690, name: 'Venezuela', code: '235F792997A0A714FCD96778BCF05172' },
-    { id: 76188, name: 'Colombia', code: 'd463893e-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76190, name: 'Ecuador', code: 'd66e9124-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76207, name: 'Chile', code: 'dd9600fe-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76197, name: 'México', code: 'd908f618-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76187, name: 'Perú', code: 'd425d4d6-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76202, name: 'Bolivia', code: 'daa53324-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76201, name: 'Uruguay', code: 'da865fe4-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 77688, name: 'Paraguay', code: 'CE922BD5FE46DFBDE587348E82E4F239' },
-    { id: 77689, name: 'Panamá', code: '313CC1DF490076FB3F72EA0086645764' },
-    { id: 77988, name: 'Puerto Rico', code: 'E07E20F2A12DB9436DCCB6F3B9B5024B' },
-    { id: 76191, name: 'España', code: 'd6962ea0-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 77691, name: 'Costa Rica', code: '30CBEC64059510DC85E03A61AEEE431A' },
-    { id: 76194, name: 'Estados Unidos', code: 'd862ef98-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 79127, name: 'Centroamérica', code: '427FC371C2D4A520799642758D171591' },
-    { id: 79134, name: 'Honduras', code: '983EFE77932E9378816362F80E7DD93E' },
-    { id: 79145, name: 'El Salvador', code: '5AA6C7CDB005B41F1E13BE66088FB351' },
-    { id: 79147, name: 'República Dominicana', code: 'EDB4CA7F458A2553ACBE9A607DD02934' },
-    { id: 76193, name: 'Noticias', code: 'd8332ccc-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 77977, name: 'Full HD', code: 'C4088392E9152F9E5C7D1671005951A2' },
-    { id: 76204, name: 'HD+(265)', code: 'db2f3830-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76198, name: 'PlayBack', code: 'd9fc1c26-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76186, name: 'NFL PASS', code: 'd3d9d2ca-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76184, name: 'NBA PASS', code: 'd36df230-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76195, name: 'MLB PASS', code: 'd881fb4a-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76196, name: 'Cultura', code: 'd89d00a2-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76183, name: 'Música', code: 'd314839e-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 79146, name: 'Infantil', code: '64334F25B2394B11A1FF1B060D6B377C' },
-    { id: 79148, name: 'Religioso', code: 'E75C698363490CE8F2441F43FB96E752' },
-    { id: 76192, name: '☆ Desde Internet', code: 'd69d9f50-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76200, name: 'EVENTOS PPV', code: 'da7619a4-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76189, name: '24/7', code: 'd51b21ac-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 76208, name: '18+', code: 'ddc200aa-b664-11ed-8b54-768dd7bc60d3' },
-    { id: 'addons', name: '➕ Addons M3U', isAddon: true }
-  ];
-  var liveCategories = DEFAULT_LIVE_CATEGORIES.slice(0);
-  var currentLiveCategory = liveCategories[0];
-  var liveCategoriesLoaded = false;
-  var liveChannelsLoaded = false;
-  var liveChannelsLoading = false;
-  var liveChannelRequestSeq = 0;
-  var liveChannelLoadColumnId = null;
-  /* Home only keeps one muted live preview alive.  This warms the channel
-     without creating a second full player or playing sound in the menu. */
-  var livePreviewVideo = null;
-  var livePreviewStatus = null;
-  var livePreviewSeq = 0;
-  var livePreviewTimer = null;
-  var livePreviewChannel = '';
-  var dialogAddonsOpen = false;
-  var dialogUpdateOpen = false;
-  var updatePendingInfo = null;
-  var updateDismissedSession = false;
-  var updateInProgress = false;
-
-  function stopLivePreview() {
-    livePreviewSeq++;
-    livePreviewChannel = '';
-    if (livePreviewTimer) { clearTimeout(livePreviewTimer); livePreviewTimer = null; }
-    if (liveMain) { liveMain.classList.remove('is-preview-playing', 'is-preview-loading'); }
-    if (livePreviewStatus) { livePreviewStatus.textContent = ''; }
-    if (!livePreviewVideo) { return; }
-    try { livePreviewVideo.pause(); } catch (ePause) { /* ignore */ }
-    livePreviewVideo.removeAttribute('src');
-    try { livePreviewVideo.src = ''; livePreviewVideo.load(); } catch (eClear) { /* ignore */ }
-  }
-
-  function startLivePreview(ch) {
-    if (!livePreviewVideo || !ch || (!ch.channelCode && !ch.streamUrl)) { return; }
-    /* A preview belongs only to the TV tab on the home screen. */
-    if (state.screen !== 'home' || state.tab !== 0) { return; }
-    var key = ch.channelCode || ch.streamUrl;
-    if (key === livePreviewChannel && liveMain &&
-        (liveMain.classList.contains('is-preview-loading') || liveMain.classList.contains('is-preview-playing'))) {
-      return;
-    }
-    stopLivePreview();
-    livePreviewChannel = key;
-    var mySeq = ++livePreviewSeq;
-    liveMain.classList.add('is-preview-loading');
-    if (livePreviewStatus) { livePreviewStatus.textContent = 'Cargando ' + (ch.name || 'canal') + '…'; }
-    var params = ch.streamUrl ? { streamUrl: ch.streamUrl } : { channelCode: ch.channelCode };
-    portalServiceCall('resolveLive', params, function (err, payload) {
-      if (mySeq !== livePreviewSeq || state.screen !== 'home' || state.tab !== 0) { return; }
-      if (!err && payload) { rememberCdnProbe('live', payload); }
-      var url = !err && payload && payload.returnValue !== false && (payload.proxyPath || payload.url);
-      if (!url) {
-        liveMain.classList.remove('is-preview-loading');
-        if (livePreviewStatus) { livePreviewStatus.textContent = ''; }
-        return;
-      }
-      livePreviewVideo.onloadeddata = function () {
-        if (mySeq !== livePreviewSeq) { return; }
-        liveMain.classList.remove('is-preview-loading');
-        liveMain.classList.add('is-preview-playing');
-        if (livePreviewStatus) { livePreviewStatus.textContent = ''; }
-      };
-      livePreviewVideo.onerror = function () {
-        if (mySeq !== livePreviewSeq) { return; }
-        liveMain.classList.remove('is-preview-loading', 'is-preview-playing');
-        if (livePreviewStatus) { livePreviewStatus.textContent = ''; }
-      };
-      try {
-        livePreviewVideo.src = url;
-        livePreviewVideo.load();
-        var promise = livePreviewVideo.play();
-        if (promise && promise.catch) { promise.catch(function () {}); }
-      } catch (ePlay) { liveMain.classList.remove('is-preview-loading'); }
-    });
-  }
-
-  function scheduleLivePreview(ch) {
-    if (livePreviewTimer) { clearTimeout(livePreviewTimer); }
-    livePreviewTimer = setTimeout(function () {
-      livePreviewTimer = null;
-      startLivePreview(ch || CHANNELS[state.channel]);
-    }, 220);
-  }
-
-  function loadLiveCategories(done) {
-    portalServiceCall('liveCategories', {}, function (err, payload) {
-      if (!err && payload && payload.returnValue !== false && payload.categories && payload.categories.length) {
-        var cats = [];
-        for (var i = 0; i < payload.categories.length; i++) {
-          var c = payload.categories[i];
-          var nm = c.name;
-          if (nm === 'ChannelList' || c.id === 76182) { nm = 'Todos'; }
-          cats.push({ id: c.id, name: nm, code: c.code, isAddon: false });
-        }
-        cats.push({ id: 'addons', name: '➕ Addons M3U', isAddon: true });
-        liveCategories = cats;
-        liveCategoriesLoaded = true;
-        if (!currentLiveCategory) { currentLiveCategory = liveCategories[0]; }
-        renderPlayerCategories();
-        renderCategoryPicker();
-      }
-      if (done) { done(err, liveCategories); }
-    });
-  }
-
-  function switchLiveCategory(cat, done) {
-    if (!cat) { return; }
-    currentLiveCategory = cat;
-    renderPlayerCategories();
-    if (cat.isAddon) {
-      loadAddonChannels(function () {
-        if (done) { done(); }
-      });
-    } else {
-      loadLiveChannels(cat.id, function () {
-        if (done) { done(); }
-      });
-    }
-  }
-
-  function loadAddonChannels(done) {
-    var addons = getSavedAddons();
-    if (!addons || !addons.length) {
-      CHANNELS.splice(0, CHANNELS.length);
-      renderLiveRows(false);
-      renderPlayerChannels();
-      if (done) { done(); }
-      return;
-    }
-    setPlayerStatus('Cargando canales de Addon…');
-    var allChannels = [];
-    var pending = addons.length;
-    for (var a = 0; a < addons.length; a++) {
-      (function (ad) {
-        portalServiceCall('fetchM3u', { url: ad.url }, function (err, payload) {
-          if (payload && payload.channels && payload.channels.length) {
-            for (var c = 0; c < payload.channels.length; c++) {
-              allChannels.push(payload.channels[c]);
-            }
-          }
-          pending--;
-          if (pending <= 0) {
-            setPlayerStatus('');
-            CHANNELS.splice(0, CHANNELS.length);
-            for (var k = 0; k < allChannels.length; k++) {
-              allChannels[k].index = k + 1;
-              CHANNELS.push(allChannels[k]);
-            }
-            state.channel = 0;
-            renderLiveRows(false);
-            renderPlayerChannels();
-            if (CHANNELS[0] && liveInfoText) {
-              liveInfoText.textContent = CHANNELS[0].name;
-            }
-            if (state.screen === 'player' && state.playerMode === 'live') {
-              updatePlayer();
-              startLiveChannel(CHANNELS[0], true);
-            }
-            if (done) { done(); }
-          }
-        });
-      })(addons[a]);
-    }
-  }
-
-  function loadLiveChannels(columnId, done) {
-    var requestedColumnId = columnId || 76182;
-    /* buildLivePage and the initial boot can both ask for Todos. Keep the
-       existing request instead of clearing the first page while it streams. */
-    if (liveChannelsLoading && liveChannelLoadColumnId === requestedColumnId) { return; }
-    var requestSeq = ++liveChannelRequestSeq;
-    liveChannelLoadColumnId = requestedColumnId;
-    liveChannelsLoading = true;
-    liveChannelsLoaded = false;
-    if (!CHANNELS.length) {
-      state.channel = 0;
-      renderLiveRows(false);
-      renderPlayerChannels();
-    }
-
-    var pageNum = 1;
-    var didReturnFirstPage = false;
-    function fetchNextPage() {
-      portalServiceCall('liveChannels', {
-        columnId: requestedColumnId,
-        pageNum: pageNum,
-        pageSize: 20
-      }, function (err, payload) {
-        /* A category was selected while this page was in flight. */
-        if (requestSeq !== liveChannelRequestSeq) { return; }
-        var isErr = err || !payload || payload.returnValue === false;
-        var pageChannels = (!isErr && payload && payload.channels) ? payload.channels : [];
-        if (!isErr && pageChannels.length) {
-          if (pageNum === 1) {
-            CHANNELS.splice(0, CHANNELS.length);
-          }
-          var known = {};
-          for (var k = 0; k < CHANNELS.length; k++) {
-            if (CHANNELS[k] && CHANNELS[k].channelCode) {
-              known[CHANNELS[k].channelCode] = true;
-            }
-          }
-          for (var c = 0; c < pageChannels.length; c++) {
-            var channel = pageChannels[c];
-            if (channel && (!channel.channelCode || !known[channel.channelCode])) {
-              if (channel.channelCode) { known[channel.channelCode] = true; }
-              CHANNELS.push(channel);
-            }
-          }
-          liveChannelsLoaded = true;
-          renderLiveRows(false);
-          renderPlayerChannels();
-          if (state.channel >= CHANNELS.length) { state.channel = 0; }
-          if (CHANNELS[state.channel] && liveInfoText) {
-            liveInfoText.textContent = CHANNELS[state.channel].name;
-          }
-          if (pageNum === 1) {
-            if (state.screen === 'player' && state.playerMode === 'live') {
-              updatePlayer();
-            } else {
-              scheduleLivePreview(CHANNELS[state.channel]);
-            }
-          }
-        }
-
-        if (!didReturnFirstPage) {
-          didReturnFirstPage = true;
-          if (!liveCategoriesLoaded) { loadLiveCategories(); }
-          if (done) { done(isErr ? (err || 'Error cargando canales') : null, payload); }
-        }
-
-        if (!isErr && payload && payload.hasMore && pageChannels.length) {
-          pageNum++;
-          /* Yield to webOS between pages so navigating the first block stays
-             responsive while the rest of the catalogue arrives. */
-          setTimeout(fetchNextPage, 40);
-          return;
-        }
-
-        liveChannelsLoading = false;
-        if (isErr && !liveChannelsLoaded) {
-          setTimeout(function () {
-            if (requestSeq === liveChannelRequestSeq) { loadLiveChannels(requestedColumnId); }
-          }, 2500);
-        }
-      });
-    }
-    fetchNextPage();
-  }
-
-  function renderLiveRows(favOnly) {
-    if (!liveList) { return; }
-    var focusedChan = (state.focus && state.focus._channel !== undefined && closest(state.focus, '.live-list'))
-      ? state.focus._channel : null;
-    clear(liveList);
-    liveRows = [];
-    if (!CHANNELS.length) {
-      liveList.appendChild(el('div', 'live-list-status',
-        liveChannelsLoaded ? 'No se encontraron canales' : 'Cargando canales…'));
-      return;
-    }
-    for (var i = 0; i < CHANNELS.length; i++) {
-      if (favOnly && !CHANNELS[i].fav) { continue; }
-      var row = el('div', 'live-row focusable');
-      row._channel = i;
-      var icon = el('div', 'row-icon');
-      if (CHANNELS[i].logo) {
-        icon.style.backgroundImage = 'url(' + CHANNELS[i].logo + ')';
-        icon.style.backgroundSize = 'contain';
-        icon.style.backgroundRepeat = 'no-repeat';
-        icon.style.backgroundPosition = 'center';
-      }
-      var play = el('div', 'row-play');
-      var name = el('div', 'row-name', CHANNELS[i].name);
-      row.appendChild(icon);
-      row.appendChild(play);
-      row.appendChild(name);
-      if (i === state.channel) { row.classList.add('is-current'); }
-      row._activate = (function (idx) {
-        return function () { setChannel(idx, true); openPlayer('live'); };
-      })(i);
-      row._onMove = (function (idx) {
-        return function (dir) {
-          if (dir === 'left') {
-            if (liveFocus) { setFocus(liveFocus); }
-            else if (tabEls[0]) { setFocus(tabEls[0]); }
-            return true;
-          }
-          if (dir === 'up') {
-            if (idx > 0 && liveRows[idx - 1]) {
-              setFocus(liveRows[idx - 1]);
-            }
-            return true;
-          }
-          if (dir === 'down') {
-            if (idx < liveRows.length - 1 && liveRows[idx + 1]) {
-              setFocus(liveRows[idx + 1]);
-            }
-            return true;
-          }
-          return false;
-        };
-      })(i);
-      liveList.appendChild(row);
-      liveRows.push(row);
-    }
-    if (CHANNELS[state.channel] && liveInfoText) {
-      liveInfoText.textContent = CHANNELS[state.channel].name;
-    }
-    if (focusedChan !== null && liveRows.length) {
-      var match = liveRows.filter(function (r) { return r._channel === focusedChan; })[0];
-      if (match) { setFocus(match, true); }
-    }
-    scrollLiveList();
-  }
-
-  function scrollLiveList() {
-    if (!liveRows.length) { return; }
-    var visible = liveRows.filter(function (r) { return r._channel === state.channel; })[0];
-    if (!visible) { return; }
-    var idx = liveRows.indexOf(visible);
-    var top = idx * 120;
-    var max = Math.max(0, liveList.scrollHeight - liveList.clientHeight);
-    var target = liveList.scrollTop;
-    if (top < target) { target = top; }
-    if (top + 100.5 > target + liveList.clientHeight) {
-      target = top + 100.5 - liveList.clientHeight;
-    }
-    liveList.scrollTop = Math.max(0, Math.min(max, target));
-  }
-
-  function setChannel(index, immediate) {
-    if (index < 0) { index = 0; }
-    if (index > CHANNELS.length - 1) { index = CHANNELS.length - 1; }
-    state.channel = index;
-
-    if (state.screen === 'home') {
-      for (var i = 0; i < liveRows.length; i++) {
-        liveRows[i].classList.toggle('is-current', liveRows[i]._channel === index);
-      }
-      if (CHANNELS[index] && liveInfoText) {
-        liveInfoText.textContent = CHANNELS[index].name;
-      }
-      scrollLiveList();
-      if (state.tab === 0) {
-        scheduleLivePreview(CHANNELS[index]);
-      }
-    } else if (state.screen === 'player') {
-      updatePlayerChannel();
-      if (state.playerMode === 'live') {
-        startLiveChannel(CHANNELS[index], !!immediate);
-      }
-    }
-  }
-
-  /* --- OTA Update Dialog & Manager logic --- */
-  function showToast(msg) {
-    var toast = $('app-toast');
-    if (!toast) {
-      toast = el('div', 'app-toast');
-      toast.id = 'app-toast';
-      var appEl = $('app') || document.body;
-      appEl.appendChild(toast);
-    }
-    toast.textContent = msg;
-    toast.style.display = 'block';
-    toast.style.opacity = '1';
-    if (showToast._timer) { clearTimeout(showToast._timer); }
-    showToast._timer = setTimeout(function () {
-      toast.style.opacity = '0';
-      setTimeout(function () { toast.style.display = 'none'; }, 300);
-    }, 3200);
-  }
-
-  function openUpdateDialog(info) {
-    updatePendingInfo = info || {};
-    dialogUpdateOpen = true;
-    var dlg = $('dialog-update');
-    if (!dlg) { return; }
-    dlg.classList.add('is-active');
-
-    var title = $('du-title');
-    if (title) { title.textContent = 'Nueva versión disponible'; }
-
-    var sub = $('du-version-subtitle');
-    if (sub) {
-      sub.textContent = 'Versión ' + (info.latestVersion || '') + (info.releaseDate ? ' (' + info.releaseDate + ')' : '');
-    }
-
-    var changelog = $('du-changelog');
-    if (changelog) {
-      changelog.textContent = info.changelog || 'Mejoras de estabilidad, rendimiento y optimizaciones de catálogo.';
-    }
-
-    var statusBox = $('du-status-container');
-    if (statusBox) { statusBox.style.display = 'none'; }
-
-    var footer = $('du-footer-actions');
-    if (footer) {
-      clear(footer);
-      var btnUpdate = el('button', 'du-btn du-btn-primary focusable', 'Actualizar ahora');
-      btnUpdate.id = 'du-btn-update';
-      btnUpdate._activate = function () {
-        startAppUpdate();
-      };
-      var btnLater = el('button', 'du-btn du-btn-secondary focusable', 'Más tarde');
-      btnLater.id = 'du-btn-later';
-      btnLater._activate = function () {
-        updateDismissedSession = true;
-        closeUpdateDialog();
-      };
-      footer.appendChild(btnUpdate);
-      footer.appendChild(btnLater);
-      setFocus(btnUpdate);
-    }
-  }
-
-  function closeUpdateDialog() {
-    dialogUpdateOpen = false;
-    var dlg = $('dialog-update');
-    if (dlg) { dlg.classList.remove('is-active'); }
-    if (state.screen === 'home') {
-      var tab = document.querySelector('.home-tab.is-selected');
-      if (tab) { setFocus(tab); }
-      else { var f = firstFocusable(); if (f) { setFocus(f); } }
-    } else if (state.screen === 'settings') {
-      var cur = document.querySelector('.settings-item.is-selected');
-      if (cur) { setFocus(cur); }
-      else { var fs = firstFocusable(); if (fs) { setFocus(fs); } }
-    }
-  }
-
-  function startAppUpdate() {
-    if (!updatePendingInfo || !updatePendingInfo.ipkUrl) { return; }
-    updateInProgress = true;
-
-    var statusBox = $('du-status-container');
-    if (statusBox) { statusBox.style.display = 'block'; }
-
-    var progressBar = $('du-progress-bar');
-    var statusText = $('du-status-text');
-    var subText = $('du-status-subtext');
-
-    var footer = $('du-footer-actions');
-    if (footer) { clear(footer); }
-
-    if (progressBar) { progressBar.style.width = '4%'; }
-    if (statusText) { statusText.textContent = 'Iniciando descarga...'; }
-    if (subText) { subText.textContent = 'Por favor no apagues la TV ni salgas de la aplicación.'; }
-
-    var serviceId = vodApi.serviceId || 'com.webosflux.xuptertv.fidelity.service';
-
-    if (hasLuna() && window.PalmServiceBridge) {
-      try {
-        window.webOS.service.request('luna://' + serviceId, {
-          method: 'applyUpdate',
-          parameters: { ipkUrl: updatePendingInfo.ipkUrl, subscribe: true },
-          subscribe: true,
-          resubscribe: false,
-          onSuccess: function (payload) {
-            if (!payload) { return; }
-            if (payload.percent !== undefined && progressBar) {
-              progressBar.style.width = Math.min(100, Math.max(0, payload.percent)) + '%';
-            }
-            if (payload.message && statusText) {
-              statusText.textContent = payload.message;
-            }
-            if (payload.state === 'success') {
-              if (statusText) { statusText.textContent = '¡Actualización completada! Reiniciando XuperTV...'; }
-              if (progressBar) { progressBar.style.width = '100%'; }
-              setTimeout(function () {
-                try { window.location.reload(); } catch (eReload) {}
-              }, 4000);
-            }
-          },
-          onFailure: function (err) {
-            updateInProgress = false;
-            var rawErr = (err && err.errorText) || 'Error durante la instalación';
-            var errMsg = rawErr;
-            /* Same stale-service case as checkUpdate: an old process has no
-               applyUpdate method.  Explain the only working fix instead of
-               printing "Denied method call applyUpdate for category /". */
-            if (/denied|permission|not permitted|method.*not|no existe/i.test(String(rawErr))) {
-              errMsg = 'El instalador de la TV está desactualizado. Desenchufa la TV 30 segundos, ' +
-                'vuelve a abrir XuperTV y busca la actualización de nuevo.';
-            }
-            if (statusText) { statusText.textContent = 'Error: ' + errMsg; }
-            if (subText) { subText.textContent = 'Comprueba tu red o intenta más tarde.'; }
-            if (footer) {
-              clear(footer);
-              var btnClose = el('button', 'du-btn du-btn-secondary focusable', 'Cerrar');
-              btnClose._activate = function () {
-                closeUpdateDialog();
-              };
-              footer.appendChild(btnClose);
-              setFocus(btnClose);
-            }
-          }
-        });
-        return;
-      } catch (eLuna) {
-        updateInProgress = false;
-        if (statusText) { statusText.textContent = 'Error: ' + (eLuna && eLuna.message); }
-      }
-    } else {
-      if (statusText) { statusText.textContent = 'Modo simulador: actualizacion solo disponible en webOS'; }
-      updateInProgress = false;
-      if (footer) {
-        var btnSimClose = el('button', 'du-btn du-btn-secondary focusable', 'Cerrar');
-        btnSimClose._activate = function () { closeUpdateDialog(); };
-        footer.appendChild(btnSimClose);
-        setFocus(btnSimClose);
-      }
-    }
-  }
-
-  /* OTA manifest list.  The Node service normally answers `checkUpdate`, but
-     after an IPK update the old service process can stay alive on webOS 3.x/4
-     and Luna answers "Denied method call checkUpdate for category /" because
-     the running process predates that method.  The app can still read the same
-     public manifest through XHR (jsDelivr/GitHub send CORS headers), so the
-     update check keeps working and the viewer never sees the raw Luna error. */
-  var UPDATE_MANIFEST_URLS = [
-    'https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/main/version.json',
-    'https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/feature/catalog-webos-compat/version.json',
-    'https://cdn.jsdelivr.net/gh/cristianco7/XUPER-HYDRA-PORT-WEBOS@main/version.json'
-  ];
-
-  function versionParts(value) {
-    var clean = String(value || '').replace(/^[^\d]*/, '');
-    var bits = clean.split('.');
-    var out = [];
-    for (var i = 0; i < bits.length; i++) { out.push(parseInt(bits[i], 10) || 0); }
-    return out;
-  }
-
-  function compareRemoteVersion(a, b) {
-    var pa = versionParts(a);
-    var pb = versionParts(b);
-    var len = Math.max(pa.length, pb.length);
-    for (var i = 0; i < len; i++) {
-      var va = pa[i] || 0;
-      var vb = pb[i] || 0;
-      if (va !== vb) { return va > vb ? 1 : -1; }
-    }
-    return 0;
-  }
-
-  function fetchUpdateManifest(index, onDone) {
-    if (index >= UPDATE_MANIFEST_URLS.length) {
-      return onDone('No se pudo consultar el servidor de actualizaciones');
-    }
-    var xhr = new XMLHttpRequest();
-    var finished = false;
-    var guard = setTimeout(function () {
-      if (finished) { return; }
-      finished = true;
-      try { xhr.abort(); } catch (eAbort) { /* ignore */ }
-      fetchUpdateManifest(index + 1, onDone);
-    }, 12000);
-    function fail() {
-      if (finished) { return; }
-      finished = true;
-      clearTimeout(guard);
-      fetchUpdateManifest(index + 1, onDone);
-    }
-    try {
-      xhr.open('GET', UPDATE_MANIFEST_URLS[index] + '?t=' + Date.now(), true);
-      xhr.onreadystatechange = function () {
-        if (xhr.readyState !== 4) { return; }
-        if (xhr.status < 200 || xhr.status >= 300) { fail(); return; }
-        var data;
-        try { data = JSON.parse(xhr.responseText); } catch (eJson) { fail(); return; }
-        if (!data || !data.version) { fail(); return; }
-        if (finished) { return; }
-        finished = true;
-        clearTimeout(guard);
-        onDone(null, data);
-      };
-      xhr.onerror = fail;
-      xhr.ontimeout = fail;
-      xhr.send(null);
-    } catch (eReq) {
-      fail();
-    }
-  }
-
-  function checkUpdateOverHttp(currentVer, onDone) {
-    fetchUpdateManifest(0, function (err, manifest) {
-      if (err) { return onDone(err); }
-      var remoteVer = manifest.version || '0.0.0';
-      onDone(null, {
-        updateAvailable: compareRemoteVersion(remoteVer, currentVer) > 0,
-        currentVersion: currentVer,
-        latestVersion: remoteVer,
-        ipkUrl: manifest.ipkUrl || '',
-        changelog: manifest.changelog || '',
-        releaseDate: manifest.releaseDate || '',
-        viaFallback: true
-      });
-    });
-  }
-
-  function staleUpdateService(error) {
-    return /denied|permission|not permitted|method|not exist|no existe|unknown|módulo|modulo|no carg|no disponible|no está disponible/i.test(String(error || ''));
-  }
-
-  function checkForUpdates(silent, onResult) {
-    var currentVer = '2.2.56';
-
-    function paint(result) {
-      if (onResult) { onResult(null, result); }
-      if (result && result.updateAvailable) {
-        if (!silent || !updateDismissedSession) { openUpdateDialog(result); }
-      } else if (!silent) {
-        showToast('Tienes la versión más reciente (v' + currentVer + ')');
-      }
-    }
-
-    portalServiceCall('checkUpdate', { currentVersion: currentVer }, function (err, res) {
-      if (!err) { return paint(res); }
-      /* A stale service process is not a network failure: retry the same public
-         manifest from the app before showing anything to the viewer. */
-      if (staleUpdateService(err)) {
-        checkUpdateOverHttp(currentVer, function (httpErr, httpRes) {
-          if (!httpErr && httpRes) { return paint(httpRes); }
-          if (onResult) { onResult(err, null); }
-          if (!silent) {
-            showToast('El módulo de actualizaciones necesita reiniciarse: desenchufa la TV 30 segundos y vuelve a intentarlo.');
-          }
-        });
-        return;
-      }
-      if (onResult) { onResult(err, null); }
-      if (!silent) { showToast('No se pudo comprobar actualizaciones: ' + err); }
-    }, 15000);
-  }
-
-  /* --- Addon Manager Dialog logic --- */
-  function openAddonsDialog() {
-    dialogAddonsOpen = true;
-    var dlg = $('dialog-addons');
-    if (!dlg) { return; }
-    dlg.classList.add('is-active');
-    renderAddonsDialog();
-    var firstBtn = dlg.querySelector('.focusable');
-    if (firstBtn) { setFocus(firstBtn); }
-  }
-
-  function closeAddonsDialog() {
-    dialogAddonsOpen = false;
-    var dlg = $('dialog-addons');
-    if (!dlg) { return; }
-    dlg.classList.remove('is-active');
-    if (state.channelsOpen) {
-      var btn = playerChannels ? playerChannels.querySelector('#pc-btn-addons') : null;
-      if (btn) { setFocus(btn); }
-      else { setFocus(playerStage); }
-    }
-  }
-
-  function renderAddonsDialog() {
-    var presetsBox = $('da-presets-list');
-    var installedBox = $('da-installed-list');
-    var saved = getSavedAddons();
-    var savedUrls = {};
-    for (var s = 0; s < saved.length; s++) { savedUrls[saved[s].url] = true; }
-
-    if (presetsBox) {
-      clear(presetsBox);
-      for (var p = 0; p < PRESET_ADDONS.length; p++) {
-        (function (preset) {
-          var item = el('div', 'da-preset-item');
-          var info = el('div', 'da-preset-info');
-          info.appendChild(el('div', 'da-preset-name', preset.name));
-          info.appendChild(el('div', 'da-preset-desc', preset.desc));
-          item.appendChild(info);
-
-          var isInst = !!savedUrls[preset.url];
-          var btn = el('button', 'da-preset-btn focusable' + (isInst ? ' is-installed' : ''), isInst ? '✔ Instalado' : '+ Instalar');
-          btn._activate = function () {
-            if (isInst) { return; }
-            btn.textContent = 'Instalando…';
-            installAddon(preset, function (err, count) {
-              if (err) {
-                btn.textContent = 'Error';
-                setTimeout(function () { btn.textContent = '+ Instalar'; }, 2000);
-              } else {
-                renderAddonsDialog();
-                if (currentLiveCategory && currentLiveCategory.isAddon) {
-                  loadAddonChannels();
-                }
-              }
-            });
-          };
-          item.appendChild(btn);
-          presetsBox.appendChild(item);
-        })(PRESET_ADDONS[p]);
-      }
-    }
-
-    if (installedBox) {
-      clear(installedBox);
-      if (!saved.length) {
-        installedBox.appendChild(el('div', 'da-installed-empty', 'No hay addons personalizados instalados aún. Instala una lista recomendada arriba o escribe una URL.'));
-      } else {
-        for (var i = 0; i < saved.length; i++) {
-          (function (ad, idx) {
-            var row = el('div', 'da-installed-item');
-            var info = el('div', 'da-installed-info');
-            var nm = el('div', 'da-preset-name', ad.name);
-            var sub = el('div', 'da-preset-desc', (ad.count ? (ad.count + ' canales • ') : '') + ad.url);
-            info.appendChild(nm);
-            info.appendChild(sub);
-            row.appendChild(info);
-
-            var delBtn = el('button', 'da-del-btn focusable', 'Eliminar');
-            delBtn._activate = function () {
-              saved.splice(idx, 1);
-              saveSavedAddons(saved);
-              renderAddonsDialog();
-              if (currentLiveCategory && currentLiveCategory.isAddon) {
-                loadAddonChannels();
-              }
-            };
-            row.appendChild(delBtn);
-            installedBox.appendChild(row);
-          })(saved[i], i);
-        }
-      }
-    }
-
-    var addCustomBtn = $('da-btn-add-custom');
-    if (addCustomBtn) {
-      addCustomBtn._activate = function () {
-        var inp = $('da-custom-url');
-        var url = inp ? (inp.value || '').trim() : '';
-        if (!url || !/^https?:\/\//i.test(url)) {
-          alert('Por favor introduce una URL válida (http:// o https://)');
-          return;
-        }
-        addCustomBtn.textContent = 'Descargando…';
-        installAddon({ id: 'custom_' + Date.now(), name: 'Lista Personalizada', url: url }, function (err, count) {
-          addCustomBtn.textContent = 'Agregar';
-          if (err) {
-            alert('No se pudo cargar la lista M3U: ' + err);
-          } else {
-            if (inp) { inp.value = ''; }
-            renderAddonsDialog();
-            if (currentLiveCategory && currentLiveCategory.isAddon) {
-              loadAddonChannels();
-            }
-          }
-        });
-      };
-    }
-
-    var exitBtn = $('da-btn-exit');
-    if (exitBtn) {
-      exitBtn._activate = function () { closeAddonsDialog(); };
-    }
-  }
-
-  function installAddon(addon, done) {
-    portalServiceCall('fetchM3u', { url: addon.url }, function (err, payload) {
-      if (err || !payload || !payload.channels || !payload.channels.length) {
-        if (done) { done(err || 'No se encontraron canales en la lista'); }
-        return;
-      }
-      var saved = getSavedAddons();
-      /* Check duplicate */
-      var exists = false;
-      for (var s = 0; s < saved.length; s++) {
-        if (saved[s].url === addon.url) {
-          saved[s].count = payload.channels.length;
-          exists = true;
-          break;
-        }
-      }
-      if (!exists) {
-        saved.push({
-          id: addon.id || ('addon_' + Date.now()),
-          name: addon.name || 'Lista M3U',
-          url: addon.url,
-          count: payload.channels.length
-        });
-      }
-      saveSavedAddons(saved);
-      if (done) { done(null, payload.channels.length); }
-    });
-  }
-
-  /* ---------------------------------------------------------- home posters */
-  /* Bento mosaic measured on the running app (WSA, 1920x1080):
-       mRecommend01 831x534 @ 192,212   mRecommend02 831x534 @ 1029,212
-       mRecommend03..06 413x222 @ y 752, x 192/609/1028/1446
-       pagination dots around 843,723 (screen) -> page coords subtract 173.5.
-     The page grid is identical for DESTACADOS, PELICULA, SERIES and ANIME. */
-  var BENTO = {
-    bigW: 831, bigH: 534, bigY: 38.5,
-    smallW: 413, smallH: 222, smallY: 578.5,
-    bigX: [192, 1029],
-    smallX: [192, 609, 1028, 1446]
-  };
-
-  function makeBento(item, x, y, w, h, opts) {
-    opts = opts || {};
-    var t = el('div', 'bento focusable');
-    abs(t, x, y, w, h);
-    var art = item ? (item.landscape || item.poster) : '';
-    if (art) {
-      var img = el('img', 'bento-img');
-      img.setAttribute('data-poster-src', art);
-      img.onerror = function () {
-        if (this.src && this.src.indexOf('https://') === 0 && !this._httpFallback) {
-          this._httpFallback = true;
-          this.src = this.src.replace('https://', 'http://');
-          return;
-        }
-        this.style.display = 'none';
-      };
-      t.appendChild(img);
-    }
-    if (opts.shade) { t.appendChild(el('div', 'bento-shade')); }
-    if (opts.title && item) { t.appendChild(el('div', 'bento-title', item.title)); }
-    if (opts.badge) { t.appendChild(el('div', 'bento-badge', opts.badge)); }
-    t._item = item;
-    if (item) { t._activate = function () { openDetail(item); }; }
-    schedulePosterMemoryPass();
-    return t;
-  }
-
-  function bentoDots(x, y, count, active) {
-    var d = el('div', 'bento-dots');
-    abs(d, x, y, 21 + Math.max(0, count - 1) * 40, 11);
-    for (var i = 0; i < count; i++) {
-      d.appendChild(el('span', 'bento-dot' + (i === active ? ' is-active' : '')));
-    }
-    return d;
-  }
-
-  function bentoPage(page, items, opts) {
-    opts = opts || {};
-    var source = items.length ? items : VOD;
-    if (!source.length) { return; }
-    var i;
-    for (i = 0; i < 2; i++) {
-      page.appendChild(makeBento(source[i % source.length], BENTO.bigX[i], BENTO.bigY,
-                                 BENTO.bigW, BENTO.bigH,
-                                 { shade: opts.shade !== false, title: opts.titles }));
-    }
-    for (i = 0; i < 4; i++) {
-      page.appendChild(makeBento(source[(i + 2) % source.length], BENTO.smallX[i], BENTO.smallY,
-                                 BENTO.smallW, BENTO.smallH, {}));
-    }
-    if (opts.dots) { page.appendChild(bentoDots(848, 535.5, opts.dots, 0)); }
-  }
-
-  /* DESTACADOS / PELICULA: the observed 831x534 crops already contain the
-     real title bar and pagination dots drawn by the APK, so the port must not
-     paint a second copy over them. Portal artwork is plain 16:9 art, so the
-     title and dots have to be drawn. */
-  function allVodFor(category) {
-    var out = [], i;
-    if (category) {
-      for (i = 0; i < VOD.length; i++) {
-        var cats = norm(VOD[i].category || '').split(',');
-        if (cats.indexOf(category) !== -1 || (VOD[i].kind && norm(VOD[i].kind).indexOf(category) !== -1)) {
-          out.push(VOD[i]);
-        }
-      }
-    }
-    return out.length ? out : VOD;
-  }
-
-  function appendCatalogGrid(page, items, startY, titleText) {
-    if (!items || !items.length) { return startY; }
-    var y = startY || 860;
-    var sub = el('div', 'kids-subtitle', titleText || 'Catálogo');
-    abs(sub, 192, y, 1249, 40);
-    page.appendChild(sub);
-    y += 50;
-
-    var colW = 276;
-    var colH = 390;
-    var maxCols = 6;
-    var limit = Math.min(items.length, 60);
-    for (var k = 0; k < limit; k++) {
-      var col = k % maxCols;
-      var row = Math.floor(k / maxCols);
-      var px = 192 + col * colW;
-      var py = y + row * colH;
-      page.appendChild(makePoster(items[k], px, py, 250, 360, { gold: true }));
-    }
-    return y + Math.ceil(limit / maxCols) * colH + 25;
-  }
-
-  function appendCatalogRow(page, items, startY, titleText) {
-    if (!items || !items.length) { return startY; }
-    var y = startY || 860;
-    var sub = el('div', 'kids-subtitle', titleText || 'Catálogo');
-    abs(sub, 192, y, 1400, 40);
-    page.appendChild(sub);
-    y += 50;
-
-    var colW = 276;
-    var maxCols = 6;
-    var limit = Math.min(items.length, maxCols);
-    for (var k = 0; k < limit; k++) {
-      var px = 192 + k * colW;
-      page.appendChild(makePoster(items[k], px, y, 250, 360, { gold: true }));
-    }
-    return y + 360 + 35;
-  }
-
-  function appendCatalogSections(page, items, startY, options) {
-    if (!items || !items.length) { return startY; }
-    options = options || {};
-    var y = startY || 860;
-    var seen = {};
-    var b, s, i, g, u, p, f, rem;
-    if (options.bentoItems && options.bentoItems.length) {
-      for (b = 0; b < options.bentoItems.length; b++) {
-        if (options.bentoItems[b] && options.bentoItems[b].id) {
-          seen[String(options.bentoItems[b].id)] = true;
-        }
-      }
-    }
-
-    /* 1. Fila de más populares arriba si se solicita */
-    if (options.popularTitle) {
-      var sorted = items.slice().sort(function (a, b) {
-        var sa = parseFloat(a && a.score) || 0;
-        var sb = parseFloat(b && b.score) || 0;
-        return sb - sa;
-      });
-      var popular = [];
-      for (s = 0; s < sorted.length && popular.length < 6; s++) {
-        var it = sorted[s];
-        if (it && it.id && !seen[String(it.id)]) {
-          popular.push(it);
-          seen[String(it.id)] = true;
-        }
-      }
-      if (popular.length) {
-        y = appendCatalogRow(page, popular, y, options.popularTitle);
-      }
-    }
-
-    /* 2. Agrupar por fila del API */
-    var groups = {};
-    var rowOrder = [];
-    for (i = 0; i < items.length; i++) {
-      var item = items[i];
-      var r = item.row ? String(item.row).trim() : '';
-      if (!r || r.toLowerCase() === 'all' || r.toLowerCase() === 'todas' || r.toLowerCase() === 'todos') {
-        r = (item.genres && item.genres[0] && item.genres[0] !== 'Sin clasificar') ? item.genres[0] : '';
-      }
-      if (!r) { r = options.fallbackRow || 'Más títulos'; }
-      if (!groups[r]) {
-        groups[r] = [];
-        rowOrder.push(r);
-      }
-      groups[r].push(item);
-    }
-
-    var friendly = {
-      '2026 Peliculas teatrales': 'Estrenos en cartelera',
-      '2026': 'Novedades 2026',
-      'Máscara perfecta': 'Máscara perfecta (Especial)',
-      'Asesino en serie': 'Suspense y asesinos en serie',
-      'Películas TOP15 clasificadas': 'Películas TOP 15',
-      'Dramas clasificados TOP15': 'Series y dramas TOP 15',
-      'HBO Movie': 'Películas HBO',
-      'Prime Video Movie': 'Películas Prime Video',
-      'Apple TV+ Movie': 'Películas Apple TV+',
-      'Paramount + Movie': 'Películas Paramount+',
-      'Hulu Movie': 'Películas Hulu',
-      'Netflix Movie': 'Películas Netflix',
-      'Disney Movie': 'Películas Disney',
-      'Netflix Series': 'Series Netflix',
-      'Disney Series': 'Series Disney',
-      'HBO Series': 'Series HBO',
-      'Prime Video Series': 'Series Prime Video',
-      'Apple TV+ Series': 'Series Apple TV+',
-      'Paramount + Series': 'Series Paramount+',
-      'Hulu Series': 'Series Hulu',
-      'TV Series': 'Series de televisión',
-      'Serie Turquía': 'Series turcas',
-      'Drama Coreano': 'Dramas coreanos (K-Drama)',
-      'Telenovelas': 'Telenovelas populares',
-      'Vida familiar famosa': 'Familias famosas y dramas',
-      'Acción': 'Acción y aventura',
-      'Comedia': 'Comedias destacadas',
-      'Horror': 'Terror y horror',
-      'Ciencia ficción': 'Ciencia ficción y fantasía',
-      'Suspenso': 'Suspense y misterio',
-      'Crimen': 'Crimen y policíaco',
-      'Familia': 'Películas en familia',
-      'Fantastico': 'Fantasía épica',
-      'Romántico': 'Romance y drama',
-      'Animación Clásica': 'Animación clásica',
-      'Película de Animación': 'Películas de animación',
-      'Serie de Animación': 'Series animadas',
-      'Dragon Ball Collection': 'Colección Dragon Ball',
-      'Colección de Marvel': 'Colección Marvel',
-      'Coalition for DC': 'Universo DC',
-      'Anime Asiático': 'Anime asiático',
-      'Anime Europeo y Americano': 'Anime internacional',
-      'Película de Anime': 'Películas de anime',
-      'Serie de Anime': 'Series de anime'
-    };
-
-    var renderedAny = false;
-    for (g = 0; g < rowOrder.length; g++) {
-      var rName = rowOrder[g];
-      var list = groups[rName];
-      if (!list || !list.length) { continue; }
-      var pick = [];
-      var unvisited = [];
-      for (u = 0; u < list.length; u++) {
-        if (!seen[String(list[u].id)]) { unvisited.push(list[u]); }
-      }
-      for (p = 0; p < unvisited.length && pick.length < 6; p++) {
-        pick.push(unvisited[p]);
-        seen[String(unvisited[p].id)] = true;
-      }
-      if (pick.length < 6 && list.length >= 6) {
-        for (f = 0; f < list.length && pick.length < 6; f++) {
-          if (pick.indexOf(list[f]) === -1) { pick.push(list[f]); }
-        }
-      }
-      if (pick.length) {
-        var title = friendly[rName] || rName;
-        y = appendCatalogRow(page, pick, y, title);
-        renderedAny = true;
-      }
-    }
-
-    /* 3. Títulos restantes que no cupieron en ninguna fila */
-    var leftovers = [];
-    for (rem = 0; rem < items.length; rem++) {
-      if (!seen[String(items[rem].id)]) {
-        leftovers.push(items[rem]);
-      }
-    }
-    if (leftovers.length) {
-      y = appendCatalogGrid(page, leftovers, y, options.fallbackRow || 'Más títulos del catálogo');
-    } else if (!renderedAny) {
-      appendCatalogGrid(page, items, y, options.defaultTitle || 'Catálogo');
-    }
-    return y;
-  }
-
-  function buildFeaturedPage(page) {
-    var all = allVodFor('destacado');
-    var items = all.slice(0, 6);
-    var real = !!(items[0] && items[0]._portal);
-    bentoPage(page, items, { titles: real, dots: real ? 4 : 0, shade: real });
-    var rest = all.slice(6);
-    if (rest.length) {
-      appendCatalogSections(page, rest, 860, {
-        popularTitle: 'Títulos más vistos',
-        bentoItems: items,
-        fallbackRow: 'Títulos destacados'
-      });
-    }
-  }
-
-  function buildMoviesPage(page) {
-    var all = allVodFor('pelicula');
-    var items = all.slice(0, 6);
-    var real = !!(items[0] && items[0]._portal);
-    bentoPage(page, items, { titles: real, dots: real ? 4 : 0, shade: real });
-    var rest = all.slice(6);
-    if (rest.length) {
-      appendCatalogSections(page, rest, 860, {
-        popularTitle: 'Películas más populares',
-        bentoItems: items,
-        fallbackRow: 'Más películas'
-      });
-    }
-  }
-
-  function buildSeriesPage(page) {
-    var all = allVodFor('serie');
-    var items = all.slice(0, 6);
-    var real = !!(items[0] && items[0]._portal);
-    bentoPage(page, items, { titles: real, dots: real ? 3 : 2, shade: real });
-    var rest = all.slice(6);
-    if (rest.length) {
-      appendCatalogSections(page, rest, 860, {
-        popularTitle: 'Series más populares',
-        bentoItems: items,
-        fallbackRow: 'Más series'
-      });
-    }
-  }
-
-  function buildAnimePage(page) {
-    var all = allVodFor('anime');
-    var items = all.slice(0, 6);
-    var real = !!(items[0] && items[0]._portal);
-    bentoPage(page, items, { titles: real, dots: real ? 3 : 2, shade: real });
-    var rest = all.slice(6);
-    if (rest.length) {
-      appendCatalogSections(page, rest, 860, {
-        popularTitle: 'Anime más popular',
-        bentoItems: items,
-        fallbackRow: 'Anime y animación'
-      });
-    }
-  }
-
-  function novelCatalogItems() {
-    var out = [];
-    for (var i = 0; i < VOD.length; i++) {
-      var item = VOD[i];
-      var text = norm([
-        item.row || '', item.category || '', item.kind || '', item.title || '', item.alias || '',
-        item.genres && item.genres.join ? item.genres.join(' ') : (item.genres || '')
-      ].join(' '));
-      if (text.indexOf('novela') !== -1 || text.indexOf('telenovela') !== -1) {
-        out.push(item);
-      }
-    }
-    return out;
-  }
-
-  function buildNovelsPage(page) {
-    /* The portal already includes its novela rows in the loaded home roots.
-       Filter those exact records only: no synthetic catalog and no secondary
-       query that could return a different host/list.
-
-       Keep the six featured tiles above, but do not remove those titles from
-       the catalogue below.  The portal currently delivers ten items in its
-       official "Telenovelas" row; slicing at six made "Más novelas" look as
-       if the category only had four titles. */
-    var all = novelCatalogItems();
-    if (!all.length) {
-      var empty = el('div', 'catalog-empty', 'No se encontraron novelas en el catálogo actual.');
-      abs(empty, 192, 170, 1500, 80);
-      page.appendChild(empty);
-    } else {
-      var items = all.slice(0, 6);
-      var real = !!(items[0] && items[0]._portal);
-      bentoPage(page, items, { titles: real, dots: real ? 3 : 2, shade: real });
-      appendCatalogGrid(page, all, 860, 'Más novelas');
-    }
-  }
-
-  /* KIDS: hero 831x534 + 2x2 grid 413x222 on the right, a subtitle line and a
-     horizontal poster row (7 columns, last one clipped by the screen edge). */
-  function buildKidsPage(page) {
-    var source = vodFor('infantil', 12, 0);
-    if (!source.length) { source = VOD; }
-    var real = !!(source[0] && source[0]._portal);
-    page.appendChild(makeBento(source[0], 192, 38.5, 831, 534, { shade: true, title: real }));
-    var cells = [
-      [1029, 38.5], [1446, 38.5], [1029, 269.5], [1446, 269.5]
-    ];
-    for (var i = 0; i < cells.length; i++) {
-      page.appendChild(makeBento(source[(i + 1) % source.length], cells[i][0], cells[i][1],
-                                 413, 222, {}));
-    }
-    page.appendChild(bentoDots(833, 468.5, 4, 0));
-    if (source[0]) {
-      var sub = el('div', 'kids-subtitle', source[0].tagline || source[0].title);
-      abs(sub, 192, 526.5, 1249, 40);
-      page.appendChild(sub);
-    }
-    var row = el('div', 'poster-row');
-    abs(row, 192, 578.5, 1920, 310);
-    for (var k = 0; k < 7; k++) {
-      var it = source[k % source.length];
-      if (!it) { break; }
-      row.appendChild(makePoster(it, k * 266, 0, 266, 310, { gold: true }));
-    }
-    page.appendChild(row);
-  }
-
-  /* EXPLORAR: hero 1249x703 + three stacked 413x226 tiles on the right,
-     provider row label and logo strip underneath. */
-  function buildExplorePage(page) {
-    var source = VOD.length ? VOD : [];
-    page.appendChild(makeBento(source[0], 192, 38.5, 1249, 703, { shade: true }));
-    for (var i = 0; i < 3; i++) {
-      page.appendChild(makeBento(source[(i + 1) % source.length], 1446, 38.5 + i * 231,
-                                 413, 226, { badge: i === 2 ? 'Adult' : '' }));
-    }
-    page.appendChild(el('div', 'explore-row-title', 'Netflix'));
-    var strip = el('div', 'explore-strip');
-    abs(strip, 192, 811.5, 1920, 130);
-    for (var k = 0; k < 8; k++) {
-      var cell = el('div', 'explore-logo');
-      abs(cell, k * 272, 0, 260, 120);
-      strip.appendChild(cell);
-    }
-    page.appendChild(strip);
-  }
-
-  /* ============================================================ VOD DETAIL */
-  function openDetail(item) {
-    state.detail = item;
-    state.detailReturn = { screen: state.screen, focus: state.focus };
-    state.detailRange = 0;
-    state.detailSeason = 0;
-    state.detailEpisode = null;
-
-    if (item.seasons && item.seasons.length) {
-      for (var s = 0; s < item.seasons.length; s++) {
-        if (item.seasons[s].id === item.id) {
-          state.detailSeason = s;
-          break;
-        }
-      }
-    }
-    if (item.episodes && item.episodes.length) {
-      state.detailEpisode = item.episodes[0];
-    }
-    applyPendingHistoryEpisode(item);
-
-    /* New title: forget the previous audio/subtitle/rendition choice and ask
-       the portal for this one's real tracks (cached for the dialog/panel). */
-    resetMediaSelection();
-    restoreSmoothMode(item);
-    ensureMediaInfo(item);
-
-    buildDetail(item);
-    showScreen('detail');
-
-    /* Mostrar reproductor en recuadro mini */
-    if (!playerStage) { buildPlayer(); }
-    var scrPlayer = $('screen-player');
-    if (scrPlayer) {
-      scrPlayer.classList.add('is-mini');
-      scrPlayer.classList.add('is-active');
-    }
-
-    var f = detailButtons ? detailButtons.querySelector('.focusable') : null;
-    if (f) { setFocus(f); }
-
-    if (item._detailsLoaded) {
-      startPlayerVideo(item, state.detailEpisode);
-    } else {
-      setPlayerStatus('Preparando la reproducción…');
-      loadVodDetail(item, function (loaded) {
-        if (loaded && state.screen === 'detail' && state.detail === loaded) {
-          applyPendingHistoryEpisode(loaded);
-          startPlayerVideo(loaded, state.detailEpisode);
-        }
-      });
-    }
-  }
-
-  function toggleSynopsis() {
-    var screen = $('screen-detail');
-    if (!screen) { return; }
-    var open = !screen.classList.contains('is-synopsis-open');
-    screen.classList.toggle('is-synopsis-open', open);
-    var more = document.querySelector('.detail-more');
-    if (more) { more.textContent = open ? 'Menos' : 'Más'; }
-  }
-
-  function buildDetail(item) {
-    detailLeft = $('detail-left');
-    detailPlayer = $('detail-player');
-    detailButtons = $('detail-buttons');
-    detailBottom = $('detail-bottom');
-    clear(detailLeft); clear(detailButtons); clear(detailBottom);
-
-    /* left column: 806px at 80/50 */
-    var tw = el('div', 'detail-titlewrap');
-    tw.appendChild(el('div', 'detail-title', item.title));
-    tw.appendChild(el('div', 'detail-score', item.score));
-    detailLeft.appendChild(tw);
-
-    var metaText;
-    if (item.country || item.releaseDate || item.tagline) {
-      /* mTextTimeType: "country | release date | viewpoint" (reference). */
-      var bits = [];
-      if (item.country) { bits.push(item.country); }
-      if (item.releaseDate) { bits.push(item.releaseDate); }
-      if (item.tagline) { bits.push(item.tagline); }
-      metaText = bits.join(' | ');
-    } else {
-      var parts = [];
-      if (item.year && item.year !== '—') { parts.push(item.year); }
-      if (item.duration && item.duration !== '—') { parts.push(item.duration); }
-      parts.push('HD');
-      metaText = parts.join('  ·  ');
-    }
-    detailLeft.appendChild(el('div', 'detail-meta', metaText));
-
-    /* mTextUpdate: gold "T10 - E73", series only. The season comes from the
-       alias ("... S10") or the season list; the count is the episode total. */
-    if (isSeriesItem(item)) {
-      var seasonNo = 0;
-      var sm = /S(\d+)/i.exec(item.alias || '') || /T(\d+)/i.exec(item.title || '');
-      if (sm) { seasonNo = parseInt(sm[1], 10) || 0; }
-      if (!seasonNo && item.seasons && item.seasons.length) {
-        var curSeason = item.seasons[state.detailSeason] || item.seasons[0];
-        seasonNo = (curSeason && curSeason.number) || 1;
-      }
-      if (!seasonNo) { seasonNo = 1; }
-      var epTotal = item.updateCount || item.volumeCount || (item.episodes ? item.episodes.length : 0);
-      if (epTotal) {
-        detailLeft.appendChild(el('div', 'detail-update', 'T' + seasonNo + ' - E' + epTotal));
-      }
-    }
-
-    var genres = el('div', 'detail-genres');
-    genres.appendChild(el('span', 'label', 'Género : '));
-    for (var g = 0; g < item.genres.length; g++) {
-      /* Informational metadata must not take D-pad focus on the detail page. */
-      var chip = el('div', 'chip', item.genres[g]);
-      genres.appendChild(chip);
-    }
-    detailLeft.appendChild(genres);
-
-    var dir = el('div', 'detail-row');
-    dir.appendChild(document.createTextNode('Director : '));
-    var dirV = el('span', 'val', item.director);
-    dir.appendChild(dirV);
-    detailLeft.appendChild(dir);
-
-    var act = el('div', 'detail-row');
-    act.appendChild(document.createTextNode('Actors : '));
-    var actV = el('span', 'val', item.actors);
-    act.appendChild(actV);
-    detailLeft.appendChild(act);
-
-    var syn = el('div', 'detail-synopsis');
-    syn.appendChild(el('span', 'label', 'Sinopsis : '));
-    syn.appendChild(el('div', 'text', item.synopsis));
-    /* mTextIntroduction + tvMore: the APK expands the 2-line preview in place.
-       Here the expanded block overlays the button row (documented). */
-    var more = el('div', 'detail-more', 'Más');
-    syn.appendChild(more);
-    detailLeft.appendChild(syn);
-
-    /* player window 765x430 at right 80 / top 50. */
-    clear(detailPlayer);
-    detailPlayer.classList.add('focusable');
-    detailPlayer._activate = function () { expandToFullscreen(item, state.detailEpisode); };
-    detailPlayer._onMove = function () { return false; };
-
-    /* buttons 276x68, gap 30 */
-    var btnDefs = [
-      { icon: 'icon_detail_fullscreen.png', label: 'Pantalla completa', kind: 'fullscreen' },
-      { icon: 'icon_detail_subtitle_audio.png', label: 'Idioma', kind: 'language' },
-      { icon: 'icon_detail_favorite.png', label: 'Favorito', kind: 'favorite' }
-    ];
-    if (isSeriesItem(item)) {
-      btnDefs.push({ icon: 'icon_detail_subscribe.png', label: 'Notificaciones', kind: 'subscribe' });
-    }
-    for (var b = 0; b < btnDefs.length; b++) {
-      var btn = el('div', 'detail-btn focusable');
-      var ico = el('img');
-      ico.src = 'assets/original/vod/' + btnDefs[b].icon;
-      ico.alt = '';
-      btn.appendChild(ico);
-      btn.appendChild(el('span', null, btnDefs[b].label));
-      btn._kind = btnDefs[b].kind;
-      if (btnDefs[b].kind === 'favorite' && state.favs[String(item.id)]) {
-        btn.classList.add('is-selected');
-        btn.querySelector('span').textContent = 'En favoritos';
-      }
-      btn._activate = (function (kind, it) {
-        return function () {
-          if (kind === 'fullscreen') { expandToFullscreen(it, state.detailEpisode); }
-          else if (kind === 'language') { openPlaySettingsDialog(it); }
-          else if (kind === 'favorite') {
-            var enabled = toggleFavorite(it);
-            this.classList.toggle('is-selected', enabled);
-            var label = this.querySelector('span');
-            if (label) { label.textContent = enabled ? 'En favoritos' : 'Favorito'; }
-          } else if (kind === 'subscribe') {
-            var img = this.querySelector('img');
-            var on = img.src.indexOf('subscribed') === -1;
-            img.src = 'assets/original/vod/icon_detail_' + (on ? 'subscribed' : 'subscribe') + '.png';
-          }
-        };
-      })(btnDefs[b].kind, item);
-      detailButtons.appendChild(btn);
-    }
-    var modeBtn = el('div', 'detail-btn focusable');
-    var modeIcon = el('img');
-    modeIcon.src = 'assets/original/vod/icon_detail_quality.png';
-    modeIcon.alt = '';
-    modeBtn.appendChild(modeIcon);
-    var modeLabel = el('span', null, state.streamMode === 'smooth' ? 'Modo fluido: Sí' : 'Modo fluido: No');
-    modeBtn.appendChild(modeLabel);
-    modeBtn._activate = function () {
-      setSmoothMode(item, state.streamMode !== 'smooth');
-      modeLabel.textContent = state.streamMode === 'smooth' ? 'Modo fluido: Sí' : 'Modo fluido: No';
-    };
-    detailButtons.appendChild(modeBtn);
-
-    renderDetailBottom(item);
-  }
-
-  /* Episode ranges are chunks of 20 ("1-20", "21-40", ...) as observed. */
-  function detailRanges(count) {
-    var out = [];
-    for (var s = 0; s < count; s += 20) {
-      out.push({ start: s, end: Math.min(count, s + 20) });
-    }
-    return out;
-  }
-
-  function detailSeasonLabel(item) {
-    var n = 0;
-    if (item.seasons && item.seasons.length > 0) {
-      var cur = item.seasons[state.detailSeason] || item.seasons[0];
-      n = cur && cur.number ? cur.number : state.detailSeason + 1;
-    }
-    if (!n) {
-      var m = /S(\d+)/i.exec(item.alias || '') || /T(\d+)/i.exec(item.title || '');
-      if (m) { n = parseInt(m[1], 10) || 0; }
-    }
-    return 'Temporada ' + (n || 1);
-  }
-
-  function selectDetailRange(index, item) {
-    state.detailRange = index;
-    buildDetail(item);
-    var f = detailBottom.querySelector('.detail-range.is-selected');
-    if (f) { setFocus(f); }
-  }
-
-  var seasonPopup = null;
-  function closeSeasonPopup() {
-    if (seasonPopup && seasonPopup.parentNode) {
-      seasonPopup.parentNode.removeChild(seasonPopup);
-      seasonPopup = null;
-    }
-    var arrow = detailBottom ? detailBottom.querySelector('.season-arrow') : null;
-    if (arrow) { arrow.classList.remove('is-open'); }
-  }
-
-  function toggleSeasonPopup(anchorBtn, item) {
-    if (seasonPopup) {
-      closeSeasonPopup();
-      return;
-    }
-    if (!item.seasons || item.seasons.length < 2) { return; }
-
-    var arrow = anchorBtn.querySelector('.season-arrow');
-    if (arrow) { arrow.classList.add('is-open'); }
-
-    seasonPopup = el('div', 'season-popup');
-    abs(seasonPopup, 80, 100, 280, Math.min(320, item.seasons.length * 54));
-
-    for (var s = 0; s < item.seasons.length; s++) {
-      (function (sIndex) {
-        var sData = item.seasons[sIndex];
-        var isSelected = sIndex === state.detailSeason;
-        var pItem = el('div', 'season-popup-item focusable' + (isSelected ? ' is-selected' : ''));
-        var sText = 'Temporada ' + (sData.number || (sIndex + 1));
-        pItem.appendChild(el('span', 'season-item-text', sText));
-
-        var check = el('img', 'season-item-check');
-        check.src = 'assets/original/vod/icon_nation_selected.png';
-        check.alt = '';
-        pItem.appendChild(check);
-
-        pItem._activate = function () {
-          closeSeasonPopup();
-          if (state.detailSeason !== sIndex) {
-            state.detailSeason = sIndex;
-            state.detailRange = 0;
-            state.detailEpisode = null;
-            var targetSeason = item.seasons[sIndex];
-            if (targetSeason && targetSeason.id) {
-              setPlayerStatus('Cargando temporada…');
-              portalServiceCall('detail', { contentId: targetSeason.id }, function (err, payload) {
-                if (!err && payload && payload.returnValue !== false) {
-                  if (payload.item) { mergeDetail(item, payload.item); }
-                  item.episodes = payload.episodes || [];
-                  item.seasonId = targetSeason.id;
-                  targetSeason._episodes = item.episodes;
-                  state.detailEpisode = item.episodes[0] || null;
-                }
-                buildDetail(item);
-                if (state.detailEpisode) {
-                  startPlayerVideo(item, state.detailEpisode);
-                }
-                var sBtn = detailBottom ? detailBottom.querySelector('.detail-season') : null;
-                if (sBtn) { setFocus(sBtn); }
-              });
-            }
-          } else {
-            var sBtn2 = detailBottom ? detailBottom.querySelector('.detail-season') : null;
-            if (sBtn2) { setFocus(sBtn2); }
-          }
-        };
-
-        seasonPopup.appendChild(pItem);
-      })(s);
-    }
-
-    detailBottom.appendChild(seasonPopup);
-    var focusedChild = seasonPopup.children[state.detailSeason] || seasonPopup.children[0];
-    if (focusedChild) { setFocus(focusedChild); }
-  }
-
-  function renderDetailBottom(item) {
-    var episodes = (isSeriesItem(item) && item.episodes) ? item.episodes : [];
-    var hasEpisodes = episodes.length > 0;
-    var ranges = detailRanges(episodes.length);
-    if (state.detailRange >= ranges.length) { state.detailRange = 0; }
-
-    /* Season dropdown button (flChoose / llSeanson) */
-    if (isSeriesItem(item)) {
-      var seasonBtn = el('div', 'detail-season focusable');
-      abs(seasonBtn, 80, 42, 280, 53);
-      seasonBtn.appendChild(el('span', 'season-text', detailSeasonLabel(item)));
-      var arrow = el('img', 'season-arrow');
-      arrow.src = 'assets/original/vod/ic_down_icon.png';
-      arrow.alt = '▼';
-      seasonBtn.appendChild(arrow);
-      seasonBtn._activate = function () {
-        if (!item.seasons || item.seasons.length < 2) { return; }
-        toggleSeasonPopup(seasonBtn, item);
-      };
-      detailBottom.appendChild(seasonBtn);
-    }
-
-    /* Range tabs (1-20, 21-40...) */
-    if (hasEpisodes && episodes.length > 20) {
-      var rangeRow = el('div', 'detail-ranges');
-      abs(rangeRow, 398, 51, 1522, 46);
-      for (var i = 0; i < ranges.length; i++) {
-        (function (idx) {
-          var tab = el('div', 'detail-range focusable' + (idx === state.detailRange ? ' is-selected' : ''),
-                       (ranges[idx].start + 1) + '-' + ranges[idx].end);
-          abs(tab, idx * 160, 0, 150, 46);
-          tab._activate = function () { selectDetailRange(idx, item); };
-          rangeRow.appendChild(tab);
-        })(i);
-      }
-      detailBottom.appendChild(rangeRow);
-    }
-
-    /* Episode grid */
-    if (hasEpisodes) {
-      var current = ranges[state.detailRange] || { start: 0, end: episodes.length };
-      var row = el('div', 'detail-episodes scrollable');
-      abs(row, 80, 149, 1840, 65);
-      for (var e = current.start; e < current.end; e++) {
-        (function (ep, index) {
-          var isPlaying = state.detailEpisode && (state.detailEpisode.id === ep.id || state.detailEpisode === ep);
-          var tile = el('div', 'detail-episode focusable' + (isPlaying ? ' is-playing' : ''));
-          abs(tile, index * 160, 0, 150, 65);
-          var numText = (ep.number !== undefined && ep.number !== null) ? String(ep.number) : String(e + 1);
-          tile.appendChild(el('span', 'ep-num', numText));
-          tile._ep = ep;
-          tile._activate = function () {
-            playEpisode(item, ep);
-          };
-          row.appendChild(tile);
-        })(episodes[e], e - current.start);
-      }
-      detailBottom.appendChild(row);
-    }
-
-    /* mTextRelated + mGridRelated. The series layout pushes them below the
-       episode selector, so the poster row is clipped by the screen edge. */
-    var relatedTop = hasEpisodes ? 240 : 25;
-    var gridTop = hasEpisodes ? 290 : 91;
-    var heading = el('div', 'detail-related', 'Quizás te guste');
-    abs(heading, 80, relatedTop, 400, 44);
-    detailBottom.appendChild(heading);
-
-    var grid = el('div', 'detail-grid scrollable');
-    abs(grid, 80, gridTop, 1750, hasEpisodes ? 180 : 380);
-    var seed = parseInt(item.id, 10);
-    if (isNaN(seed)) {
-      seed = 0;
-      for (var s = 0; s < VOD.length; s++) { if (VOD[s] === item) { seed = s; break; } }
-    }
-    var start = (seed * 3) % Math.max(1, VOD.length - 6);
-    for (var r = 0; r < 8; r++) {
-      var rel = VOD[(start + r) % VOD.length];
-      if (!rel) { continue; }
-      var cell = el('div', 'cell');
-      cell.appendChild(makePoster(rel, 0, 0, 210, 308, { gold: true }));
-      cell.appendChild(el('div', 'd-name', rel.title));
-      grid.appendChild(cell);
-    }
-    detailBottom.appendChild(grid);
-  }
-
-  /* ================================================================ SEARCH */
-  function hotSearches() {
-    var all = bundledCatalog();
-    var out = [];
-    for (var i = 0; i < all.length; i++) {
-      var cat = String((all[i] && all[i].category) || '').toLowerCase();
-      if (cat.indexOf('busqueda') !== -1) { out.push(normalizeVod(all[i], i + 1)); }
-    }
-    return out;
-  }
-
-  function buildSearch() {
-    searchKeyboard = $('search-keyboard');
-    searchHot = $('search-hot');
-    searchResults = $('search-results');
-    searchEmpty = $('search-empty');
-    searchHotGrid = $('search-hot-grid');
-    searchResultGrid = $('search-result-grid');
-    searchNav = $('search-nav');
-    clear(searchKeyboard); clear(searchHotGrid); clear(searchResultGrid);
-    /* Result rows can extend beyond the first screen.  Mark their viewport as
-       scrollable so reveal() follows D-pad focus down through every result. */
-    if (searchResults) { searchResults.classList.add('scrollable'); }
-
-    /* --- keyboard panel (layout_search_keybord_full_uni) --- */
-    searchInput = el('div', 'kb-edit focusable');
-    searchInput._activate = function () { /* edit field */ };
-    searchKeyboard.appendChild(searchInput);
-
-    var actions = el('div', 'kb-actions');
-    var actionDefs = [
-      { cls: 'switch', w: 100.5 },
-      { cls: 'clear', w: 100.5 },
-      { cls: 'del', w: 100.5 },
-      { cls: 'go', w: 120 }
-    ];
-    for (var a = 0; a < actionDefs.length; a++) {
-      var act = el('div', 'kb-action focusable ' + actionDefs[a].cls);
-      act.style.width = actionDefs[a].w + 'px';
-      if (actionDefs[a].cls === 'go') {
-        act.textContent = 'Busca';
-      } else {
-        act.appendChild(el('div', 'ico'));
-      }
-      act._kind = actionDefs[a].cls;
-      act._activate = (function (kind) {
-        return function () {
-          if (kind === 'switch') { toggleSearchNumeric(); }
-          else if (kind === 'clear') { setSearchQuery(''); }
-          else if (kind === 'del') { setSearchQuery(state.searchQuery.slice(0, -1)); }
-          else { runSearch(); }
-        };
-      })(actionDefs[a].cls);
-      actions.appendChild(act);
-    }
-    searchKeyboard.appendChild(actions);
-
-    searchKeys = [];
-    var rows = [
-      ['A', 'Á', 'B', 'C', 'D', 'E', 'É'],
-      ['F', 'G', 'H', 'I', 'Í', 'J', 'K'],
-      ['L', 'M', 'N', 'Ñ', 'O', 'Ó', 'P'],
-      ['Q', 'R', 'S', 'T', 'U', 'Ú', 'Ü'],
-      ['V', 'W', 'X', 'Y', 'Z', ' ']
-    ];
-    for (var r = 0; r < rows.length; r++) {
-      var row = el('div', 'kb-row');
-      row.style.top = (264 + r * 88.5) + 'px';
-      for (var c = 0; c < rows[r].length; c++) {
-        var key = el('div', 'kb-key focusable' + (rows[r][c] === ' ' ? ' space' : ''),
-          rows[r][c] === ' ' ? '' : rows[r][c]);
-        key._char = rows[r][c];
-        key._activate = (function (ch) {
-          return function () { setSearchQuery(state.searchQuery + ch); };
-        })(rows[r][c]);
-        row.appendChild(key);
-        searchKeys.push(key);
-      }
-      searchKeyboard.appendChild(row);
-    }
-
-    var feedback = el('div', 'kb-feedback focusable', 'Feedback');
-    feedback._activate = function () { /* feedback form not reconstructed */ };
-    searchKeyboard.appendChild(feedback);
-
-    /* --- hot search grid (observed "Búsqueda popular", 10 portrait cells) --- */
-    renderPopularSearch();
-
-    searchResults.classList.remove('is-active');
-    searchEmpty.classList.remove('is-active');
-    searchHot.classList.remove('is-hidden');
-    updateSearchInput();
-  }
-
-  function makeSearchCell(item, index) {
-    var cell = el('div', 'search-cell');
-    abs(cell, (index % 5) * 246, Math.floor(index / 5) * 437, 246, 437);
-    cell.appendChild(makePoster(item, 0, 0, 222, 329, { gold: true }));
-    cell.appendChild(el('div', 's-name', item.title));
-    return cell;
-  }
-
-  function openSearch() {
-    if (!searchKeyboard) { buildSearch(); }
-    showScreen('search');
-    if (!state.searchQuery) { renderPopularSearch(); }
-    setFocus(searchInput);
-  }
-
-  function popularSearchItems() {
-    var featured = allVodFor('destacado');
-    var out = featured && featured.length ? featured.slice(0, 10) : [];
-    if (!out.length) { out = hotSearches(); }
-    if (!out.length) { out = VOD.slice(0, 10); }
-    return out;
-  }
-
-  function renderPopularSearch() {
-    if (!searchHotGrid || state.searchQuery) { return; }
-    clear(searchHotGrid);
-    var hotItems = popularSearchItems();
-    for (var h = 0; h < hotItems.length; h++) {
-      searchHotGrid.appendChild(makeSearchCell(hotItems[h], h));
-    }
-    schedulePosterMemoryPass();
-  }
-
-  function updateSearchInput() {
-    if (!searchInput) { return; }
-    if (state.searchQuery) {
-      searchInput.textContent = state.searchQuery;
-      searchInput.classList.remove('is-placeholder');
-    } else {
-      searchInput.textContent = 'Buscar películas, series, directores y actores.';
-      searchInput.classList.add('is-placeholder');
-    }
-  }
-
-  function setSearchQuery(q) {
-    state.searchQuery = q;
-    updateSearchInput();
-    runSearch();
-  }
-
-  function clearSearchState() {
-    if (state.searchTimer) { clearTimeout(state.searchTimer); state.searchTimer = null; }
-    state.searchQuery = '';
-    updateSearchInput();
-    if (searchResultGrid) { clear(searchResultGrid); }
-    state.searchMatches = [];
-    state.searchPage = 0;
-    if (searchNav) { searchNav.textContent = ''; }
-    if (searchResults) { searchResults.classList.remove('is-active'); }
-    if (searchEmpty) { searchEmpty.classList.remove('is-active'); }
-    if (searchHot) { searchHot.classList.remove('is-hidden'); }
-  }
-
-  function runSearch() {
-    var rawQ = state.searchQuery || '';
-    var q = norm(rawQ.trim());
-    if (!q) {
-      clearSearchState();
-      return;
-    }
-    /* Instant local matches (0ms response) */
-    var localMatches = [];
-    for (var i = 0; i < VOD.length; i++) {
-      var tNorm = norm(VOD[i].title || '');
-      var aNorm = VOD[i].alias ? norm(VOD[i].alias) : '';
-      if (tNorm.indexOf(q) !== -1 || (aNorm && aNorm.indexOf(q) !== -1)) {
-        localMatches.push(VOD[i]);
-      }
-    }
-    renderSearchResults(localMatches);
-
-    /* Debounced remote portal search (350ms) */
-    if (state.searchTimer) { clearTimeout(state.searchTimer); }
-    if (vodApi.mode === 'portal' && q.length >= 2) {
-      var seq = ++state.searchSeq;
-      state.searchTimer = setTimeout(function () {
-        portalServiceCall('search', { value: rawQ.trim() }, function (error, payload) {
-          if (seq !== state.searchSeq) { return; }
-          if (error || !payload || payload.returnValue === false || !payload.items || !payload.items.length) {
-            /* Keep existing local matches, never clear on empty remote response */
-            return;
-          }
-          var merged = localMatches.slice();
-          var seen = {};
-          for (var m = 0; m < merged.length; m++) { seen[String(merged[m].id)] = true; }
-          for (var p = 0; p < payload.items.length; p++) {
-            var item = normalizeVod(payload.items[p], merged.length + 1);
-            if (!seen[String(item.id)]) {
-              seen[String(item.id)] = true;
-              merged.push(item);
-            }
-          }
-          renderSearchResults(merged);
-        });
-      }, 350);
-    }
-  }
-
-  var SEARCH_PAGE_SIZE = 10;
-
-  function renderSearchResults(matches) {
-    /* A short query can match hundreds of portal titles.  webOS 4 runs out
-       of media/UI memory if every poster is inserted at once, so retain the
-       complete result list in JS but render one 2-row page at a time. */
-    state.searchMatches = matches || [];
-    state.searchPage = 0;
-    renderSearchResultPage(0, -1);
-  }
-
-  function renderSearchResultPage(requestedPage, focusIndex) {
-    var matches = state.searchMatches || [];
-    searchHot.classList.add('is-hidden');
-    searchResults.classList.add('is-active');
-    clear(searchResultGrid);
-    if (matches.length === 0) {
-      searchEmpty.classList.add('is-active');
-      if (searchNav) { searchNav.textContent = ''; }
-      return;
-    }
-    searchEmpty.classList.remove('is-active');
-    var pageCount = Math.ceil(matches.length / SEARCH_PAGE_SIZE);
-    var page = Math.max(0, Math.min(pageCount - 1, requestedPage || 0));
-    state.searchPage = page;
-    var start = page * SEARCH_PAGE_SIZE;
-    var end = Math.min(matches.length, start + SEARCH_PAGE_SIZE);
-    if (searchNav) {
-      searchNav.textContent = 'Resultados ' + (start + 1) + '-' + end + ' de ' + matches.length +
-        (pageCount > 1 ? '  ·  Página ' + (page + 1) + '/' + pageCount : '');
-    }
-    for (var m = start; m < end; m++) {
-      var localIndex = m - start;
-      var cell = makeSearchCell(normalizeVod(matches[m], m + 1), localIndex);
-      var poster = cell.querySelector('.poster');
-      if (poster) {
-        (function (indexOnPage, column) {
-          poster._onMove = function (dir) {
-            if (dir === 'down' && indexOnPage >= 5 && end < matches.length) {
-              renderSearchResultPage(page + 1, column);
-              return true;
-            }
-            if (dir === 'up' && indexOnPage < 5 && start > 0) {
-              renderSearchResultPage(page - 1, 5 + column);
-              return true;
-            }
-            return false;
-          };
-        })(localIndex, localIndex % 5);
-      }
-      searchResultGrid.appendChild(cell);
-    }
-    searchResultGrid.style.height = '874px';
-    if (focusIndex >= 0) {
-      var requested = searchResultGrid.querySelectorAll('.poster.focusable')[focusIndex];
-      if (!requested) { requested = firstIn(searchResultGrid); }
-      if (requested) { setFocus(requested); }
-    } else if (state.screen === 'search' && (closest(state.focus, '.search-hot') || closest(state.focus, '.search-results'))) {
-      var f = firstIn(searchResultGrid);
-      if (f) { setFocus(f); }
-    }
-  }
-
-  function toggleSearchNumeric() {
-    state.searchNumeric = !state.searchNumeric;
-    var sw = searchKeyboard.querySelector('.kb-action.switch .ico');
-    if (sw) {
-      sw.style.backgroundImage = 'url(assets/original/search/' +
-        (state.searchNumeric ? 'ic_vod_search_abc.png' : 'ic_vod_search_123.png') + ')';
-    }
-    var rows = searchKeyboard.querySelectorAll('.kb-row:not(.kb-row-num)');
-    if (!state.searchNumeric) {
-      for (var i = 0; i < rows.length; i++) { rows[i].classList.remove('hidden'); }
-      searchKeys.forEach(function (k) { k.classList.remove('hidden'); });
-      var old = searchKeyboard.querySelectorAll('.kb-row-num');
-      for (var o = 0; o < old.length; o++) { old[o].classList.add('hidden'); }
-      return;
-    }
-    for (var r = 0; r < rows.length; r++) { rows[r].classList.add('hidden'); }
-    if (!searchKeyboard.querySelector('.kb-row-num')) {
-      var digits = [['1', '2', '3', '4', '5', '6', '7'], ['8', '9', '0', ' ']];
-      for (var d = 0; d < digits.length; d++) {
-        var row = el('div', 'kb-row kb-row-num');
-        row.style.top = (264 + d * 88.5) + 'px';
-        for (var c = 0; c < digits[d].length; c++) {
-          var key = el('div', 'kb-key focusable' + (digits[d][c] === ' ' ? ' space' : ''),
-            digits[d][c] === ' ' ? '' : digits[d][c]);
-          key._activate = (function (ch) {
-            return function () { setSearchQuery(state.searchQuery + ch); };
-          })(digits[d][c]);
-          row.appendChild(key);
-        }
-        searchKeyboard.appendChild(row);
-      }
-    }
-    var numRows = searchKeyboard.querySelectorAll('.kb-row-num');
-    for (var n = 0; n < numRows.length; n++) { numRows[n].classList.remove('hidden'); }
-  }
-
-  /* ============================================================== SETTINGS */
-  function buildSettings() {
-    settingsMenu = $('settings-menu');
-    settingsRight = $('settings-right');
-    clear(settingsMenu); clear(settingsRight);
-
-    settingsItems = [];
-    var lastGroup = null;
-    for (var i = 0; i < SETTINGS_ITEMS.length; i++) {
-      var itemDef = SETTINGS_ITEMS[i];
-      if (itemDef.group && itemDef.group !== lastGroup) {
-        lastGroup = itemDef.group;
-        var grpEl = el('div', 'settings-group', lastGroup);
-        settingsMenu.appendChild(grpEl);
-      }
-      var item = el('div', 'settings-item focusable');
-      var iconBox = el('div', 'settings-icon');
-      iconBox.innerHTML = SETTINGS_MENU_ICONS[itemDef.id] || '';
-      item.appendChild(iconBox);
-
-      var textBox = el('div', 'settings-text');
-      textBox.appendChild(el('div', 'settings-label', itemDef.label));
-      if (itemDef.desc) {
-        textBox.appendChild(el('div', 'settings-desc', itemDef.desc));
-      }
-      item.appendChild(textBox);
-
-      item._index = i;
-      item._activate = (function (idx) {
-        return function () { showSettingsPanel(idx, true); };
-      })(i);
-      item._onMove = function (dir) {
-        if (dir === 'right') {
-          var f = firstIn(settingsRight.querySelector('.settings-panel.is-active'));
-          if (f) { setFocus(f); }
-          return true;
-        }
-        return false;
-      };
-      settingsMenu.appendChild(item);
-      settingsItems.push(item);
-    }
-
-    settingsPanels = {};
-    settingsPanels.profile = buildProfilePanel();
-    settingsPanels.history = buildHistoryPanel();
-    settingsPanels.addons = buildAddonsPanel();
-    settingsPanels.share = buildSharePanel();
-    settingsPanels.playback = buildPlaybackPanel();
-    settingsPanels.netdiag = buildNetdiagPanel();
-    settingsPanels.parent = buildParentPanel();
-    settingsPanels.feedback = buildFeedbackPanel();
-    settingsPanels.about = buildAboutPanel();
-
-    for (var k in settingsPanels) {
-      if (settingsPanels.hasOwnProperty(k)) { settingsRight.appendChild(settingsPanels[k]); }
-    }
-  }
-
-  function openSettings() {
-    if (!settingsMenu) { buildSettings(); }
-    showScreen('settings');
-    showSettingsPanel(0, false);
-    setFocus(settingsItems[0]);
-  }
-
-  function showSettingsPanel(index, focus) {
-    if (typeof index === 'string') {
-      for (var s = 0; s < SETTINGS_ITEMS.length; s++) {
-        if (SETTINGS_ITEMS[s].id === index) { index = s; break; }
-      }
-    }
-    index = Number(index) || 0;
-    var activeId = (SETTINGS_ITEMS[index] && SETTINGS_ITEMS[index].id) || 'profile';
-    var settingsScreen = $('screen-settings');
-    if (settingsScreen) { settingsScreen.classList.toggle('is-history-view', activeId === 'history'); }
-    if (activeId === 'profile' && settingsPanels.profile && settingsRight) {
-      var refreshedProfile = buildProfilePanel();
-      settingsRight.replaceChild(refreshedProfile, settingsPanels.profile);
-      settingsPanels.profile = refreshedProfile;
-    } else if (activeId === 'history' && settingsPanels.history && settingsRight) {
-      var refreshedHistory = buildHistoryPanel();
-      settingsRight.replaceChild(refreshedHistory, settingsPanels.history);
-      settingsPanels.history = refreshedHistory;
-    } else if (activeId === 'addons' && settingsPanels.addons && settingsRight) {
-      var refreshedAddons = buildAddonsPanel();
-      settingsRight.replaceChild(refreshedAddons, settingsPanels.addons);
-      settingsPanels.addons = refreshedAddons;
-    } else if (activeId === 'netdiag' && settingsPanels.netdiag && settingsPanels.netdiag._ensureDiag) {
-      settingsPanels.netdiag._ensureDiag();
-    }
-    for (var i = 0; i < settingsItems.length; i++) {
-      settingsItems[i].classList.toggle('is-selected', i === index);
-    }
-    for (var k in settingsPanels) {
-      if (settingsPanels.hasOwnProperty(k)) {
-        settingsPanels[k].classList.toggle('is-active', k === activeId);
-      }
-    }
-    if (focus) {
-      var f = firstIn(settingsPanels[activeId]);
-      /* Panels such as "Sobre nosotros" have no focusable control. In that
-         case keep the focus on the selected menu entry instead of leaving a
-         different, unrelated entry highlighted. */
-      setFocus(f || settingsItems[index]);
-    }
-  }
-
-  function panelBase(title) {
-    var p = el('div', 'settings-panel');
-    p.appendChild(el('div', 'sp-title', title));
-    return p;
-  }
-
-  function buildPlaybackPanel() {
-    var p = panelBase('Configuración global de reproducción');
-    p.appendChild(el('div', 'sp-hr'));
-
-    p.appendChild(el('div', 'sp-global-note', 'Estas preferencias se aplican automáticamente a todas las películas y series nuevas.'));
-    addOptionRow(p, 198, 'Reproductor', ['Normal (directo)', 'Modo fluido'],
-      'streamMode', state.playback.streamMode === 'smooth' ? 1 : 0);
-    addOptionRow(p, 307, 'Formato de pantalla', ['Pantalla completa', 'Normal', '16:9', '4:3'],
-      'screen', state.playback.screen);
-    addOptionRow(p, 416, 'Audio preferido', ['Español', 'Portugués', 'Inglés'],
-      'audio', state.playback.audio);
-
-    p.appendChild(abs(el('div', 'sp-hr'), 0, 535, 1498, 1));
-    p.appendChild(el('div', 'sp-subtitle-h', 'Subtitulos'));
-    var sw = el('div', 'sp-switch focusable ' + (state.playback.subtitle ? 'on' : 'off'));
-    sw._activate = function () {
-      state.playback.subtitle = !state.playback.subtitle;
-      sw.className = 'sp-switch focusable ' + (state.playback.subtitle ? 'on' : 'off');
-      saveGlobalPlayback();
-      setFocus(sw);
-    };
-    p.appendChild(sw);
-
-    addOptionRow(p, 680, 'Idioma', ['Español', 'Portugués', 'Inglés'],
-      'subLang', state.playback.subLang);
-    addOptionRow(p, 793, 'Tamaño', ['Normal', 'Grande', 'Pequeño'],
-      'size', state.playback.size);
-    addStyleRow(p, 906);
-    return p;
-  }
-
-  function addOptionRow(panel, top, label, options, group, selected) {
-    var row = el('div', 'pb-row');
-    row.style.top = top + 'px';
-    row.appendChild(el('div', 'pb-label', label));
-    for (var i = 0; i < options.length; i++) {
-      var opt = el('div', 'pb-opt focusable' + (i === selected ? ' is-checked' : ''));
-      opt.style.marginLeft = (i === 0 ? 0 : 28) + 'px';
-      opt.appendChild(el('div', 'radio'));
-      opt.appendChild(el('span', null, options[i]));
-      opt._group = group;
-      opt._index = i;
-      opt._activate = function () {
-        if (this._group === 'streamMode') {
-          state.playback.streamMode = this._index === 1 ? 'smooth' : 'normal';
-          /* A deliberate global choice supersedes temporary per-title
-             overrides from this session. */
-          smoothModeByTitle = {};
-          if (state.playerItem) { restoreSmoothMode(state.playerItem); }
-        } else {
-          state.playback[this._group] = this._index;
-        }
-        applyGlobalPlaybackPreferences();
-        saveGlobalPlayback();
-        var opts = panel.querySelectorAll('.pb-opt');
-        for (var o = 0; o < opts.length; o++) {
-          if (opts[o]._group === this._group) {
-            opts[o].classList.toggle('is-checked', opts[o]._index === this._index);
-          }
-        }
-      };
-      row.appendChild(opt);
-    }
-    panel.appendChild(row);
-  }
-
-  function addStyleRow(panel, top) {
-    var row = el('div', 'pb-row');
-    row.style.top = top + 'px';
-    row.appendChild(el('div', 'pb-label', 'Estilo'));
-    var colors = ['#ffffff', '#f6e33f', '#ffffff'];
-    for (var i = 0; i < 3; i++) {
-      var opt = el('div', 'pb-opt focusable' + (i === state.playback.style ? ' is-checked' : ''));
-      opt.style.marginLeft = (i === 0 ? 0 : 28) + 'px';
-      opt.appendChild(el('div', 'radio'));
-      var aa = el('span', null, 'Aa');
-      aa.style.color = colors[i];
-      if (i === 2) {
-        aa.style.background = '#000000';
-        aa.style.display = 'inline-block';
-        aa.style.width = '94px';
-        aa.style.height = '50px';
-        aa.style.lineHeight = '50px';
-        aa.style.fontSize = '28px';
-      }
-      opt.appendChild(aa);
-      opt._group = 'style';
-      opt._index = i;
-      opt._activate = function () {
-        state.playback.style = this._index;
-        applyGlobalPlaybackPreferences();
-        saveGlobalPlayback();
-        var opts = panel.querySelectorAll('.pb-opt');
-        for (var o = 0; o < opts.length; o++) {
-          if (opts[o]._group === 'style') {
-            opts[o].classList.toggle('is-checked', opts[o]._index === this._index);
-          }
-        }
-      };
-      row.appendChild(opt);
-    }
-    panel.appendChild(row);
-  }
-
-  function buildProfilePanel() {
-    var p = el('div', 'settings-panel account-panel');
-    var avatar = el('div', 'account-avatar');
-    avatar.innerHTML = SETTINGS_MENU_ICONS.profile;
-    p.appendChild(avatar);
-    p.appendChild(el('div', 'account-number', localProfile.id));
-    p.appendChild(el('div', 'account-type', 'Perfil local de este televisor'));
-
-    var summary = el('div', 'account-card');
-    summary.appendChild(el('div', 'account-card-title', 'Tu cuenta está lista'));
-    summary.appendChild(el('div', 'account-card-text', 'Las preferencias, el historial y el capítulo que estabas viendo se guardan automáticamente en este TV.'));
-    p.appendChild(summary);
-
-    var actionsRow = el('div', 'account-actions-row');
-
-    var btnList = el('div', 'account-action-btn focusable', '📋 Ver mi lista');
-    btnList._activate = function () { showSettingsPanel('history', true); };
-    btnList._onMove = function (dir) {
-      if (dir === 'left') { setFocus(settingsItems[0]); return true; }
-      if (dir === 'right') { setFocus(btnAddons); return true; }
-      return false;
-    };
-
-    var btnAddons = el('div', 'account-action-btn focusable', '➕ Agregar Addons');
-    btnAddons._activate = function () { openAddonsDialog(); };
-    btnAddons._onMove = function (dir) {
-      if (dir === 'left') { setFocus(btnList); return true; }
-      if (dir === 'right') { setFocus(btnShare); return true; }
-      return false;
-    };
-
-    var btnShare = el('div', 'account-action-btn focusable', '📲 Compartir APP');
-    btnShare._activate = function () { showSettingsPanel('share', true); };
-    btnShare._onMove = function (dir) {
-      if (dir === 'left') { setFocus(btnAddons); return true; }
-      return false;
-    };
-
-    actionsRow.appendChild(btnList);
-    actionsRow.appendChild(btnAddons);
-    actionsRow.appendChild(btnShare);
-    p.appendChild(actionsRow);
-
-    var privacy = el('div', 'account-card account-card-small');
-    privacy.appendChild(el('div', 'account-card-title', 'Sin registro ni contraseña'));
-    privacy.appendChild(el('div', 'account-card-text', 'Este perfil no envía tus datos a ningún servidor externo. El historial, tus favoritos y los addons instalados se guardan de forma segura en la memoria de este TV.'));
-    p.appendChild(privacy);
-    return p;
-  }
-
-  function buildHistoryPanel() {
-    var p = el('div', 'settings-panel history-panel');
-    var tabs = el('div', 'history-tabs');
-    var tabDefs = [
-      { id: 'history', label: 'Historia' },
-      { id: 'favs', label: 'Mi favoritos' }
-    ];
-    for (var t = 0; t < tabDefs.length; t++) {
-      (function (tab) {
-        var tabEl = el('div', 'history-tab focusable' + (historyViewTab === tab.id ? ' is-selected' : ''), tab.label);
-        tabEl._activate = function () {
-          historyViewTab = tab.id;
-          showSettingsPanel('history', true);
-        };
-        tabs.appendChild(tabEl);
-      })(tabDefs[t]);
-    }
-    p.appendChild(tabs);
-    p.appendChild(el('div', 'history-rule'));
-
-    var records = [];
-    if (historyViewTab === 'history') {
-      records = localProfile.history || [];
-    } else if (historyViewTab === 'favs') {
-      for (var v = 0; v < VOD.length; v++) {
-        if (state.favs && state.favs[VOD[v].id]) {
-          records.push({ id: VOD[v].id, title: VOD[v].title, poster: VOD[v].poster || VOD[v].cover, series: isSeriesItem(VOD[v]), position: 0 });
-        }
-      }
-    }
-    var total = el('div', 'history-total', 'Total ');
-    total.appendChild(el('span', null, String(records.length)));
-    p.appendChild(total);
-    var grid = el('div', 'history-grid');
-    if (!records.length) {
-      grid.appendChild(el('div', 'history-grid-empty', 'No hay títulos para mostrar todavía.'));
-    } else {
-      for (var i = 0; i < records.length && i < 15; i++) {
-        (function (record) {
-          var card = el('div', 'history-card focusable');
-          var img = document.createElement('img');
-          img.className = 'history-poster';
-          img.alt = '';
-          img.src = record.poster || 'assets/original/common/bg_placehoder_vertical.png';
-          card.appendChild(img);
-          var progress = record.series ? ('Ya miró hasta ' + (record.episodeNumber ? ('epis. ' + record.episodeNumber) : 'un episodio')) : ('Ya miró hasta ' + formatTime(record.position || 0));
-          card.appendChild(el('div', 'history-progress', progress));
-          card.appendChild(el('div', 'history-card-title', record.title || 'Contenido'));
-          card._activate = function () { openHistoryRecord(record); };
-          grid.appendChild(card);
-        })(records[i]);
-      }
-    }
-    p.appendChild(grid);
-    return p;
-  }
-
-  function buildAddonsPanel() {
-    var p = el('div', 'settings-panel');
-    p.appendChild(el('div', 'sp-title', 'Addons y Listas M3U'));
-    p.appendChild(abs(el('div', 'sp-hr soft'), 0, 165, 1498, 1));
-    p.appendChild(el('div', 'sp-global-note', 'Extiende tu catálogo con miles de canales en vivo: Anime 24/7, Telenovelas, Cine continuo, Pluto TV y señales de TV abierta de Latinoamérica y España.'));
-
-    var card = el('div', 'account-card');
-    card.style.top = '245px';
-    card.style.height = '160px';
-    card.appendChild(el('div', 'account-card-title', 'Canales en Vivo e IPTV Personalizado'));
-    card.appendChild(el('div', 'account-card-text', 'Instala listas temáticas con un solo clic o añade tus propios enlaces M3U / M3U8 para disfrutar de televisión en vivo sin límites.'));
-    p.appendChild(card);
-
-    var btn = el('button', 'account-action-btn focusable', '➕ Abrir Administrador de Addons');
-    btn.style.position = 'absolute';
-    btn.style.left = '0';
-    btn.style.top = '435px';
-    btn.style.height = '68px';
-    btn.style.lineHeight = '68px';
-    btn.style.padding = '0 36px';
-    btn.style.fontSize = '25px';
-    btn._activate = function () {
-      openAddonsDialog();
-    };
-    btn._onMove = function (dir) {
-      if (dir === 'left') {
-        var idx = 2;
-        for (var i = 0; i < SETTINGS_ITEMS.length; i++) { if (SETTINGS_ITEMS[i].id === 'addons') { idx = i; break; } }
-        if (settingsItems[idx]) { setFocus(settingsItems[idx]); return true; }
-      }
-      return false;
-    };
-    p.appendChild(btn);
-
-    var note = el('div', 'sp-global-note', '💡 Consejo: También puedes administrar tus listas directamente desde la sección En Vivo pulsando en la categoría "➕ Addons M3U".');
-    note.style.top = '535px';
-    p.appendChild(note);
-
-    return p;
-  }
-
-  function buildSharePanel() {
-    var p = el('div', 'settings-panel share-panel');
-    p.appendChild(el('div', 'share-head', 'Compartir XuperTV'));
-    p.appendChild(el('div', 'share-sub', 'Instala XuperTV en cualquier otro televisor LG webOS de tu hogar o de tus amigos directamente desde el instalador IPK.'));
-
-    var freeBox = el('div', 'share-free');
-    freeBox.appendChild(el('div', 'share-free-badge', '100% GRATIS'));
-    freeBox.appendChild(el('div', 'share-free-text', 'Esta aplicación es y siempre será gratuita y sin fines de lucro. No compres suscripciones ni pagues a intermediarios.'));
-    p.appendChild(freeBox);
-
-    var warnBox = el('div', 'share-warning');
-    warnBox.appendChild(el('div', 'share-warning-title', 'Protege a tu comunidad contra revendedores'));
-    warnBox.appendChild(el('div', 'share-warning-text', 'Si alguien intentó cobrarte por esta app, repórtalo en nuestra comunidad. El código y las descargas son abiertas.'));
-    p.appendChild(warnBox);
-
-    var qrBox = el('div', 'share-qr-box');
-    var qrImg = el('img', 'share-qr');
-    qrImg.src = 'assets/original/settings/qr_telegram.png';
-    qrImg.alt = 'Telegram QR';
-    qrBox.appendChild(qrImg);
-
-    var qrText = el('div', 'share-qr-text');
-    qrText.appendChild(el('div', 'share-qr-title', 'Canal oficial de novedades y soporte'));
-    qrText.appendChild(el('div', 'share-qr-line', 'Únete a nuestro canal para descargar las versiones más recientes, reportar incidencias y conocer nuevas funciones.'));
-    qrText.appendChild(el('div', 'share-qr-handle', '@CristiancoDEV'));
-    qrText.appendChild(el('div', 'share-qr-url', 'https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS'));
-    qrBox.appendChild(qrText);
-    p.appendChild(qrBox);
-
-    return p;
-  }
-
-  function buildCrPanel() {
-    var p = el('div', 'settings-panel');
-    var head = el('div', 'cr-head');
-    head.appendChild(el('span', 't', 'Contenido adulto'));
-    var sw = el('div', 'sw focusable ' + (state.crOn ? 'on' : 'off'));
-    sw._activate = function () {
-      state.crOn = !state.crOn;
-      sw.className = 'sw focusable ' + (state.crOn ? 'on' : 'off');
-      setFocus(sw);
-    };
-    head.appendChild(sw);
-    p.appendChild(head);
-
-    p.appendChild(el('div', 'cr-tip', '(LIVE-18+，Explorar-Adult)'));
-    var btn = el('div', 'cr-btn focusable', 'Cambiar contraseña de control parental');
-    btn._activate = function () { /* password dialog not reconstructed */ };
-    p.appendChild(btn);
-    p.appendChild(el('div', 'cr-warn', 'Establecer contraseña para activar contenidos para adultos'));
-    return p;
-  }
-
-  function buildParentPanel() {
-    var p = el('div', 'settings-panel');
-    p.appendChild(el('div', 'pl-title', 'Configuraciones del Control Parental'));
-    p.appendChild(el('div', 'pl-tip', 'Ingrese la contraseña de cuatro dígitos e ingrese viendo el programa de bloqueo.'));
-    p.appendChild(el('div', 'pl-label', 'Contraseña inicial:'));
-    var boxes = el('div', 'pl-boxes');
-    for (var i = 0; i < 4; i++) {
-      var b = el('div', 'pl-box focusable');
-      b._activate = function () { /* numeric capture not reconstructed */ };
-      boxes.appendChild(b);
-      if (i < 3) { boxes.appendChild(el('div', 'pl-sep')); }
-    }
-    p.appendChild(boxes);
-    p.appendChild(el('div', 'pl-note', ''));
-    var ok = el('div', 'pl-ok focusable', 'OK');
-    ok._activate = function () { /* password validation not reconstructed */ };
-    p.appendChild(ok);
-    return p;
-  }
-
-  function buildFeedbackPanel() {
-    var p = el('div', 'settings-panel');
-    p.appendChild(el('div', 'fb-title', 'Ayuda y Feedback'));
-    p.appendChild(el('div', 'fb-hr'));
-    p.appendChild(el('div', 'fb-contact',
-      'Si tiene alguna duda, puede ponerse en contacto con nosotros a través de los siguientes medios:'));
-    p.appendChild(el('div', 'fb-qr-note', 'Escanee el código QR para enviar sugerencias o comentarios.'));
-    var qr = el('div', 'fb-qr');
-    p.appendChild(qr);
-    var help = el('div', 'fb-help focusable', 'Ayuda');
-    help._activate = function () { /* help center not reconstructed */ };
-    p.appendChild(help);
-    return p;
-  }
-
-  function buildUpgradePanel() {
-    var p = el('div', 'settings-panel');
-    p.appendChild(el('div', 'sp-title plain', 'Settings'));
-    p.appendChild(abs(el('div', 'sp-hr soft'), 0, 165, 1498, 1));
-
-    var cache = el('div', 'sp-card');
-    abs(cache, 30, 198, 1360, 461);
-    cache.appendChild(el('h3', null, 'Limpiar cache'));
-    var rows = [
-      { y: 139, label: 'Historia' },
-      { y: 246, label: 'Cache de foto' },
-      { y: 353, label: 'Limpiar todos' }
-    ];
-    for (var i = 0; i < rows.length; i++) {
-      var row = el('div', 'sp-clear-row');
-      row.style.top = rows[i].y + 'px';
-      row.appendChild(el('span', 'lbl', rows[i].label));
-      var btn = el('div', 'btn focusable', 'Limpiar');
-      btn._activate = function () { /* cache clearing not implemented */ };
-      row.appendChild(btn);
-      cache.appendChild(row);
-    }
-    p.appendChild(cache);
-
-    var upd = el('div', 'sp-card');
-    abs(upd, 30, 689, 1360, 291);
-    upd.appendChild(el('h3', null, 'Actualización'));
-    var ver = el('div', 'sp-version', 'v4.34.4');
-    upd.appendChild(ver);
-    p.appendChild(upd);
-    return p;
-  }
-
-  function buildAboutPanel() {
-    var p = el('div', 'settings-panel');
-    p.appendChild(el('div', 'sp-title plain', 'Sobre nosotros'));
-    p.appendChild(abs(el('div', 'sp-hr soft'), 0, 165, 1498, 1));
-    p.appendChild(el('div', 'sp-about-body',
-      'Xuper TV se dedica a ofrecer a los usuarios una amplia variedad de recursos de alta calidad. ' +
-      'Aquí encontrarás miles de películas, series, animes y canales en vivo, todo reunido en un solo lugar. ' +
-      'Brindamos una experiencia estable, diversa y siempre actualizada, además de contenidos gratuitos para disfrutar.'));
-    var port = el('div', 'sp-about-port', 'Port para LG webOS realizado por CristiancoDEV');
-    port.style.top = '380px';
-    p.appendChild(port);
-    var mail = el('div', 'sp-about-mail');
-    var ico = el('img');
-    ico.src = 'assets/original/settings/vod_email_icon.png';
-    ico.alt = '';
-    mail.appendChild(ico);
-    mail.appendChild(el('span', null, 'escuchamos-tv@outlook.com'));
-    p.appendChild(mail);
-
-    var updateBox = el('div', 'sp-about-update-box');
-    updateBox.appendChild(el('div', 'sp-about-update-title', 'Actualizaciones de XuperTV'));
-    updateBox.appendChild(el('div', 'sp-about-update-desc',
-      'Versión instalada: v' + currentVer + '. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.'));
-    var row = el('div', 'sp-about-update-row');
-    var btnCheckUpdate = el('button', 'sp-about-update-btn focusable', 'Buscar actualizaciones');
-    var msgUpdate = el('span', 'sp-about-update-msg');
-    btnCheckUpdate._activate = function () {
-      btnCheckUpdate.textContent = 'Comprobando...';
-      msgUpdate.textContent = '';
-      checkForUpdates(false, function (err, res) {
-        btnCheckUpdate.textContent = 'Buscar actualizaciones';
-        if (err) {
-          msgUpdate.textContent = 'Error: ' + ((err && err.message) || err);
-          msgUpdate.style.color = '#ef4444';
-        } else if (res && res.updateAvailable) {
-          msgUpdate.textContent = '¡Nueva versión disponible: v' + res.latestVersion + '!';
-          msgUpdate.style.color = '#22c55e';
-        } else {
-          msgUpdate.textContent = 'Tienes la versión más reciente (v' + currentVer + ').';
-          msgUpdate.style.color = '#38bdf8';
-        }
-      });
-    };
-    row.appendChild(btnCheckUpdate);
-    row.appendChild(msgUpdate);
-    updateBox.appendChild(row);
-    p.appendChild(updateBox);
-
-    return p;
-  }
-
-  /* ------------------------------------------------------- network diagnostics
-     Reads only: it asks the service for the local DNS answer and the DoH answer
-     of every portal/CDN host and shows where the connection breaks.  The
-     bypass itself lives in the service (dnsx.js) and needs no user action. */
-  var netdiagState = { running: false, report: null, error: null, runId: 0 };
-  var netdiagEnv = null;
-
-  function netdiagStateText(host) {
-    if (!host) { return 'Sin datos'; }
-    switch (host.verdict) {
-      case 'ok': return 'Correcto';
-      case 'dns-distinto': return 'DNS alterado';
-      case 'dns-local-falla': return 'Bloqueado';
-      case 'sin-tcp': return 'Sin conexión';
-      case 'tls-falla': return 'HTTPS falla';
-      case 'sin-tiempo': return 'Sin respuesta';
-      default: return 'Sin datos';
-    }
-  }
-
-  function netdiagStateClass(host) {
-    if (!host) { return ''; }
-    if (host.verdict === 'ok') { return 'ok'; }
-    if (host.verdict === 'dns-distinto' || host.verdict === 'dns-local-falla' ||
-        host.verdict === 'sin-tiempo' || host.timeout) { return 'warn'; }
-    return 'bad';
-  }
-
-  function netdiagSummary(verdict) {
-    switch (verdict) {
-      case 'ok':
-        return { cls: 'ok', text: 'La conexión está bien: el catálogo y los servidores de vídeo responden.' };
-      case 'dns-distinto':
-        return { cls: 'warn', text: 'Tu operador devuelve direcciones distintas a las reales (bloqueo por DNS). La app ya las esquiva sola.' };
-      case 'dns-local-falla':
-        return { cls: 'warn', text: 'Tu operador bloquea el DNS del televisor (no devuelve estos dominios). La app ya lo esquiva con su DNS seguro.' };
-      case 'doh-sin-respuesta':
-        return { cls: 'bad', text: 'El DNS seguro no devolvió respuesta. Revisa la conexión del televisor.' };
-      case 'doh-bloqueado':
-        return { cls: 'bad', text: 'La red bloquea el DNS seguro (Cloudflare y Google por HTTPS).' };
-      case 'sin-salida':
-        return { cls: 'bad', text: 'Los servidores no aceptan la conexión desde esta red.' };
-      case 'algun-servidor':
-        return { cls: 'warn', text: 'Un servidor de vídeo no respondió (suele rotar). El resto del catálogo sí responde: vuelve a analizar.' };
-      case 'incompleto':
-        return { cls: 'warn', text: 'La prueba no terminó: la TV no recibió respuesta de ningún servidor a tiempo. Vuelve a analizar; si se repite, apaga y enciende la TV.' };
-      case 'servicio-sin-respuesta':
-        return { cls: 'bad', text: 'El servicio de fondo no respondió. El reporte indica si fue el servicio completo o solo el diagnóstico.' };
-      default:
-        return { cls: '', text: 'Sin resultado todavía.' };
-    }
-  }
-
-  function renderNetdiag(summary, list, report) {
-    clear(list);
-    var summaryInfo = netdiagSummary(report.verdict);
-    summary.textContent = report.serviceError ? report.serviceError : summaryInfo.text;
-    summary.className = 'dg-summary' + (report.serviceError ? ' bad' : (summaryInfo.cls ? ' ' + summaryInfo.cls : ''));
-
-    var hosts = report.hosts || [];
-    for (var i = 0; i < hosts.length; i++) {
-      var host = hosts[i];
-      var row = el('div', 'dg-row ' + netdiagStateClass(host));
-      var ips = (host.doh && host.doh.ok && host.doh.ips.length) ? host.doh.ips : (host.system.ips || []);
-      var local = (host.system && host.system.ok) ? host.system.ips.join(', ') : 'sin respuesta';
-      row.appendChild(el('span', 'dg-host', host.host));
-      row.appendChild(el('span', 'dg-local', local));
-      row.appendChild(el('span', 'dg-state', netdiagStateText(host)));
-      row.appendChild(el('span', 'dg-ip', ips.join(', ')));
-      list.appendChild(row);
-    }
-
-    var providers = report.providers || [];
-    var okProviders = [];
-    var badProviders = [];
-    for (var p = 0; p < providers.length; p++) {
-      if (providers[p].reachable) { okProviders.push(providers[p].ip); }
-      else { badProviders.push(providers[p].ip); }
-    }
-    var providersKnown = providers.length > 0;
-    var dnsRow = el('div', 'dg-row dns');
-    dnsRow.appendChild(el('span', 'dg-host', 'DNS seguro (DoH)'));
-    dnsRow.appendChild(el('span', 'dg-local', providersKnown ? (okProviders.length + '/' + providers.length + ' disponibles') : 'sin datos'));
-    dnsRow.appendChild(el('span', 'dg-state', providersKnown ? (okProviders.length ? 'Correcto' : 'Bloqueado') : 'No evaluado'));
-    dnsRow.appendChild(el('span', 'dg-ip', okProviders.join(', ')));
-    if (!providersKnown) { dnsRow.className = 'dg-row dns warn'; }
-    else if (okProviders.length) { dnsRow.className = 'dg-row dns ok'; }
-    else { dnsRow.className = 'dg-row dns bad'; }
-    list.appendChild(dnsRow);
-
-    /* ── Codec row ─────────────────────────────────────────────────────── */
-    var codec = report.codec || {};
-    /* canPlayType() is unreliable on several Starfish/webOS builds: it may
-       return an empty string even when native playback works. It is evidence
-       about the browser API only, never a verdict about the TV hardware. */
-    var codecKnown = !!(codec.h264 || codec.hevc || codec.hls);
-    var codecRow = el('div', 'dg-row' + (codecKnown ? ' ok' : ' warn'));
-    var codecDesc = [
-      'H.264: ' + (codec.h264 || 'no informado'),
-      'HEVC: '  + (codec.hevc || 'no informado'),
-      'HLS: '   + (codec.hls  || 'no informado')
-    ].join('  ');
-    codecRow.appendChild(el('span', 'dg-host', 'Códec'));
-    codecRow.appendChild(el('span', 'dg-local', ''));
-    codecRow.appendChild(el('span', 'dg-state', codecKnown ? 'Informado' : 'No confirmado'));
-    codecRow.appendChild(el('span', 'dg-ip', codecDesc));
-    list.appendChild(codecRow);
-
-    /* ── Layer rows: portal / sesión / live / VOD ───────────────────── */
-    var layers = report.layers || {};
-    var layerDefs = [
-      { key: 'portal',  label: 'Portal' },
-      { key: 'session', label: 'Sesión' },
-      { key: 'live',    label: 'Live CDN' },
-      { key: 'vod',     label: 'VOD CDN' }
-    ];
-    var liveFail = false;
-    var vodFail = false;
-    for (var li = 0; li < layerDefs.length; li++) {
-      var ldef = layerDefs[li];
-      var ldata = layers[ldef.key];
-      if (!ldata) { continue; }
-      /* A probe that hit the deadline proves nothing about the carrier: it must
-         not be reported as a block, only as "no answer". */
-      if (ldef.key === 'live' && !ldata.ok && !ldata.timeout) { liveFail = true; }
-      if (ldef.key === 'vod' && !ldata.ok && !ldata.timeout) { vodFail = true; }
-      var lrow = el('div', 'dg-row ' + (ldata.ok ? 'ok' : (ldata.timeout ? 'warn' : 'bad')));
-      var ldesc = ldata.error || (ldata.status ? 'HTTP ' + ldata.status : (ldata.ok ? 'OK' : 'Error'));
-      if (ldef.key === 'session') {
-        ldesc = 'userId ' + (ldata.userId || '?') + '  token ' + (ldata.token || '?');
-      }
-      var lms = ldata.ms ? (' ' + ldata.ms + ' ms') : '';
-      lrow.appendChild(el('span', 'dg-host', ldef.label));
-      lrow.appendChild(el('span', 'dg-local', ''));
-      lrow.appendChild(el('span', 'dg-state', ldata.ok ? 'OK' : (ldata.timeout ? 'Sin respuesta' : 'Error')));
-      lrow.appendChild(el('span', 'dg-ip', ldesc + lms));
-      list.appendChild(lrow);
-    }
-
-    /* A green DNS test with dead media CDNs is the classic carrier block:
-       the operator answers DNS but drops the video hosts by IP or TLS SNI.
-       Without this override the viewer reads "todo bien" and still sees a
-       black screen, which is exactly the report we get from Chile/Colombia. */
-    if (summaryInfo.cls === 'ok' && (liveFail || vodFail)) {
-      var broken = (liveFail && vodFail) ? 'los canales en vivo y las películas'
-        : (liveFail ? 'los canales en vivo' : 'las películas');
-      summaryInfo = {
-        cls: 'bad',
-        text: 'El DNS responde bien, pero ' + broken + ' no se pueden abrir: ' +
-          'tu operador bloquea las direcciones de vídeo (bloqueo por IP/SNI). ' +
-          'Ese bloqueo no se arregla desde la app; hace falta una VPN en el router.'
-      };
-      summary.textContent = summaryInfo.text;
-      summary.className = 'dg-summary ' + summaryInfo.cls;
-    }
-
-    if (report.partial && summaryInfo.cls !== 'bad') {
-      summary.textContent += ' (La prueba no terminó a tiempo: vuelve a analizar.)';
-    }
-
-    if (netdiagEnv) {
-      var s = report.screen || {};
-      var parts = [];
-      if (s.w && s.h) { parts.push('Pantalla ' + s.w + '×' + s.h); }
-      if (s.panelW && s.panelH) { parts.push('panel ' + s.panelW + '×' + s.panelH); }
-      if (s.scale) { parts.push('escala ' + (Math.round(s.scale * 100) / 100)); }
-      if (report.version) { parts.push('versión ' + report.version); }
-      /* A service left over from a previous IPK keeps answering with its old
-         version and lacks the newest Luna methods (that is the real cause of
-         "Denied method call checkUpdate for category /" on webOS 3.4.3). */
-      var appVerNode = document.querySelector('.welcome-version');
-      var appVer = appVerNode ? String(appVerNode.textContent || '').replace(/[^\d.]/g, '') : '';
-      if (report.version && appVer && report.version !== appVer) {
-        parts.push('SERVICIO DESACTUALIZADO (app ' + appVer + '): desenchufa la TV 30 s');
-      }
-      netdiagEnv.textContent = parts.join(' · ');
-    }
-  }
-
-  function reportSafeText(value) {
-    /* A support photo must never expose a playable URL, signed query, token or
-       request header. Keep only a short, human-readable error classification. */
-    var text = String(value == null ? '' : value);
-    text = text.replace(/https?:\/\/[^\s"']+/ig, '[URL OCULTA]');
-    text = text.replace(/(token|signature|authorization|cookie|key)=?[^\s,&]*/ig, '$1=[OCULTO]');
-    text = text.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ');
-    return text.slice(0, 150);
-  }
-
-  function layerReportState(layer) {
-    if (!layer) { return 'sin datos'; }
-    if (layer.ok) { return layer.status ? ('OK (HTTP ' + layer.status + ')') : 'OK'; }
-    if (layer.timeout) { return 'sin respuesta'; }
-    return 'error' + (layer.error ? (': ' + reportSafeText(layer.error)) : '');
-  }
-
-  function buildSupportReport(report) {
-    var lines = [];
-    var env = report.screen || {};
-    var layers = report.layers || {};
-    var hosts = report.hosts || [];
-    lines.push('REPORTE DE SOPORTE XUPERTV');
-    lines.push('Versión: ' + (report.version || 'desconocida'));
-    lines.push('Pantalla: ' + ((env.w && env.h) ? (env.w + '×' + env.h) : 'sin datos') +
-      ((env.panelW && env.panelH) ? (' | panel ' + env.panelW + '×' + env.panelH) : '') +
-      (env.scale ? (' | escala ' + env.scale) : ''));
-    lines.push('Red: ' + (report.verdict || 'sin resultado') + (report.partial ? ' (parcial)' : ''));
-    if (report.pending) { lines.push('Diagnóstico: sin respuesta / detenido para generar este reporte'); }
-    if (report.serviceError) { lines.push('Servicio: ' + reportSafeText(report.serviceError)); }
-    lines.push('Portal: ' + layerReportState(layers.portal));
-    lines.push('Sesión: ' + layerReportState(layers.session));
-    lines.push('TV en vivo: ' + layerReportState(layers.live));
-    lines.push('Películas/series: ' + layerReportState(layers.vod));
-    lines.push('Reproductor: ' + (state.playerMode || 'sin reproducción') +
-      ' | modo ' + (state.streamMode || 'normal') +
-      (state.streamError ? (' | error ' + reportSafeText(state.streamError)) : ''));
-    for (var i = 0; i < hosts.length && i < 5; i++) {
-      lines.push('Host ' + (i + 1) + ': ' + reportSafeText(hosts[i].host) +
-        ' — ' + reportSafeText(hosts[i].verdict || 'sin datos'));
-    }
-    lines.push('');
-    lines.push('Privacidad: este reporte no incluye enlaces, tokens, cabeceras ni historial.');
-    lines.push('Toma una foto de esta pantalla y envíala al soporte.');
-    return lines.join('\n');
-  }
-
-  function showSupportReport(summary, list) {
-    if (!netdiagState.report) {
-      /* A frozen service must not prevent a user from contacting support.
-         Stop only this UI run and make a report from the known local facts. */
-      netdiagState.runId++;
-      netdiagState.running = false;
-      var vp = window.__xuperViewport || {};
-      netdiagState.report = {
-        version: (document.querySelector('.welcome-version') || {}).textContent || 'desconocida',
-        verdict: 'sin respuesta', partial: true, pending: true,
-        screen: { w: vp.w || 0, h: vp.h || 0, scale: vp.scale || 0,
-          panelW: vp.panelW || 0, panelH: vp.panelH || 0 },
-        layers: {}, hosts: []
-      };
-    }
-    clear(list);
-    var report = el('div', 'dg-report', buildSupportReport(netdiagState.report));
-    list.appendChild(report);
-    summary.className = 'dg-summary ok';
-    summary.textContent = 'Reporte listo. Toma una foto de esta pantalla y envíala al soporte.';
-  }
-
-  function runNetdiag(button, summary, list) {
-    /* Settings can be rebuilt while a slow TV still has a diagnostic request
-       open. Give the new visible panel its own run and ignore the old reply;
-       otherwise the reply paints an already-detached panel and viewers see
-       an apparently empty Diagnóstico screen. */
-    var runId = netdiagState.runId + 1;
-    netdiagState.runId = runId;
-    netdiagState.running = true;
-    netdiagState.error = null;
-    button.textContent = 'Analizando…';
-    summary.className = 'dg-summary';
-    summary.textContent = 'Consultando el DNS del televisor, el DNS seguro y los servidores…';
-    clear(list);
-    /* The list must never look empty while the test runs: some TVs take a while
-       and "nothing happened" is the report we keep getting. */
-    list.appendChild(el('div', 'dg-row', 'Analizando…'));
-
-    function localFailure(reason) {
-      if (netdiagState.runId !== runId || !netdiagState.running) { return; }
-      netdiagState.running = false;
-      /* Ignore the late callback from the request that just timed out. */
-      netdiagState.runId++;
-      netdiagState.report = {
-        version: (document.querySelector('.welcome-version') || {}).textContent || 'desconocida',
-        verdict: 'servicio-sin-respuesta', partial: true, serviceError: reason,
-        screen: (function () {
-          var vp = window.__xuperViewport || {};
-          return { w: vp.w || 0, h: vp.h || 0, scale: vp.scale || 0,
-            panelW: vp.panelW || 0, panelH: vp.panelH || 0 };
-        })(),
-        layers: {}, hosts: [], providers: []
-      };
-      button.textContent = 'Analizar de nuevo';
-      renderNetdiag(summary, list, netdiagState.report);
-    }
-
-    /* First prove that Luna can reach our service. This is deliberately tiny
-       and local: it distinguishes a missing/blocked service from a network
-       diagnostic that itself is slow, instead of leaving a blank spinner. */
-    /* Allow up to 25 seconds for the Node.js service to cold-boot on slower
-       dual-core TVs (webOS 3.5 / 2017 models like LJ550 need 8-12 seconds). */
-    var pingDone = false;
-    var pingTimer = setTimeout(function () {
-      if (!pingDone) { pingDone = true; localFailure('ping no respondió en 25 segundos (el servicio no arrancó)'); }
-    }, 25000);
-    portalServiceCall('ping', {}, function (pingError, pingPayload) {
-      if (pingDone) { return; }
-      pingDone = true;
-      clearTimeout(pingTimer);
-      if (pingError || !pingPayload) {
-        localFailure('ping falló: ' + reportSafeText(pingError || 'sin respuesta'));
-      } else {
-        netdiagState.ping = pingPayload;
-        if (netdiagState.report) {
-          netdiagState.report.ping = pingPayload;
-        }
-      }
-    }, 24000);
-
-    /* Two safety nets: one explains a slow network, the other gives the button
-       back if the service never answers at all. Align with the 45 s service timeout. */
-    var slowTimer = setTimeout(function () {
-      if (!netdiagState.running || netdiagState.runId !== runId) { return; }
-      summary.textContent = 'Analizando… tu red está respondiendo lento, espera un momento.';
-    }, 9000);
-    var guardTimer = setTimeout(function () {
-      if (!netdiagState.running || netdiagState.runId !== runId) { return; }
-      localFailure('ping respondió, pero netdiag no devolvió resultado en 45 segundos');
-    }, 45000);
-
-    portalServiceCall('netdiag', (function () {
-      var vp = window.__xuperViewport || {};
-      var vid = playerVideo || document.querySelector('video');
-      function cp(t) { return vid ? (vid.canPlayType(t) || '') : ''; }
-      return {
-        screenW: vp.w || 0, screenH: vp.h || 0, screenScale: vp.scale || 0,
-        panelW: vp.panelW || 0, panelH: vp.panelH || 0,
-        codecH264: cp('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
-        codecHEVC: cp('video/mp4; codecs="hvc1.1.6.L93.B0"'),
-        codecHLS:  cp('application/x-mpegURL'),
-        /* Last real CDN URLs so the service can prove whether the carrier
-           drops live/VOD by IP or SNI even when DNS looks perfect. */
-        liveUrl: (lastCdnProbe.live && lastCdnProbe.live.url) || '',
-        liveHeaders: (lastCdnProbe.live && lastCdnProbe.live.headers) || {},
-        vodUrl: (lastCdnProbe.vod && lastCdnProbe.vod.url) || '',
-        vodHeaders: (lastCdnProbe.vod && lastCdnProbe.vod.headers) || {}
-      };
-    })(), function (error, payload) {
-      if (netdiagState.runId !== runId) { return; }
-      clearTimeout(slowTimer);
-      clearTimeout(guardTimer);
-      netdiagState.running = false;
-      button.textContent = 'Analizar de nuevo';
-      if (button.parentNode && button.parentNode.className.indexOf('is-active') !== -1) { setFocus(button); }
-      if (error || !payload) {
-        netdiagState.error = error || 'sin respuesta';
-        summary.className = 'dg-summary bad';
-        var errMsg = String(error || '');
-        if (/denied|permission|not permitted|bloqueado el servicio/i.test(errMsg)) {
-          summary.textContent = SERVICE_BLOCKED_HINT;
-        } else if (/exist|not found|no disponible/i.test(errMsg)) {
-          summary.textContent = 'El servicio de fondo no está instalado en la TV. Reinstala la app usando el instalador .bat';
-        } else if (/timeout|tiempo|espera/i.test(errMsg)) {
-          summary.textContent = 'Tiempo de espera agotado. La conexión es muy lenta o el DNS de tu operador no responde.';
-        } else {
-          summary.textContent = 'No se pudo ejecutar la prueba (' + (errMsg || 'el servicio no respondió') + ').';
-        }
-        return;
-      }
-      netdiagState.report = payload;
-      renderNetdiag(summary, list, payload);
-    }, 45000);
-  }
-
-  function buildNetdiagPanel() {
-    var p = panelBase('Diagnóstico de red');
-    p.appendChild(el('div', 'dg-note',
-      'Comprueba si tu operador de internet está bloqueando los servidores de XuperTV. ' +
-      'La app ya usa un DNS seguro (DNS-over-HTTPS) para evitarlo; esta prueba solo lo muestra.'));
-    p.appendChild(abs(el('div', 'sp-hr'), 0, 216, 1478, 1));
-
-    var button = el('div', 'dg-btn focusable', 'Analizar red');
-    abs(button, 52, 242, 330, 66);
-    var reportButton = el('div', 'dg-btn dg-report-btn focusable', 'Generar reporte');
-    abs(reportButton, 400, 242, 330, 66);
-    var summary = el('div', 'dg-summary', 'Pulsa "Analizar red" para empezar.');
-    abs(summary, 750, 242, 676, 66);
-
-    var head = el('div', 'dg-head');
-    abs(head, 52, 336, 1380, 40);
-    head.appendChild(el('span', 'dg-host', 'Dominio'));
-    head.appendChild(el('span', 'dg-local', 'DNS del televisor'));
-    head.appendChild(el('span', 'dg-state', 'Estado'));
-    head.appendChild(el('span', 'dg-ip', 'Dirección real (DNS seguro)'));
-
-    var list = el('div', 'dg-list');
-    abs(list, 52, 378, 1380, 450);
-
-    var envLine = el('div', 'dg-env', '');
-    abs(envLine, 52, 832, 1380, 32);
-    netdiagEnv = envLine;
-
-    var foot = el('div', 'dg-foot',
-      'Si el estado dice "Bloqueado", tu operador está interceptando el nombre del servidor, pero la app ya conecta por la dirección real. ' +
-      'El reproductor Normal y el Modo Fluido usan este mismo DNS seguro. ' +
-      'Si el vídeo sigue sin abrir con la conexión en verde, el bloqueo es por dirección: hace falta un túnel (VPN local).');
-    abs(foot, 52, 872, 1380, 150);
-
-    button._activate = function () { runNetdiag(button, summary, list); };
-    reportButton._activate = function () { showSupportReport(summary, list); };
-    /* Opening the panel runs the test once: the people who need it are not
-       going to press a button they do not understand. */
-    p._ensureDiag = function () {
-      if (netdiagState.report) {
-        renderNetdiag(summary, list, netdiagState.report);
-        return;
-      }
-      runNetdiag(button, summary, list);
-    };
-
-    p.appendChild(button);
-    p.appendChild(reportButton);
-    p.appendChild(summary);
-    p.appendChild(head);
-    p.appendChild(list);
-    p.appendChild(envLine);
-    p.appendChild(foot);
-    return p;
-  }
-
-  function buildPendingPanel(title, text) {
-    var p = el('div', 'settings-panel');
-    p.appendChild(el('div', 'sp-title', title));
-    p.appendChild(el('div', 'sp-hr'));
-    p.appendChild(el('div', 'sp-pending', text));
-    return p;
-  }
-
-  /* ================================================================ PLAYER */
-  /* The player controller hides itself after a few seconds without input.
-     The constant is not exposed in the decoded resources; 5000 ms is used
-     until it can be measured on the running app (WSA/Android TV). */
-  var INFO_HIDE_MS = 5000;
-  var osdHideTimer = null;
-
-  function formatTime(sec) {
-    sec = Math.max(0, Math.floor(sec || 0));
-    var h = Math.floor(sec / 3600);
-    var m = Math.floor((sec % 3600) / 60);
-    var s = sec % 60;
-    return pad2(h) + ':' + pad2(m) + ':' + pad2(s);
-  }
-
-  function durationToSeconds(value) {
-    if (typeof value === 'number' && isFinite(value) && value > 0) { return value; }
-    if (typeof value !== 'string') { return 0; }
-    var str = value.trim();
-    if (!str || str === '—' || str === '-') { return 0; }
-
-    var hMatch = str.match(/(\d+)\s*h(?:our|ora|s)?/i);
-    var mMatch = str.match(/(\d+)\s*m(?:in|uto|s)?/i);
-    var sMatch = str.match(/(\d+)\s*s(?:ec|eg)?/i);
-    if (hMatch || mMatch || sMatch) {
-      var h = hMatch ? parseInt(hMatch[1], 10) : 0;
-      var m = mMatch ? parseInt(mMatch[1], 10) : 0;
-      var s = sMatch ? parseInt(sMatch[1], 10) : 0;
-      return (h * 3600) + (m * 60) + s;
-    }
-
-    if (str.indexOf(':') !== -1) {
-      var parts = str.split(':');
-      if (parts.length === 2) {
-        var p0 = Number(parts[0]);
-        var p1 = Number(parts[1]);
-        if (isFinite(p0) && isFinite(p1) && p0 >= 0 && p1 >= 0) {
-          return (p0 * 60) + p1;
-        }
-      } else if (parts.length === 3) {
-        var p0 = Number(parts[0]);
-        var p1 = Number(parts[1]);
-        var p2 = Number(parts[2]);
-        if (isFinite(p0) && isFinite(p1) && isFinite(p2) && p0 >= 0 && p1 >= 0 && p2 >= 0) {
-          return (p0 * 3600) + (p1 * 60) + p2;
-        }
-      }
-    }
-
-    var num = Number(str);
-    if (isFinite(num) && num > 0) {
-      return num;
-    }
-    return 0;
-  }
-
-  var vodProgressInterval = null;
-  function startVodProgressTicker() {
-    stopVodProgressTicker();
-    vodProgressInterval = setInterval(function () {
-      if (state.screen === 'player' && state.playerMode === 'vod' && playerVideo && !playerVideo.paused) {
-        var cur = relayBaseUrl ? (relayStartOffset + (playerVideo.currentTime || 0)) : (playerVideo.currentTime || 0);
-        var vidDur = (playerVideo && isFinite(playerVideo.duration) && playerVideo.duration > 0) ? playerVideo.duration : 0;
-        var epDur = (state.playerEpisode && state.playerEpisode.duration) ? durationToSeconds(state.playerEpisode.duration) : 0;
-        var itemDur = (state.playerItem && state.playerItem.duration) ? durationToSeconds(state.playerItem.duration) : 0;
-        var totalDur = vidDur || epDur || itemDur || 0;
-        updateVodProgress(cur, totalDur);
-        updateSubtitleDisplay(cur);
-        rememberWatchProgress(cur, totalDur);
-      }
-    }, 500);
-  }
-  function stopVodProgressTicker() {
-    if (vodProgressInterval) {
-      clearInterval(vodProgressInterval);
-      vodProgressInterval = null;
-    }
-  }
-
-  function updateVodProgress(current, duration) {
-    if (!vodTimeCurrent || !vodTimeTotal || !vodSeekProgress) { return; }
-    if (vodScrubbing) { current = vodScrubTime; }
-    var knownDuration = durationToSeconds(duration);
-    if (!knownDuration && state.playerEpisode && state.playerEpisode.duration) {
-      knownDuration = durationToSeconds(state.playerEpisode.duration);
-    }
-    if (!knownDuration && state.playerItem && state.playerItem.duration) {
-      knownDuration = durationToSeconds(state.playerItem.duration);
-    }
-    if (!knownDuration && playerVideo && isFinite(playerVideo.duration) && playerVideo.duration > 0) {
-      knownDuration = playerVideo.duration;
-    }
-    if (!knownDuration && activeSubtitleCues && activeSubtitleCues.length) {
-      var lastCue = activeSubtitleCues[activeSubtitleCues.length - 1];
-      if (lastCue && lastCue.end > 0) {
-        knownDuration = Math.round(lastCue.end + 60);
-      }
-    }
-
-    current = Number(current) || 0;
-    vodTimeCurrent.textContent = formatTime(current);
-
-    if (!knownDuration || knownDuration <= 0) {
-      var isSeries = isSeriesItem(state.playerItem);
-      knownDuration = isSeries ? 2700 : 6300;
-      if (current > knownDuration) {
-        knownDuration = Math.round(current * 1.15);
-      }
-    }
-
-    vodTimeTotal.textContent = formatTime(knownDuration);
-    var pct = Math.min(100, Math.max(0, (current / knownDuration) * 100));
-    vodSeekProgress.style.width = pct.toFixed(2) + '%';
-    if (vodSeekThumb) {
-      vodSeekThumb.style.left = pct.toFixed(2) + '%';
-    }
-    if (playerVideo && playerVideo.buffered && playerVideo.buffered.length > 0) {
-      try {
-        var bufEnd = playerVideo.buffered.end(playerVideo.buffered.length - 1);
-        if (relayBaseUrl) { bufEnd += relayStartOffset; }
-        var bufPct = Math.min(100, Math.max(0, (bufEnd / knownDuration) * 100));
-        if (vodSeekBuffered) { vodSeekBuffered.style.width = bufPct.toFixed(2) + '%'; }
-      } catch (eB) { /* ignore */ }
-    }
-  }
-
-
-  function showOsdIcon(type) {
-    if (!playerOsdIcon) { playerOsdIcon = $('player-osd-icon'); }
-    if (!playerOsdIcon) { return; }
-    if (osdHideTimer) { clearTimeout(osdHideTimer); osdHideTimer = null; }
-    if (type === 'pause') {
-      playerOsdIcon.style.backgroundImage = 'url(assets/original/common/icon_status_pause.png)';
-      playerOsdIcon.classList.add('is-active');
-    } else if (type === 'forward') {
-      playerOsdIcon.style.backgroundImage = 'url(assets/original/common/icon_status_forward.png)';
-      playerOsdIcon.classList.add('is-active');
-      osdHideTimer = setTimeout(function () {
-        playerOsdIcon.classList.remove('is-active');
-      }, 900);
-    } else if (type === 'backward') {
-      playerOsdIcon.style.backgroundImage = 'url(assets/original/common/icon_status_backward.png)';
-      playerOsdIcon.classList.add('is-active');
-      osdHideTimer = setTimeout(function () {
-        playerOsdIcon.classList.remove('is-active');
-      }, 900);
-    } else {
-      playerOsdIcon.classList.remove('is-active');
-    }
-  }
-
-  function playerSeek(delta) {
-    if (!playerVideo) { return; }
-    var dur = playerVideo.duration;
-    if (isNaN(dur) || dur <= 0) {
-      dur = 86400;
-    }
-    var cur = playerVideo.currentTime || 0;
-    var target = Math.max(0, Math.min(dur, cur + delta));
-    try {
-      playerVideo.currentTime = target;
-    } catch (eSk) { /* ignore */ }
-    updateVodProgress(target, playerVideo.duration);
-    showInfobar();
-    showOsdIcon(delta > 0 ? 'forward' : 'backward');
-  }
-
-  function togglePlayerPlayPause() {
-    if (!playerVideo) { return; }
-    if (playerVideo.paused) {
-      resumePlayerPlayback();
-      showOsdIcon('none');
-      showInfobar();
-    } else {
-      try {
-        playerVideo.pause();
-      } catch (eP2) {}
-      showOsdIcon('pause');
-      showInfobar();
-    }
-  }
-
-  function scheduleInfoHide() {
-    if (state.infoTimer) { clearTimeout(state.infoTimer); }
-    state.infoTimer = setTimeout(function () {
-      state.infoTimer = null;
-      if (state.screen !== 'player' || state.channelsOpen) { return; }
-      hideInfobar();
-    }, INFO_HIDE_MS);
-  }
-
-  function showInfobar() {
-    state.infobar = true;
-    if (state.playerMode === 'vod') {
-      if (playerVodInfo) { playerVodInfo.classList.add('is-active'); }
-      if (playerInfo) { playerInfo.classList.remove('is-active'); }
-    } else {
-      if (playerInfo) { playerInfo.classList.add('is-active'); }
-      if (playerVodInfo) { playerVodInfo.classList.remove('is-active'); }
-    }
-    scheduleInfoHide();
-  }
-
-  function hideInfobar() {
-    if (state.infoTimer) { clearTimeout(state.infoTimer); state.infoTimer = null; }
-    state.infobar = false;
-    if (playerInfo) { playerInfo.classList.remove('is-active'); }
-    if (playerVodInfo) { playerVodInfo.classList.remove('is-active'); }
-  }
-
-  function showVodInfobar() {
-    showInfobar();
-  }
-
-  function hideVodInfobar() {
-    hideInfobar();
-  }
-
-  /* --- PlaySettingView (Bottom Drawer) & SelectSubTitleAndAudioDialog Controller --- */
-  var playSettingView = null;
-  var dialogPlaySettings = null;
-  var psvSecSelection = null;
-  var psvEpisodesRow = null;
-  var psvBtnConfig = null;
-  var psvBtnP1 = null;
-  var psvBtnP2 = null;
-  var psvSecAudio = null;
-  var psvSecQuality = null;
-  var psvQualityRow = null;
-  var psvSecAspect = null;
-  var psvSecPlayer = null;
-  var psvBtnFeedback = null;
-  var psvAspectRow = null;
-
-  /* Season/episode browser (in-player). */
-  var psvBtnEpisodes = null;
-  var episodeBrowser = null;
-  var peTitle = null, peSub = null, peSeasons = null, peSeasonsCol = null,
-      peEpisodes = null, peSeasonLabel = null;
-
-  var dpsAudioOptions = null;
-  var dpsSubSwitch = null;
-  var dpsRowLang = null;
-  var dpsRowSize = null;
-  var dpsRowStyle = null;
-  var dpsLangOptions = null;
-  var dpsSizeOptions = null;
-  var dpsStyleOptions = null;
-  var dpsBtnExit = null;
-  var playerSubtitles = null;
-
-  var playSettingViewOpen = false;
-  var dialogPlaySettingsOpen = false;
-  var playSettingTimer = null;
-  var vodCurrentAudioTrack = 0;
-  /* Once the user picks a language we stop auto-selecting the preferred one. */
-  var vodAudioChosen = false;
-  /* Older Starfish builds can report MEDIA_ERR_SRC_NOT_SUPPORTED while they
-     apply a native audio PID.  It is not a failed movie and must never turn
-     Normal (Directo) into Modo Fluido. */
-  var audioTrackSwitchUntil = 0;
-  var vodCurrentSubtitle = null;
-  var vodSubActive = false;
-  /* True once the user flips the switch or picks a language; from then on the
-     default (Spanish when available) no longer overrides the choice. */
-  var vodSubChosen = false;
-  var subtitleSeq = 0;
-  var vodSubSize = 'normal';
-  var vodSubStyle = 'white';
-  var playerCurrentAspect = 'contain';
-  var lastHistorySaveAt = 0;
-
-  function globalAspectValue() {
-    return ['cover', 'contain', '16-9', '4-3'][Number(state.playback.screen) || 0] || 'contain';
-  }
-
-  function globalSubtitleSize() {
-    return ['normal', 'big', 'small'][Number(state.playback.size) || 0] || 'normal';
-  }
-
-  function globalSubtitleStyle() {
-    return ['white', 'yellow', 'black'][Number(state.playback.style) || 0] || 'white';
-  }
-
-  function applyGlobalPlaybackPreferences() {
-    vodSubSize = globalSubtitleSize();
-    vodSubStyle = globalSubtitleStyle();
-    if (!vodSubChosen) { vodSubActive = !!state.playback.subtitle; }
-    setPlayerAspect(globalAspectValue());
-    applySubtitleStyles();
-  }
-
-  function preferredLanguageCode() {
-    return ['es', 'pt', 'en'][Number(state.playback.audio) || 0] || 'es';
-  }
-
-  function preferredSubtitleCode() {
-    return ['es', 'pt', 'en'][Number(state.playback.subLang) || 0] || 'es';
-  }
-
-  function languageMatchesPreference(label, code) {
-    var value = String(label || code || '').toLowerCase();
-    var wanted = code || 'es';
-    if (wanted === 'es') {
-      return /^(es|spa|esp|lat|cast)|espa|latino|latin|castell/i.test(value);
-    }
-    if (wanted === 'pt') { return /^(pt|por)|portu/.test(value); }
-    if (wanted === 'en') { return /^(en|eng|ing)|ingl/.test(value); }
-    return false;
-  }
-
-  function rememberWatchProgress(current, duration, force) {
-    var item = state.playerItem;
-    if (!item || !item.id || current < 3) { return; }
-    var now = Date.now();
-    if (!force && now - lastHistorySaveAt < 15000) { return; }
-    lastHistorySaveAt = now;
-    var episode = state.playerEpisode;
-    var key = String(item.id);
-    var record = {
-      id: key,
-      title: item.title || item.name || 'Contenido',
-      poster: item.poster || item.cover || '',
-      series: !!isSeriesItem(item),
-      episodeId: episode && episode.id ? String(episode.id) : '',
-      episodeNumber: episode ? (episode.number || episode.seriesNumber || '') : '',
-      position: Math.floor(current),
-      duration: Math.floor(duration || item.duration || 0),
-      updatedAt: now
-    };
-    var next = [record];
-    var old = localProfile.history || [];
-    for (var i = 0; i < old.length && next.length < 30; i++) {
-      if (String(old[i].id) !== key) { next.push(old[i]); }
-    }
-    localProfile.history = next;
-    safeLocalWrite(LOCAL_PROFILE_KEY, localProfile);
-  }
-
-  var pendingHistoryRecord = null;
-  function applyPendingHistoryEpisode(item) {
-    var record = pendingHistoryRecord;
-    if (!record || !item || String(record.id) !== String(item.id) || !record.episodeId || !item.episodes) { return; }
-    for (var i = 0; i < item.episodes.length; i++) {
-      if (String(item.episodes[i].id) === record.episodeId) {
-        state.detailEpisode = item.episodes[i];
-        state.playerEpisode = item.episodes[i];
-        return;
-      }
-    }
-  }
-
-  function openHistoryRecord(record) {
-    if (!record) { return; }
-    for (var i = 0; i < VOD.length; i++) {
-      if (String(VOD[i].id) === String(record.id)) {
-        pendingHistoryRecord = record;
-        openDetail(VOD[i]);
-        return;
-      }
-    }
-    /* Catalog refreshes can group seasons or replace the visible root list.
-       Recover by grouped season id/title, and finally recreate a portal item
-       from the durable history record so its real id can still be resolved. */
-    var wantedTitle = norm(record.title || '');
-    for (var v = 0; v < VOD.length; v++) {
-      var candidate = VOD[v];
-      var seasons = candidate._catalogSeasons || [];
-      var seasonMatch = false;
-      for (var s = 0; s < seasons.length; s++) {
-        if (String(seasons[s].id) === String(record.id)) { seasonMatch = true; break; }
-      }
-      if (seasonMatch || (wantedTitle && norm(candidate.title || '') === wantedTitle)) {
-        pendingHistoryRecord = record;
-        openDetail(candidate);
-        return;
-      }
-    }
-    var recovered = normalizeVod({
-      id: record.id,
-      title: record.title,
-      poster: record.poster,
-      type: record.series ? 'teleplay' : 'movie',
-      portal: true
-    }, 0);
-    recovered._portal = true;
-    pendingHistoryRecord = record;
-    openDetail(recovered);
-  }
-  var activeSubtitleCues = [];
-  /* mediaInfo payloads keyed by episode/movie content id. */
-  var mediaInfoCache = {};
-  var mediaInfoPending = {};
-  var dialogReturnFocus = null;
-
-  function parseTimestamp(s) {
-    if (!s) return 0;
-    var p = s.replace(',', '.').split(':');
-    if (p.length === 3) {
-      return (parseFloat(p[0]) * 3600) + (parseFloat(p[1]) * 60) + parseFloat(p[2]);
-    }
-    return 0;
-  }
-
-  function parseSRT(data) {
-    var cues = [];
-    if (!data) return cues;
-    var blocks = data.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n\n');
-    for (var i = 0; i < blocks.length; i++) {
-      var lines = blocks[i].trim().split('\n');
-      if (lines.length >= 2) {
-        var timeLine = (lines[0].indexOf('-->') !== -1) ? lines[0] : lines[1];
-        var textLines = (lines[0].indexOf('-->') !== -1) ? lines.slice(1) : lines.slice(2);
-        if (timeLine && timeLine.indexOf('-->') !== -1) {
-          var m = timeLine.split('-->');
-          var start = parseTimestamp(m[0].trim());
-          var end = parseTimestamp(m[1].trim());
-          var txt = textLines.join('<br>').replace(/<font[^>]*>/gi, '').replace(/<\/font>/gi, '').trim();
-          if (txt) cues.push({ start: start, end: end, text: txt });
-        }
-      }
-    }
-    return cues;
-  }
-
-  function loadSubtitleTrack(sub) {
-    subtitleSeq++;
-    var mySeq = subtitleSeq;
-    if (!sub || !sub.url) {
-      activeSubtitleCues = [];
-      if (playerSubtitles) playerSubtitles.innerHTML = '';
-      return;
-    }
-    try {
-      var xhr = new XMLHttpRequest();
-      xhr.open('GET', sub.url, true);
-      xhr.onload = function () {
-        if (mySeq !== subtitleSeq) { return; }
-        if (xhr.status >= 200 && xhr.status < 300) {
-          activeSubtitleCues = parseSRT(xhr.responseText);
-        }
-      };
-      xhr.send();
-    } catch (eSub) { /* ignore */ }
-  }
-
-  function applySubtitleStyles() {
-    if (!playerSubtitles) return;
-    playerSubtitles.classList.remove('size-small', 'size-normal', 'size-big');
-    playerSubtitles.classList.add('size-' + vodSubSize);
-    playerSubtitles.classList.remove('color-white', 'color-yellow', 'color-black');
-    playerSubtitles.classList.add('color-' + vodSubStyle);
-  }
-
-  function updateSubtitleDisplay(currentSec) {
-    if (!playerSubtitles) return;
-    if (!vodSubActive || !activeSubtitleCues || !activeSubtitleCues.length) {
-      if (playerSubtitles.innerHTML !== '') playerSubtitles.innerHTML = '';
-      return;
-    }
-    var cue = null;
-    for (var i = 0; i < activeSubtitleCues.length; i++) {
-      if (currentSec >= activeSubtitleCues[i].start && currentSec <= activeSubtitleCues[i].end) {
-        cue = activeSubtitleCues[i];
-        break;
-      }
-    }
-    if (cue) {
-      var html = '<span class="player-subtitles-text">' + cue.text + '</span>';
-      if (playerSubtitles.innerHTML !== html) {
-        playerSubtitles.innerHTML = html;
-      }
-    } else {
-      if (playerSubtitles.innerHTML !== '') {
-        playerSubtitles.innerHTML = '';
-      }
-    }
-  }
-
-  /* ---- Real portal audio/subtitle metadata -------------------------------
-     PlaySettingView and the "Ajuste de reproducir" dialog read the same data
-     the portal returns for startPlayVOD: the audio PID list and the subtitle
-     file list.  It is fetched once per episode/movie and cached; playback
-     still goes through resolve(). */
-  function playSettingsItem() {
-    if (state.screen === 'detail') { return state.detail || null; }
-    return state.playerItem || state.detail || null;
-  }
-
-  /* "Modo fluido" is a per-title preference: turning it on for one movie must
-     not leak into the next one, while a series keeps it across its episodes
-     (same series id). */
-  var smoothModeByTitle = {};
-  /* Stops an automatic Normal -> Fluido retry from looping if FFmpeg itself
-     cannot open a particular title. Cleared when the viewer opens a title. */
-  var autoSmoothFallbackKey = '';
-
-  function smoothModeKey(item) {
-    if (!item) { return ''; }
-    /* A manual mode is a series preference while chapters are playing.  The
-       previous key used the current episode id, so selecting Fluido in E1
-       silently reverted to Normal in E2 and could leave its resolver waiting
-       on an incompatible direct pipeline. */
-    if (isSeriesItem(item)) {
-      return 'series:' + (item.seriesContentId || item.seriesId || item.seasonId || item.id || '');
-    }
-    var ep = mediaInfoEpisode(item);
-    return (ep && ep.id) ? ep.id : (item.id || '');
-  }
-
-  function restoreSmoothMode(item) {
-    var key = smoothModeKey(item);
-    if (key && smoothModeByTitle.hasOwnProperty(key)) {
-      state.streamMode = smoothModeByTitle[key] ? 'smooth' : 'normal';
-    } else {
-      state.streamMode = state.playback.streamMode === 'smooth' ? 'smooth' : 'normal';
-    }
-  }
-
-  function setSmoothMode(item, on) {
-    var key = smoothModeKey(item);
-    state.streamMode = on ? 'smooth' : 'normal';
-    if (key) { smoothModeByTitle[key] = !!on; }
-  }
-
-  /* Called when a different title is opened, never when zapping episodes. */
-  function resetMediaSelection() {
-    autoSmoothFallbackKey = '';
-    vodCurrentAudioTrack = 0;
-    vodAudioChosen = false;
-    vodCurrentSubtitle = null;
-    vodSubActive = false;
-    vodSubChosen = false;
-    subtitleSeq++;
-    state.trackIndex = 0;
-    activeSubtitleCues = [];
-    if (playerSubtitles) { playerSubtitles.innerHTML = ''; }
-  }
-
-  function mediaInfoEpisode(item) {
-    if (!item) { return null; }
-    if (isSeriesItem(item)) {
-      if (state.screen === 'player' && state.playerEpisode) { return state.playerEpisode; }
-      if (state.detailEpisode) { return state.detailEpisode; }
-      return (item.episodes && item.episodes[0]) || null;
-    }
-    return null;
-  }
-
-  function mediaInfoKey(item) {
-    if (!item) { return ''; }
-    var ep = mediaInfoEpisode(item);
-    return (ep && ep.id) ? ep.id : (item.id || '');
-  }
-
-  function ensureMediaInfo(item, done) {
-    done = done || function () {};
-    if (!item) { return done(null); }
-    var key = mediaInfoKey(item);
-    if (!key) { return done(null); }
-    if (mediaInfoCache[key]) {
-      applySubtitleDefaults(mediaInfoCache[key]);
-      return done(mediaInfoCache[key]);
-    }
-    if (mediaInfoPending[key]) { mediaInfoPending[key].push(done); return; }
-    mediaInfoPending[key] = [done];
-
-    var ep = mediaInfoEpisode(item);
-    var params = { contentId: key };
-    var seriesRef = item.seasonId || item.id;
-    if (ep && ep.id && seriesRef && ep.id !== seriesRef) { params.seriesContentId = seriesRef; }
-    portalServiceCall('mediaInfo', params, function (error, payload) {
-      var waiters = mediaInfoPending[key] || [];
-      delete mediaInfoPending[key];
-      var info = (!error && payload && payload.returnValue !== false) ? payload : null;
-      if (info) {
-        mediaInfoCache[key] = info;
-        applySubtitleDefaults(info);
-      }
-      for (var i = 0; i < waiters.length; i++) {
-        try { waiters[i](info); } catch (eWaiter) { /* ignore */ }
-      }
-    });
-  }
-
-  /* The portal lists audio PIDs in stream order ("por,spa,eng").  The real
-     app preselects Spanish when present, so do the same. */
-  function preferredAudioIndex(rawAudio) {
-    var parts = (rawAudio || '').split(/[,\/]/);
-    var preferred = preferredLanguageCode();
-    for (var i = 0; i < parts.length; i++) {
-      if (languageMatchesPreference(parts[i].trim(), preferred)) { return i; }
-    }
-    return 0;
-  }
-
-  function audioLanguageList(info) {
-    var out = [];
-    var parts = ((info && info.audio) || '').split(/[,\/]/);
-    for (var i = 0; i < parts.length; i++) {
-      var code = parts[i].trim();
-      if (!code) { continue; }
-      out.push({ index: i, code: code, label: formatAudioLang(code) });
-    }
-    return out;
-  }
-
-  function subtitleLanguageList(info) {
-    var out = [];
-    var subs = (info && info.subtitles) || [];
-    for (var i = 0; i < subs.length; i++) {
-      out.push({ lang: subs[i].lang, url: subs[i].url, format: subs[i].format });
-    }
-    /* The real dialog lists Español before Inglés for this catalog. */
-    out.sort(function (a, b) {
-      var pa = /^(es|spa|esp)$/i.test(a.lang || '') ? 0 : 1;
-      var pb = /^(es|spa|esp)$/i.test(b.lang || '') ? 0 : 1;
-      return pa - pb;
-    });
-    return out;
-  }
-
-  /* The real app opens with subtitles ON and Spanish selected when the portal
-     returns subtitle files. Keep the user's choice once they touch the switch
-     or pick a language. */
-  function applySubtitleDefaults(info) {
-    var list = subtitleLanguageList(info);
-    if (!vodSubChosen) {
-      if (!state.playback.subtitle) {
-        vodSubActive = false;
-        vodCurrentSubtitle = null;
-        loadSubtitleTrack(null);
-        return;
-      }
-      if (!list.length) {
-        vodSubActive = false;
-        vodCurrentSubtitle = null;
-        loadSubtitleTrack(null);
-        return;
-      }
-      vodSubActive = true;
-      vodCurrentSubtitle = list[0];
-      for (var pref = 0; pref < list.length; pref++) {
-        if (languageMatchesPreference(list[pref].lang, preferredSubtitleCode())) {
-          vodCurrentSubtitle = list[pref];
-          break;
-        }
-      }
-      loadSubtitleTrack(vodCurrentSubtitle);
-      return;
-    }
-    if (!vodSubActive) { return; }
-    if (!list.length) {
-      vodSubActive = false;
-      vodCurrentSubtitle = null;
-      loadSubtitleTrack(null);
-      return;
-    }
-    /* New episode with the same preference: keep the language if the new
-       episode ships it, otherwise fall back to the first file. */
-    var stillThere = false;
-    if (vodCurrentSubtitle) {
-      for (var i = 0; i < list.length; i++) {
-        if (list[i].url === vodCurrentSubtitle.url) {
-          vodCurrentSubtitle = list[i];
-          stillThere = true;
-          break;
-        }
-      }
-    }
-    if (!stillThere) {
-      vodCurrentSubtitle = list[0];
-      loadSubtitleTrack(vodCurrentSubtitle);
-    }
-  }
-
-  function qualityLabel(track) {
-    var q = String((track && track.quality) || '').trim().toUpperCase();
-    var h = track && track.height;
-    if (!q && h) { q = String(h) + 'P'; }
-    if (q === '4K' || q === '2160P' || q === 'UHD') { return '4K'; }
-    if (/^\d+$/.test(q)) { return q + 'P'; }
-    return q || 'AUTO';
-  }
-
-  function schedulePlaySettingHide() {
-    if (playSettingTimer) { clearTimeout(playSettingTimer); }
-    playSettingTimer = setTimeout(function () {
-      closePlaySettingView();
-    }, 8000);
-  }
-
-  function openPlaySettingView() {
-    if (!playSettingView) { buildPlayer(); }
-    if (!playSettingView) return;
-    playSettingViewOpen = true;
-    dialogPlaySettingsOpen = false;
-    hideInfobar();
-
-    renderPlaySettingView();
-    playSettingView.classList.add('is-active');
-    if (playerSubtitles) { playerSubtitles.classList.add('shift-up'); }
-
-    /* Audio languages, subtitle files and renditions come from the portal;
-       refresh the rows as soon as the service answers. */
-    ensureMediaInfo(state.playerItem, function () {
-      if (playSettingViewOpen) { renderPlaySettingView(); }
-    });
-
-    schedulePlaySettingHide();
-
-    /* Seasons are selected in detail; this panel contains only chapters. */
-    var item = state.playerItem;
-    if (isSeriesItem(item) && psvEpisodesRow) {
-      var chapter = psvEpisodesRow.querySelector('.psv-ep-btn');
-      if (chapter) { setFocus(chapter); return; }
-    }
-    if (isSeriesItem(item) && psvBtnEpisodes) {
-      setFocus(psvBtnEpisodes);
-      return;
-    }
-    if (psvBtnConfig) { setFocus(psvBtnConfig); }
-  }
-
-  function closePlaySettingView() {
-    if (playSettingTimer) { clearTimeout(playSettingTimer); playSettingTimer = null; }
-    playSettingViewOpen = false;
-    if (playSettingView) { playSettingView.classList.remove('is-active'); }
-    if (playerSubtitles) { playerSubtitles.classList.remove('shift-up'); }
-    if (state.screen === 'player' && !dialogPlaySettingsOpen) {
-      setFocus(playerStage);
-    }
-  }
-
-  function renderPlaySettingView() {
-    /* Keep the d-pad where the user was: the rows rebuild their pills, so a
-       plain re-render used to leave focus on a detached node (the OK press
-       then did nothing and the panel closed by timeout). */
-    var focusRow = state.focus ? closest(state.focus, '.psv-row') : null;
-    var focusRowId = focusRow ? focusRow.id : '';
-    var focusText = (focusRow && state.focus) ? state.focus.textContent : '';
-
-    renderPlaySettingSelection();
-    renderPlaySettingAudio();
-    renderPlaySettingQuality();
-    renderPlaySettingPlayerOptions();
-    renderPlaySettingAspectOptions();
-    renderPlaySettingRowFocus();
-
-    if (!playSettingViewOpen || !focusRowId || !playSettingView) { return; }
-    var rows = playSettingView.querySelectorAll('.psv-row');
-    for (var r = 0; r < rows.length; r++) {
-      if (rows[r].id !== focusRowId) { continue; }
-      var btns = rows[r].querySelectorAll('.focusable');
-      var match = null;
-      for (var b = 0; b < btns.length; b++) {
-        if (btns[b].textContent === focusText) { match = btns[b]; break; }
-      }
-      var target = match || firstIn(rows[r]);
-      if (target) { setFocus(target, true); }
-      break;
-    }
-  }
-
-  function renderPlaySettingAudio() {
-    if (!psvSecAudio) { return; }
-    /* Always present: it is the entry point to "Ajuste de reproducir". */
-    psvSecAudio.classList.remove('is-hidden');
-  }
-
-  /* ud/n1.dd() builds the RESOLUCIÓN row from the portal's quality map and
-     shows shifted labels: the 720p copy is titled "1080P" and the 1080p copy
-     "4K". Mirror that so the row matches the real app. */
-  function qualityChoices(info) {
-    var tracks = (info && info.tracks) || [];
-    var out = [];
-    var seen = {};
-    for (var i = 0; i < tracks.length; i++) {
-      var raw = String(tracks[i].quality || '').toLowerCase().replace(/p$/, '');
-      var label = raw === '480' ? '480P'
-                : raw === '720' ? '1080P'
-                : raw === '1080' ? '4K'
-                : qualityLabel(tracks[i]);
-      if (seen[label]) { continue; }
-      seen[label] = true;
-      out.push({ label: label, trackIndex: i });
-    }
-    /* The APK adds a "4K" pill whenever the 720p copy is present and the
-       portal has no separate 1080p entry. */
-    if (seen['1080P'] && !seen['4K']) { out.push({ label: '4K', trackIndex: -1 }); }
-    return out;
-  }
-
-  function renderPlaySettingQuality() {
-    /* Retired: the portal exposes no alternative video tracks for VOD.
-       The row has been replaced by "RESOLUCIÓN / MODO" (Normal vs Modo Fluido). */
-  }
-
-  /* The APK turns the title of the row that holds focus white and 40px. */
-  function renderPlaySettingRowFocus() {
-    if (!playSettingView) { return; }
-    var rows = playSettingView.querySelectorAll('.psv-row');
-    for (var i = 0; i < rows.length; i++) { rows[i].classList.remove('is-row-focused'); }
-    var row = state.focus ? closest(state.focus, '.psv-row') : null;
-    if (row) { row.classList.add('is-row-focused'); }
-  }
-
-  function renderPlaySettingSelection() {
-    if (!psvSecSelection) return;
-    var item = state.playerItem;
-    if (!item || !isSeriesItem(item)) {
-      psvSecSelection.style.display = 'none';
-      return;
-    }
-    psvSecSelection.style.display = 'block';
-    if (!psvEpisodesRow) return;
-
-    clear(psvEpisodesRow);
-
-    var seasons = seriesSeasons(item);
-    var season = seasons[state.playerSeasonIndex] || seasons[0];
-    var episodes = (season && season.id === (item.seasonId || item.id) && item.episodes && item.episodes.length)
-      ? item.episodes : ((season && season._episodes) || item.episodes || []);
-    if (!episodes.length) {
-      psvEpisodesRow.appendChild(el('div', 'psv-selection-empty', 'Temporadas y episodios'));
-      return;
-    }
-    var currentIndex = 0;
-    for (var c = 0; c < episodes.length; c++) {
-      if (state.playerEpisode && (episodes[c].id === state.playerEpisode.id || episodes[c].number === state.playerEpisode.number)) { currentIndex = c; break; }
-    }
-    var ranges = detailRanges(episodes.length);
-    if (state.playerEpisodeRange === undefined || state.playerEpisodeRange >= ranges.length) {
-      state.playerEpisodeRange = Math.floor(currentIndex / 20);
-    }
-    var range = ranges[state.playerEpisodeRange] || ranges[0];
-    /* reveal() only follows .scrollable containers.  Without this class the
-       d-pad could focus episode 16+ outside the visible row, making a
-       20-episode page look capped around fifteen entries. */
-    var numberRow = el('div', 'psv-episode-numbers scrollable');
-    for (var i = range.start; i < range.end; i++) {
-      (function (ep, idx) {
-        var label = idx === currentIndex ? '▶' : String(ep.number !== undefined && ep.number !== null ? ep.number : idx + 1);
-        var btn = el('button', 'psv-ep-btn focusable' + (idx === currentIndex ? ' is-selected' : ''), label);
-        btn._activate = function () { chooseEpisode(ep); };
-        numberRow.appendChild(btn);
-      })(episodes[i], i);
-    }
-    psvEpisodesRow.appendChild(numberRow);
-    var rangeRow = el('div', 'psv-episode-ranges scrollable');
-    for (var r = 0; r < ranges.length; r++) {
-      (function (idx, part) {
-        var btn = el('button', 'psv-range-btn focusable' + (idx === state.playerEpisodeRange ? ' is-selected' : ''),
-          (part.start + 1) + '-' + part.end);
-        btn._activate = function () {
-          state.playerEpisodeRange = idx;
-          renderPlaySettingSelection();
-          var first = psvEpisodesRow.querySelector('.psv-ep-btn');
-          if (first) { setFocus(first); }
-        };
-        rangeRow.appendChild(btn);
-      })(r, ranges[r]);
-    }
-    psvEpisodesRow.appendChild(rangeRow);
-  }
-
-  /* ================= Season/episode browser (in-player) =================
-     Netflix-style list: season rail on the left, episode rows on the right.
-     Episodes for other seasons are fetched once from the portal and cached on
-     the season object.  The series id (item.id) is never overwritten, so the
-     resolver keeps sending seriesContentId = the real series. */
-  function seriesSeasons(item) {
-    if (item && item.seasons && item.seasons.length) { return item.seasons; }
-    return [{ id: item ? item.id : '', number: 1 }];
-  }
-
-  function seasonEpisodes(item, season, done) {
-    done = done || function () {};
-    if (!item || !season) { return done([]); }
-    if (season.id === (item.seasonId || item.id) && item.episodes && item.episodes.length) {
-      season._episodes = item.episodes;
-      return done(item.episodes);
-    }
-    if (season._episodes) { return done(season._episodes); }
-    if (season._loading) {
-      season._wait = season._wait || [];
-      season._wait.push(done);
-      return;
-    }
-    season._loading = true;
-    season._wait = [done];
-    portalServiceCall('detail', { contentId: season.id }, function (error, payload) {
-      season._loading = false;
-      var eps = (!error && payload && payload.returnValue !== false && payload.episodes)
-        ? payload.episodes : [];
-      if (eps.length) { season._episodes = eps; }
-      var waiters = season._wait || [];
-      season._wait = [];
-      for (var i = 0; i < waiters.length; i++) {
-        try { waiters[i](eps); } catch (eWaiter) { /* ignore */ }
-      }
-    });
-  }
-
-  function episodeDisplayTitle(item, ep, index) {
-    var num = (ep && ep.number !== undefined && ep.number !== null) ? ep.number : (index + 1);
-    var raw = String((ep && (ep.title || ep.name)) || '').trim();
-    var base = String((item && item.title) || '').trim()
-      .replace(/[\s\-–_]*[TtSs]\d+$/, '');   /* "Serie T10" -> "Serie" */
-    if (base && raw.indexOf(base) === 0) {
-      raw = raw.substring(base.length);
-    }
-    raw = raw.replace(/^[\s\-–_:.]+/, '').trim();
-    /* Only a season/episode code left ("T1_06", "S01E06", "6")? Use a clean
-       label instead of repeating the series name. */
-    if (!raw || /^(?:[TtSs]?\d+[\s\-–_.:]*)+$/.test(raw)) {
-      raw = 'Episodio ' + num;
-    }
-    return raw;
-  }
-
-  function episodeDurationLabel(ep) {
-    var raw = String((ep && ep.duration) || '').trim();
-    var m = /^(\d+):(\d+)(?::(\d+))?$/.exec(raw);
-    if (!m) { return raw; }
-    if (m[3]) {
-      var h = parseInt(m[1], 10) || 0;
-      var min = parseInt(m[2], 10) || 0;
-      return h + ' h ' + min + ' min';
-    }
-    return (parseInt(m[1], 10) || 0) + ' min';
-  }
-
-  function openEpisodeBrowser() {
-    var item = state.playerItem;
-    if (!item || !isSeriesItem(item)) { return; }
-    if (playSettingViewOpen) { closePlaySettingView(); }
-    if (!episodeBrowser) { buildPlayer(); }
-    if (!episodeBrowser) { return; }
-
-    if ((!item.episodes || !item.episodes.length) && !item._detailsLoaded) {
-      setPlayerStatus('Cargando capítulos…');
-      loadVodDetail(item, function () {
-        if (state.screen !== 'player') { return; }
-        if (!state.playerEpisode && item.episodes && item.episodes.length) {
-          state.playerEpisode = item.episodes[0];
-          state.detailEpisode = item.episodes[0];
-        }
-        openEpisodeBrowser();
-      });
-      return;
-    }
-
-    if (!state.playerEpisode && item.episodes && item.episodes.length) {
-      state.playerEpisode = item.episodes[0];
-      state.detailEpisode = item.episodes[0];
-      state.playerSeasonIndex = state.detailSeason || 0;
-    }
-
-    state.episodeBrowserOpen = true;
-    state.browserSeason = state.playerSeasonIndex || 0;
-    episodeBrowser.classList.add('is-active');
-    hideVodInfobar();
-    renderEpisodeBrowser();
-
-    var cur = peEpisodes ? peEpisodes.querySelector('.pe-ep.is-current') : null;
-    var f = cur || (peEpisodes ? firstIn(peEpisodes) : null) ||
-            (peSeasonsCol && peSeasonsCol.style.display !== 'none' ? firstIn(peSeasons) : null);
-    if (f) { setFocus(f); }
-  }
-
-  function closeEpisodeBrowser(keepFocus) {
-    if (!episodeBrowser || !state.episodeBrowserOpen) { return; }
-    state.episodeBrowserOpen = false;
-    episodeBrowser.classList.remove('is-active');
-    if (!keepFocus && state.screen === 'player' && playerStage) { setFocus(playerStage); }
-  }
-
-  function renderEpisodeBrowser() {
-    var item = state.playerItem;
-    if (!item || !episodeBrowser) { return; }
-    var seasons = seriesSeasons(item);
-    if (state.browserSeason >= seasons.length) { state.browserSeason = 0; }
-    if (state.browserSeason < 0) { state.browserSeason = 0; }
-    var season = seasons[state.browserSeason];
-    var playingSeason = seasons[state.playerSeasonIndex] || seasons[0];
-    var ep = state.playerEpisode;
-
-    if (peTitle) { peTitle.textContent = item.title || ''; }
-    if (peSub) {
-      if (ep) {
-        var tag = [];
-        if (playingSeason && playingSeason.number) { tag.push('T' + playingSeason.number); }
-        if (ep.number) { tag.push('E' + ep.number); }
-        peSub.textContent = 'Reproduciendo ' + tag.join(' ') + ' · ' + episodeDisplayTitle(item, ep);
-      } else {
-        peSub.textContent = 'Elige un episodio';
-      }
-    }
-    if (peSeasonLabel) {
-      peSeasonLabel.textContent = 'Episodios · Temporada ' + ((season && season.number) || (state.browserSeason + 1));
-    }
-
-    renderBrowserSeasons(item, seasons);
-    renderBrowserEpisodes(item, season);
-  }
-
-  function renderBrowserSeasons(item, seasons) {
-    if (!peSeasons || !peSeasonsCol) { return; }
-    clear(peSeasons);
-    peSeasonsCol.style.display = 'flex';
-    for (var i = 0; i < seasons.length; i++) {
-      (function (idx) {
-        var s = seasons[idx];
-        var b = el('div', 'pe-season focusable', 'Temporada ' + (s.number || (idx + 1)));
-        if (idx === state.browserSeason) { b.classList.add('is-selected'); }
-        /* Netflix behaviour: just moving the season rail already shows that
-           season's episodes, so OK is only needed to jump into the list. */
-        b._onFocus = function () {
-          if (state.browserSeason !== idx) { selectBrowserSeason(idx, false); }
-        };
-        b._activate = function () { selectBrowserSeason(idx, true); };
-        peSeasons.appendChild(b);
-      })(i);
-    }
-  }
-
-  function renderBrowserEpisodes(item, season) {
-    if (!peEpisodes || !season) { return; }
-    clear(peEpisodes);
-    var cached = (season.id === (item.seasonId || item.id) && item.episodes && item.episodes.length)
-      ? item.episodes : (season._episodes || []);
-
-    if (!cached.length) {
-      peEpisodes.appendChild(el('div', 'pe-loading', 'Cargando episodios…'));
-      seasonEpisodes(item, season, function (eps) {
-        if (!state.episodeBrowserOpen) { return; }
-        var now = seriesSeasons(item)[state.browserSeason];
-        if (now !== season) { return; }
-        renderBrowserEpisodes(item, season);
-        /* Only re-anchor focus when the user is already inside the list; when
-           they are browsing seasons the rail keeps the d-pad. */
-        if (closest(state.focus, '#pe-episodes')) {
-          var cur = peEpisodes.querySelector('.pe-ep.is-current');
-          var f = cur || firstIn(peEpisodes);
-          if (f) { setFocus(f); }
-        }
-      });
-      return;
-    }
-
-    /* Keep the drawer within the small webOS 4 renderer budget.  A full
-       season can contain dozens of poster images; decoding all of them while
-       video is active can make the system kill the app for memory. */
-    var visibleEpisodes = Math.min(cached.length, 24);
-    for (var i = 0; i < visibleEpisodes; i++) {
-      (function (ep, idx) {
-        var row = el('div', 'pe-ep focusable');
-        var num = (ep.number !== undefined && ep.number !== null) ? ep.number : (idx + 1);
-        row.appendChild(el('div', 'pe-num', String(num)));
-
-        var thumb = el('div', 'pe-thumb');
-        /* Deliberately no <img> per episode: remote artwork is the dominant
-           memory cost in this overlay on a 1 GB webOS 4 TV. */
-        var playIcon = el('div', 'pe-thumb-play', '▶');
-        thumb.appendChild(playIcon);
-        row.appendChild(thumb);
-
-        var info = el('div', 'pe-info');
-        info.appendChild(el('div', 'pe-name', episodeDisplayTitle(item, ep, idx)));
-        var bits = [];
-        var dur = episodeDurationLabel(ep);
-        if (dur) { bits.push(dur); }
-        if (ep.quality) { bits.push(String(ep.quality).split(',')[0].toUpperCase()); }
-        info.appendChild(el('div', 'pe-meta', bits.join('   ·   ')));
-        if (ep.description) {
-          info.appendChild(el('div', 'pe-desc', ep.description));
-        }
-        row.appendChild(info);
-
-        var isPlaying = state.playerEpisode && (state.playerEpisode.id === ep.id || (state.playerEpisode.number !== undefined && state.playerEpisode.number === ep.number));
-        row.appendChild(el('div', 'pe-badge', '▶ REPRODUCIENDO'));
-        if (isPlaying) {
-          row.classList.add('is-current');
-        }
-        row._activate = function () { chooseEpisode(ep); };
-        peEpisodes.appendChild(row);
-      })(cached[i], i);
-    }
-    if (cached.length > visibleEpisodes) {
-      peEpisodes.appendChild(el('div', 'pe-loading', 'Mostrando los primeros ' + visibleEpisodes + ' capítulos'));
-    }
-  }
-
-  /* Repaints the rail's selection without rebuilding the nodes, so the
-     focused season keeps the d-pad while the list on the right updates. */
-  function updateBrowserSeasonSelection() {
-    if (!peSeasons) { return; }
-    var rows = peSeasons.children;
-    for (var i = 0; i < rows.length; i++) {
-      rows[i].classList.toggle('is-selected', i === state.browserSeason);
-    }
-  }
-
-  function selectBrowserSeason(idx, moveFocus) {
-    var item = state.playerItem;
-    var seasons = seriesSeasons(item);
-    if (!seasons[idx]) { return; }
-    state.browserSeason = idx;
-    updateBrowserSeasonSelection();
-    if (peSeasonLabel) {
-      peSeasonLabel.textContent = 'Episodios · Temporada ' + (seasons[idx].number || (idx + 1));
-    }
-    renderBrowserEpisodes(item, seasons[idx]);
-    if (moveFocus) {
-      var cur = peEpisodes ? (peEpisodes.querySelector('.pe-ep.is-current') || firstIn(peEpisodes)) : null;
-      if (cur) { setFocus(cur); }
-    }
-  }
-
-  function chooseEpisode(ep) {
-    var item = state.playerItem;
-    if (!item || !ep) { return; }
-    var seasons = seriesSeasons(item);
-    var prev = seasons[state.playerSeasonIndex];
-    if (prev && prev.id === (item.seasonId || item.id) && item.episodes && item.episodes.length) {
-      prev._episodes = item.episodes;
-    }
-    var sIdx = (state.playerSeasonIndex !== undefined && state.playerSeasonIndex !== null)
-      ? state.playerSeasonIndex : (state.browserSeason || 0);
-    var season = seasons[sIdx];
-    if (season) {
-      if (state.detailSeason !== sIdx) {
-        state.detailSeason = sIdx;
-        state.detailNeedsRebuild = true;
-      }
-      if (season.id) { item.seasonId = season.id; }
-      if (season._episodes) { item.episodes = season._episodes; }
-    }
-    closeEpisodeBrowser();
-    if (playSettingViewOpen) { closePlaySettingView(); }
-    playEpisode(item, ep);
-  }
-
-  /* Single path for changing episode while watching: keeps the detail screen,
-     the infobar and the resolver on the same episode. */
-  function playEpisode(item, ep) {
-    if (!item || !ep) { return; }
-    state.playerItem = item;
-    state.playerEpisode = ep;
-    state.detailEpisode = ep;
-    state.playerSeasonIndex = state.detailSeason || 0;
-    if (playerStage && playerInfo) { updatePlayer(); }
-    syncDetailEpisodeHighlight(item);
-    /* Starfish retains the old UMS/video pipeline briefly after src is
-       cleared.  Starting a new episode in the same turn can exceed the RAM
-       budget of webOS 4, especially with the FFmpeg relay.  Release first,
-       then create exactly one replacement pipeline. */
-    if (state.episodeSwitchTimer) { clearTimeout(state.episodeSwitchTimer); }
-    state.episodeSwitchSeq = (state.episodeSwitchSeq || 0) + 1;
-    var switchSeq = state.episodeSwitchSeq;
-    stopPlayerVideo();
-    setPlayerStatus('Cambiando capítulo…');
-    state.episodeSwitchTimer = setTimeout(function () {
-      state.episodeSwitchTimer = null;
-      if (switchSeq !== state.episodeSwitchSeq || state.screen !== 'player') { return; }
-      startPlayerVideo(item, ep);
-    }, 600);
-  }
-
-  function episodeListForCurrentSeason(item) {
-    var seasons = seriesSeasons(item);
-    var season = seasons[state.playerSeasonIndex] || seasons[0];
-    if (!season) { return []; }
-    if (season.id === (item.seasonId || item.id) && item.episodes && item.episodes.length) { return item.episodes; }
-    return season._episodes || [];
-  }
-
-  function showNextEpisodeLoading(item) {
-    if (!nextEpisodeLoading) { nextEpisodeLoading = $('next-episode-loading'); }
-    if (!nextEpisodeLoading) { return; }
-    var image = (item && (item.backdrop || item.landscape || item.poster)) || '';
-    nextEpisodeLoading.style.backgroundImage = image ? 'url("' + String(image).replace(/"/g, '%22') + '")' : '';
-    nextEpisodeLoading.classList.add('is-active');
-  }
-
-  function hideNextEpisodeLoading() {
-    if (!nextEpisodeLoading) { nextEpisodeLoading = $('next-episode-loading'); }
-    if (!nextEpisodeLoading) { return; }
-    nextEpisodeLoading.classList.remove('is-active');
-    nextEpisodeLoading.style.backgroundImage = '';
-  }
-
-  function advanceToNextEpisode() {
-    var item = state.playerItem;
-    if (!item || !isSeriesItem(item) || state.screen !== 'player') { return; }
-    var episodes = episodeListForCurrentSeason(item);
-    var current = state.playerEpisode;
-    var index = -1;
-    for (var i = 0; i < episodes.length; i++) {
-      if (current && (episodes[i].id === current.id || episodes[i].number === current.number)) { index = i; break; }
-    }
-    if (index < 0) { return; }
-    showNextEpisodeLoading(item);
-    if (index + 1 < episodes.length) {
-      playEpisode(item, episodes[index + 1]);
-      return;
-    }
-    /* At the end of a season, fetch only the first chapter of the next one.
-       The previous season's episode array stays cached, so this does not turn
-       the compact player selector into a full all-season list. */
-    var seasons = seriesSeasons(item);
-    var nextSeasonIndex = (state.playerSeasonIndex || 0) + 1;
-    var nextSeason = seasons[nextSeasonIndex];
-    if (!nextSeason) { hideNextEpisodeLoading(); return; }
-    var endedEpisode = current;
-    seasonEpisodes(item, nextSeason, function (nextEpisodes) {
-      if (state.playerItem !== item || state.playerEpisode !== endedEpisode || state.screen !== 'player') {
-        return;
-      }
-      if (!nextEpisodes || !nextEpisodes.length) { hideNextEpisodeLoading(); return; }
-      state.detailSeason = nextSeasonIndex;
-      state.playerSeasonIndex = nextSeasonIndex;
-      item.seasonId = nextSeason.id || item.seasonId;
-      item.episodes = nextEpisodes;
-      nextSeason._episodes = nextEpisodes;
-      playEpisode(item, nextEpisodes[0]);
-    });
-  }
-
-  function syncDetailEpisodeHighlight(item) {
-    if (!detailBottom) { return; }
-    var tiles = detailBottom.querySelectorAll('.detail-episode');
-    for (var i = 0; i < tiles.length; i++) {
-      var on = !!(tiles[i]._ep && state.detailEpisode && tiles[i]._ep.id === state.detailEpisode.id);
-      tiles[i].classList.toggle('is-playing', on);
-    }
-  }
-
-  function renderPlaySettingPlayerOptions() {
-    /* 'normal' is the default direct path; only 'relay'/'smooth' means FFmpeg. */
-    var isRelay = (state.streamMode === 'relay' || state.streamMode === 'smooth');
-    if (psvBtnP1) {
-      psvBtnP1.classList.toggle('is-selected', isRelay);
-      var chk1 = psvBtnP1.querySelector('.psv-check');
-      if (chk1) chk1.style.display = isRelay ? 'block' : 'none';
-    }
-    if (psvBtnP2) {
-      psvBtnP2.classList.toggle('is-selected', !isRelay);
-      var chk2 = psvBtnP2.querySelector('.psv-check');
-      if (chk2) chk2.style.display = !isRelay ? 'block' : 'none';
-    }
-  }
-
-  function renderPlaySettingAspectOptions() {
-    if (!psvAspectRow) return;
-    var btns = psvAspectRow.querySelectorAll('.psv-btn');
-    for (var i = 0; i < btns.length; i++) {
-      var asp = btns[i].getAttribute('data-aspect');
-      var isSel = (asp === playerCurrentAspect);
-      btns[i].classList.toggle('is-selected', isSel);
-      var chk = btns[i].querySelector('.psv-check');
-      if (chk) chk.style.display = isSel ? 'block' : 'none';
-    }
-  }
-
-  function setPlayerAspect(aspect) {
-    playerCurrentAspect = aspect || 'contain';
-    if (playerVideo) {
-      playerVideo.classList.remove('aspect-cover', 'aspect-contain', 'aspect-16-9', 'aspect-4-3');
-      playerVideo.classList.add('aspect-' + playerCurrentAspect);
-    }
-    renderPlaySettingAspectOptions();
-  }
-
-  function openPlaySettingsDialog(fromItem) {
-    if (!dialogPlaySettings) { buildPlayer(); }
-    if (!dialogPlaySettings) return;
-    if (playSettingTimer) { clearTimeout(playSettingTimer); playSettingTimer = null; }
-    dialogPlaySettingsOpen = true;
-    dialogReturnFocus = state.focus;
-
-    var item = fromItem || playSettingsItem();
-    if (state.screen === 'detail') { item = state.detail || item; }
-
-    renderDialogAudio();
-    renderDialogSubtitle();
-    applySubtitleStyles();
-
-    dialogPlaySettings.classList.add('is-active');
-
-    ensureMediaInfo(item, function () {
-      if (!dialogPlaySettingsOpen) { return; }
-      renderDialogAudio();
-      renderDialogSubtitle();
-    });
-
-    /* Focus first audio pill or switch */
-    var firstFocus = (dpsAudioOptions && dpsAudioOptions.querySelector('.focusable')) || dpsSubSwitch || dpsBtnExit;
-    if (firstFocus) { setFocus(firstFocus); }
-  }
-
-  function closePlaySettingsDialog() {
-    dialogPlaySettingsOpen = false;
-    if (dialogPlaySettings) { dialogPlaySettings.classList.remove('is-active'); }
-    if (playSettingViewOpen) {
-      if (psvBtnConfig) { setFocus(psvBtnConfig); }
-      schedulePlaySettingHide();
-    } else if (dialogReturnFocus && isVisible(dialogReturnFocus)) {
-      setFocus(dialogReturnFocus);
-    } else if (state.screen === 'player') {
-      setFocus(playerStage);
-    }
-    dialogReturnFocus = null;
-  }
-
-  function renderDialogAudio() {
-    if (!dpsAudioOptions) return;
-    clear(dpsAudioOptions);
-
-    var info = mediaInfoCache[mediaInfoKey(playSettingsItem())];
-    if (info && !vodAudioChosen) {
-      vodCurrentAudioTrack = preferredAudioIndex(info.audio);
-    }
-    var tracks = audioLanguageList(info);
-    if (!tracks.length) {
-      /* mediaInfo has not answered yet: keep the current language visible. */
-      tracks = [{ index: vodCurrentAudioTrack || 0, label: 'Español' }];
-    }
-    for (var t = 0; t < tracks.length; t++) {
-      (function (track) {
-        var btn = el('button', 'dps-btn focusable');
-        btn.textContent = track.label;
-        if (vodCurrentAudioTrack === track.index) { btn.classList.add('is-selected'); }
-        btn._activate = function () {
-          switchAudioTrack(track.index);
-          renderDialogAudio();
-          schedulePlaySettingHide();
-        };
-        dpsAudioOptions.appendChild(btn);
-      })(tracks[t]);
-    }
-  }
-
-  function renderDialogSubtitle() {
-    var info = mediaInfoCache[mediaInfoKey(playSettingsItem())];
-    var list = subtitleLanguageList(info);
-
-    if (dpsSubSwitch) {
-      /* Without subtitle files there is nothing to switch on. */
-      var switchRow = dpsSubSwitch.parentNode;
-      if (switchRow) { switchRow.classList.toggle('is-hidden', !list.length); }
-      dpsSubSwitch.classList.toggle('is-on', vodSubActive);
-      var dotText = dpsSubSwitch.querySelector('.dps-switch-text');
-      if (dotText) dotText.textContent = vodSubActive ? 'ON' : 'OFF';
-    }
-
-    if (dpsRowLang) dpsRowLang.classList.toggle('is-visible', vodSubActive && list.length > 0);
-    if (dpsRowSize) dpsRowSize.classList.toggle('is-visible', vodSubActive && list.length > 0);
-    if (dpsRowStyle) dpsRowStyle.classList.toggle('is-visible', vodSubActive && list.length > 0);
-
-    if (!vodSubActive) return;
-
-    /* Render languages */
-    if (dpsLangOptions) {
-      clear(dpsLangOptions);
-      for (var s = 0; s < list.length; s++) {
-        (function (sub) {
-          var btn = el('button', 'dps-btn focusable');
-          btn.textContent = formatAudioLang(sub.lang || 'Sub');
-          if (vodCurrentSubtitle && vodCurrentSubtitle.url === sub.url) {
-            btn.classList.add('is-selected');
-          }
-          btn._activate = function () {
-            vodCurrentSubtitle = sub;
-            vodSubActive = true;
-            vodSubChosen = true;
-            loadSubtitleTrack(sub);
-            renderDialogSubtitle();
-            schedulePlaySettingHide();
-          };
-          dpsLangOptions.appendChild(btn);
-        })(list[s]);
-      }
-    }
-
-    /* Size buttons */
-    if (dpsSizeOptions) {
-      var sBtns = dpsSizeOptions.querySelectorAll('.dps-btn');
-      for (var si = 0; si < sBtns.length; si++) {
-        var sz = sBtns[si].getAttribute('data-size');
-        sBtns[si].classList.toggle('is-selected', sz === vodSubSize);
-      }
-    }
-
-    /* Style buttons */
-    if (dpsStyleOptions) {
-      var stBtns = dpsStyleOptions.querySelectorAll('.dps-btn');
-      for (var sti = 0; sti < stBtns.length; sti++) {
-        var st = stBtns[sti].getAttribute('data-style');
-        stBtns[sti].classList.toggle('is-selected', st === vodSubStyle);
-      }
-    }
-  }
-
-  function formatAudioLang(code) {
-    var c = (code || '').toLowerCase().trim().split(/[-_]/)[0];
-    if (/^(spa|esp|es|castellano|latino|lat|latam)$/.test(c)) return 'Español';
-    if (/^(eng|ing|en)$/.test(c)) return 'Inglés';
-    if (/^(jpn|jap|ja)$/.test(c)) return 'Japonés';
-    if (/^(kor|cor|ko)$/.test(c)) return 'Coreano';
-    if (/^(por|pt)$/.test(c)) return 'Portugués';
-    if (/^(fra|fre|fr|franc)$/.test(c)) return 'Francés';
-    if (/^(ita|it)$/.test(c)) return 'Italiano';
-    if (/^(deu|ger|de)$/.test(c)) return 'Alemán';
-    if (/^(chi|zho|zh)$/.test(c)) return 'Chino';
-    return c ? (c.charAt(0).toUpperCase() + c.slice(1)) : 'Pista';
-  }
-
-  /* A direct MP4/TS source must stay direct when the viewer selects an audio
-     language.  Some webOS media pipelines expose the native AudioTrackList;
-     in that case the change is immediate and does not need FFmpeg.  Older
-     sets expose no writable list, so we leave the existing source untouched
-     instead of silently changing the player to Modo Fluido. */
-  function selectNativeAudioTrack(trackIndex) {
-    if (!playerVideo) { return false; }
-    var tracks;
-    try { tracks = playerVideo.audioTracks; } catch (eTracks) { return false; }
-    if (!tracks || !tracks.length || !(trackIndex >= 0 && trackIndex < tracks.length)) {
-      return false;
-    }
-    try {
-      for (var i = 0; i < tracks.length; i++) {
-        tracks[i].enabled = (i === trackIndex);
-      }
-      return true;
-    } catch (eSelect) {
-      return false;
-    }
-  }
-
-  function switchAudioTrack(trackIndex) {
-    /* On the detail screen the choice is only remembered for the next play. */
-    if (state.screen !== 'player' || !playerVideo) {
-      vodCurrentAudioTrack = trackIndex;
-      vodAudioChosen = true;
-      return;
-    }
-    /* Normal (Directo) must never be converted to Fluido merely by opening
-       the audio selector.  Use the native track list when webOS provides it.
-       A TV without that API keeps its playing source and clearly tells the
-       viewer that a remux is required for per-track selection. */
-    if (state.streamMode !== 'relay' && state.streamMode !== 'smooth') {
-      if (selectNativeAudioTrack(trackIndex)) {
-        vodCurrentAudioTrack = trackIndex;
-        vodAudioChosen = true;
-        audioTrackSwitchUntil = Date.now() + 5000;
-        setPlayerStatus('Idioma cambiado');
-      } else {
-        setPlayerStatus('Esta TV no permite cambiar audio en Normal. Usa Modo Fluido para esa pista.');
-      }
-      return;
-    }
-    vodCurrentAudioTrack = trackIndex;
-    vodAudioChosen = true;
-    /* HTML5 cannot pick a PID inside a TS/MP4, so the FFmpeg relay maps it
-       with -map 0:a:<n>. */
-    if (relayBaseUrl) {
-      var curSec = relayStartOffset + (playerVideo.currentTime || 0);
-      playUrl(relayBaseUrl + '?start=' + Math.floor(curSec) + '&a=' + trackIndex);
-      return;
-    }
-    restartCurrentPlayback();
-  }
-
-  function restartCurrentPlayback() {
-    if (!playerVideo) return;
-    var curSec = relayBaseUrl ? (relayStartOffset + (playerVideo.currentTime || 0)) : (playerVideo.currentTime || 0);
-    var item = state.playerItem;
-    stopPlayerVideo();
-    setPlayerStatus('Cambiando reproductor…');
-    resolvePlayerStream(item, function (url) {
-      if (url) {
-        if (url.indexOf(':8787/s/') !== -1) {
-          var seekUrl = url + '?start=' + Math.floor(curSec);
-          if (vodCurrentAudioTrack) { seekUrl += '&a=' + vodCurrentAudioTrack; }
-          playUrl(seekUrl);
-        } else {
-          playUrl(url);
-          if (curSec > 0) {
-            try { playerVideo.currentTime = curSec; } catch (e) {}
-          }
-        }
-      } else if (!state.streamError) {
-        setPlayerStatus('Sin fuente de reproducción');
-      }
-    });
-  }
-
-  function buildPlayer() {
-    playerStage = $('player-stage');
-    playerInfo = $('player-infobar');
-    playerVodInfo = $('player-vod-infobar');
-    playerChannels = $('player-channels');
-    categoryPicker = $('player-categories');
-    pcatGrid = $('pcat-grid');
-    pcatSub = $('pcat-sub');
-    playerVideo = $('player-video');
-    playerStatus = $('player-status');
-    nextEpisodeLoading = $('next-episode-loading');
-    playerModeHint = $('player-mode-hint');
-    playerOsdIcon = $('player-osd-icon');
-    playerFrame = playerStage ? playerStage.querySelector('.player-frame') : null;
-
-    vodInfobarPoster = $('vod-infobar-poster');
-    vodInfobarTitle = $('vod-infobar-title');
-    vodTimeCurrent = $('vod-time-current');
-    vodTimeTotal = $('vod-time-total');
-    vodSeekbar = $('vod-seekbar');
-    vodSeekProgress = $('vod-seek-progress');
-    vodSeekBuffered = $('vod-seek-buffered');
-    vodSeekThumb = $('vod-seek-thumb');
-
-    if (vodSeekbar) {
-      vodSeekbar.classList.add('focusable');
-      vodSeekbar._activate = function () { leaveVodScrub(true); };
-      vodSeekbar._onMove = function (dir) {
-        if (dir === 'left') { moveVodScrub(-1); return true; }
-        if (dir === 'right') { moveVodScrub(1); return true; }
-        if (dir === 'down' || dir === 'up') { leaveVodScrub(false); return true; }
-        return false;
-      };
-    }
-
-    /* PlaySettingView elements */
-    playSettingView = $('player-playsetting-view');
-    psvSecSelection = $('psv-sec-selection');
-    psvEpisodesRow = $('psv-episodes-row');
-    psvBtnEpisodes = $('psv-btn-episodes');
-    psvBtnConfig = $('psv-btn-config');
-    psvBtnP1 = $('psv-btn-p1');
-    psvBtnP2 = $('psv-btn-p2');
-    psvSecAudio = $('psv-sec-audio');
-    psvSecQuality = $('psv-sec-quality');
-    psvQualityRow = $('psv-quality-row');
-    psvSecAspect = $('psv-sec-aspect');
-    psvSecPlayer = $('psv-sec-player');
-    psvBtnFeedback = $('psv-btn-feedback');
-    psvAspectRow = $('psv-aspect-row');
-
-    /* Season/episode browser */
-    episodeBrowser = $('player-episodes');
-    peTitle = $('pe-title');
-    peSub = $('pe-sub');
-    peSeasons = $('pe-seasons');
-    peSeasonsCol = $('pe-seasons-col');
-    peEpisodes = $('pe-episodes');
-    peSeasonLabel = $('pe-season-label');
-
-    if (psvBtnEpisodes) {
-      psvBtnEpisodes._activate = function () { openEpisodeBrowser(); };
-    }
-
-    if (psvBtnFeedback) {
-      psvBtnFeedback._activate = function () { schedulePlaySettingHide(); };
-    }
-
-    if (psvBtnConfig) {
-      psvBtnConfig._activate = function () {
-        openPlaySettingsDialog();
-      };
-    }
-    if (psvBtnP1) {
-      psvBtnP1._activate = function () {
-        /* Explicit user action must always recreate the source.  Never use
-           the visual selection or a stale URL as a reason to skip it. */
-        setSmoothMode(playSettingsItem(), true);
-        renderPlaySettingPlayerOptions();
-        schedulePlaySettingHide();
-        restartCurrentPlayback();
-      };
-    }
-    if (psvBtnP2) {
-      psvBtnP2._activate = function () {
-        setSmoothMode(playSettingsItem(), false);
-        renderPlaySettingPlayerOptions();
-        schedulePlaySettingHide();
-        restartCurrentPlayback();
-      };
-    }
-    if (psvAspectRow) {
-      var aBtns = psvAspectRow.querySelectorAll('.psv-btn');
-      for (var ai = 0; ai < aBtns.length; ai++) {
-        (function (b) {
-          b._activate = function () {
-            var asp = b.getAttribute('data-aspect');
-            setPlayerAspect(asp);
-          };
-        })(aBtns[ai]);
-      }
-    }
-
-    /* Modal Dialog elements */
-    dialogPlaySettings = $('dialog-playsettings');
-    dpsAudioOptions = $('dps-audio-options');
-    dpsSubSwitch = $('dps-sub-switch');
-    dpsRowLang = $('dps-row-lang');
-    dpsRowSize = $('dps-row-size');
-    dpsRowStyle = $('dps-row-style');
-    dpsLangOptions = $('dps-lang-options');
-    dpsSizeOptions = $('dps-size-options');
-    dpsStyleOptions = $('dps-style-options');
-    dpsBtnExit = $('dps-btn-exit');
-    playerSubtitles = $('player-subtitles');
-
-    if (dpsSubSwitch) {
-      dpsSubSwitch._activate = function () {
-        vodSubChosen = true;
-        vodSubActive = !vodSubActive;
-        if (!vodSubActive) {
-          loadSubtitleTrack(null);
-        } else {
-          var info = mediaInfoCache[mediaInfoKey(playSettingsItem())];
-          var subs = subtitleLanguageList(info);
-          if (!vodCurrentSubtitle && subs.length) {
-            vodCurrentSubtitle = subs[0];
-          }
-          if (vodCurrentSubtitle) {
-            loadSubtitleTrack(vodCurrentSubtitle);
-          }
-        }
-        renderDialogSubtitle();
-        schedulePlaySettingHide();
-      };
-    }
-
-    if (dpsSizeOptions) {
-      var sBtns = dpsSizeOptions.querySelectorAll('.dps-btn');
-      for (var si = 0; si < sBtns.length; si++) {
-        (function (b) {
-          b._activate = function () {
-            vodSubSize = b.getAttribute('data-size') || 'normal';
-            applySubtitleStyles();
-            renderDialogSubtitle();
-          };
-        })(sBtns[si]);
-      }
-    }
-
-    if (dpsStyleOptions) {
-      var stBtns = dpsStyleOptions.querySelectorAll('.dps-btn');
-      for (var sti = 0; sti < stBtns.length; sti++) {
-        (function (b) {
-          b._activate = function () {
-            vodSubStyle = b.getAttribute('data-style') || 'white';
-            applySubtitleStyles();
-            renderDialogSubtitle();
-          };
-        })(stBtns[sti]);
-      }
-    }
-
-    if (dpsBtnExit) {
-      dpsBtnExit._activate = function () {
-        closePlaySettingsDialog();
-      };
-    }
-
-    applySubtitleStyles();
-    applyGlobalPlaybackPreferences();
-
-    /* A preparation notice ("Conectando…", "Cargando vídeo…") must never stay
-       over a stream that is already showing frames.  Several Starfish builds
-       skip loadeddata/playing/timeupdate after a source swap, which left the
-       overlay onscreen while live TV or a movie was playing normally. */
-    setInterval(function () {
-      if (!playerVideo || state.streamError) { return; }
-      if (!playerStatus || !playerStatus.classList.contains('is-active')) { return; }
-      if (playerVideo.paused || playerVideo.readyState < 2) { return; }
-      if ((playerVideo.currentTime || 0) <= 0) { return; }
-      setPlayerStatus('');
-    }, 2000);
-
-    clear(playerInfo); clear(playerChannels);
-
-    playerStage.classList.add('focusable');
-    playerStage._onMove = function (dir) {
-      if (state.playerMode === 'vod') {
-        if (dir === 'left') { playerSeek(-10); return true; }
-        if (dir === 'right') { playerSeek(10); return true; }
-        if (dir === 'down') {
-          openPlaySettingView();
-          return true;
-        }
-        if (dir === 'up') {
-          enterVodScrub();
-          return true;
-        }
-        return false;
-      }
-      if (dir === 'left' || dir === 'right') { openChannelPanel(); return true; }
-      if (dir === 'up') { setChannel(state.channel - 1); return true; }
-      if (dir === 'down') { setChannel(state.channel + 1); return true; }
-      return false;
-    };
-    playerStage._activate = function () {
-      if (state.playerMode === 'vod') {
-        togglePlayerPlayPause();
-        return;
-      }
-      openChannelPanel();
-    };
-
-    /* --- infobar (layout_live_infobar, 160dp = 240px) --- */
-    playerInfo.appendChild(el('div', 'pi-logo'));
-    playerInfo.appendChild(el('div', 'pi-index'));
-    var nameRow = el('div', 'pi-namerow');
-    var nm = el('div', 'pi-name');
-    nameRow.appendChild(nm);
-    var uhd = el('div', 'pi-uhd');
-    uhd.style.left = '20px';
-    nameRow.appendChild(uhd);
-    playerInfo.appendChild(nameRow);
-    playerInfo.appendChild(el('div', 'pi-date'));
-    playerInfo.appendChild(el('div', 'pi-range'));
-    playerInfo.appendChild(el('div', 'pi-now'));
-    playerInfo.appendChild(el('div', 'pi-next'));
-    var seek = el('div', 'pi-seek');
-    seek.appendChild(el('div', 'bar'));
-    playerInfo.appendChild(seek);
-    playerInfo.appendChild(el('div', 'pi-menu', 'info'));
-    playerInfo.appendChild(el('div', 'pi-quality', 'HD'));
-    playerInfo.appendChild(el('div', 'pi-scale', 'Normal'));
-    playerInfo.appendChild(el('div', 'pi-func', 'Selecion de función'));
-
-    var actions = el('div', 'pi-actions');
-    var actDefs = [
-      { label: 'Pip', right: 446, w: 67, hidden: true },
-      { label: 'HD', right: 389, w: 67 },
-      { label: 'Anterior', right: 333, w: 67 },
-      { label: 'Formato', right: 249, w: 120 },
-      { label: 'Favorito', right: 219, w: 67 },
-      { label: 'Reproductor 1', right: 151, w: 90 },
-      { label: 'Bloquear', right: 107, w: 67 },
-      { label: 'Feedback', right: 50, w: 67 }
-    ];
-    for (var i = 0; i < actDefs.length; i++) {
-      var d = actDefs[i];
-      if (d.hidden) { continue; }
-      var b = el('div', 'pi-act focusable', d.label);
-      b.style.width = (d.w * 1.5) + 'px';
-      b.style.left = (1920 - d.right * 1.5 - d.w * 1.5) + 'px';
-      b._kind = d.label;
-      b._activate = (function (label) {
-        return function () {
-          if (label === 'Anterior') { setChannel(state.channel - 1); }
-          else if (label === 'Formato') {
-            var sc = playerInfo.querySelector('.pi-scale');
-            sc.textContent = sc.textContent === 'Normal' ? '16:9' : (sc.textContent === '16:9' ? '4:3' : 'Normal');
-            layoutInfoTexts();
-          } else if (label === 'Favorito') {
-            var ch = CHANNELS[state.channel];
-            ch.fav = !ch.fav;
-          }
-        };
-      })(d.label);
-      actions.appendChild(b);
-    }
-    playerInfo.appendChild(actions);
-
-    /* --- channel panel (frag_live_channel) with category bar and addons --- */
-    var pcHeader = el('div', 'pc-header');
-    pcHeader.appendChild(el('div', 'pc-title', 'Canales de TV'));
-    playerChannels.appendChild(pcHeader);
-
-    var pcCategories = el('div', 'pc-categories scrollable');
-    pcCategories.id = 'pc-categories';
-    playerChannels.appendChild(pcCategories);
-
-    playerChannels.appendChild(el('div', 'pc-div'));
-    var list = el('div', 'pc-list scrollable');
-    playerChannels.appendChild(list);
-    renderPlayerCategories();
-    renderPlayerChannels();
-
-    var menu = el('div', 'pc-menu');
-    menu.appendChild(el('div', 'ic'));
-    menu.appendChild(el('div', 'l1', 'Presione [OK] para reproducir'));
-    menu.appendChild(el('div', 'l2', '(Arriba: Categorías · OK: Filtrar)'));
-    playerChannels.appendChild(menu);
-  }
-
-  function renderPlayerCategories() {
-    if (!playerChannels) { return; }
-    var bar = playerChannels.querySelector('.pc-categories');
-    if (!bar) { return; }
-    var cats = (liveCategories && liveCategories.length) ? liveCategories : DEFAULT_LIVE_CATEGORIES;
-
-    /* The portal returns 38 columns.  Rebuilding all 39 pills on every filter
-       detached the focused node mid-keypress, so the rail looked alive but the
-       d-pad had nowhere to go ("no puedo navegar hacia las categorías").
-       The bar is now rebuilt only when the column list itself changes;
-       selecting a category just swaps the is-selected class. */
-    var key = '';
-    for (var kk = 0; kk < cats.length; kk++) { key += cats[kk].id + '|'; }
-    var focusedCat = (state.focus && state.focus._cat) ? state.focus._cat : null;
-
-    if (key !== renderedCategoryKey) {
-      clear(bar);
-      var pills = [];
-      for (var i = 0; i < cats.length; i++) {
-        var cat = cats[i];
-        var pill = el('button', 'pc-cat-pill focusable', cat.name);
-        pill._cat = cat;
-        pill._idx = i;
-        pill._activate = (function (c) {
-          return function () { switchLiveCategory(c); };
-        })(cat);
-        pill._onMove = (function (idx) {
-          return function (dir) {
-            if (dir === 'left') {
-              if (idx > 0 && pills[idx - 1]) {
-                setFocus(pills[idx - 1]);
-                scrollPillIntoView(bar, pills[idx - 1]);
-              }
-              return true;
-            }
-            if (dir === 'right') {
-              if (idx < pills.length - 1 && pills[idx + 1]) {
-                setFocus(pills[idx + 1]);
-                scrollPillIntoView(bar, pills[idx + 1]);
-              } else {
-                setFocus(playerStage);
-              }
-              return true;
-            }
-            if (dir === 'up') {
-              /* All portal columns do not fit in the rail, so Up opens the
-                 full-screen category grid (the reference app's "all columns"). */
-              openCategoryPicker();
-              return true;
-            }
-            if (dir === 'down') {
-              var promo = playerChannels.querySelector('.pc-row-addon-promo');
-              if (promo) { setFocus(promo); return true; }
-              if (CHANNELS.length) { focusPlayerChannel(state.channel); return true; }
-            }
-            return false;
-          };
-        })(i);
-        bar.appendChild(pill);
-        pills.push(pill);
-      }
-      bar._pills = pills;
-      renderedCategoryKey = key;
-    }
-
-    var current = currentLiveCategory || cats[0];
-    var now = bar._pills || [];
-    for (var j = 0; j < now.length; j++) {
-      var p = now[j];
-      if (p._cat && current && p._cat.id === current.id) { p.classList.add('is-selected'); }
-      else { p.classList.remove('is-selected'); }
-    }
-
-    /* Filtering must leave the d-pad on the rail, on the same pill. */
-    if (focusedCat) {
-      var same = null;
-      for (var m = 0; m < now.length; m++) {
-        if (now[m]._cat && now[m]._cat.id === focusedCat.id) { same = now[m]; break; }
-      }
-      if (same) {
-        if (state.focus !== same) { setFocus(same); }
-        scrollPillIntoView(bar, same);
-      }
-    }
-  }
-
-  function scrollSelectedCategoryPill() {
-    if (!playerChannels) { return; }
-    var bar = playerChannels.querySelector('.pc-categories');
-    var pill = bar ? bar.querySelector('.pc-cat-pill.is-selected') : null;
-    if (bar && pill) { scrollPillIntoView(bar, pill); }
-  }
-
-  /* Full-screen column picker.  The reference APK opens a separate "all
-     columns" screen from the live home (mIvAllColumn); 38 portal categories
-     cannot fit in the 453dp in-player rail, so Up on the rail opens this grid. */
-  function openCategoryPicker() {
-    if (!categoryPicker) {
-      categoryPicker = $('player-categories');
-      pcatGrid = $('pcat-grid');
-      pcatSub = $('pcat-sub');
-    }
-    if (!categoryPicker || !pcatGrid) { return; }
-    state.categoryPickerOpen = true;
-    categoryPicker.classList.add('is-active');
-    hideInfobar();
-    renderCategoryPicker();
-    var cur = pcatGrid.querySelector('.pcat-tile.is-selected') || firstIn(pcatGrid);
-    if (cur) { setFocus(cur); }
-  }
-
-  function closeCategoryPicker(keepFocus) {
-    if (!categoryPicker || !state.categoryPickerOpen) { return; }
-    state.categoryPickerOpen = false;
-    categoryPicker.classList.remove('is-active');
-    if (keepFocus) { return; }
-    var pill = playerChannels ? playerChannels.querySelector('.pc-cat-pill.is-selected') : null;
-    if (pill && state.channelsOpen) { setFocus(pill); scrollSelectedCategoryPill(); }
-    else if (state.screen === 'player' && playerStage) { setFocus(playerStage); }
-    else if (state.screen === 'home') {
-      if (liveFocus) { setFocus(liveFocus); }
-    }
-  }
-
-  function renderCategoryPicker() {
-    if (!pcatGrid) { return; }
-    var cats = liveCategories && liveCategories.length ? liveCategories : [];
-    clear(pcatGrid);
-    if (pcatSub) {
-      pcatSub.textContent = cats.length
-        ? (cats.length + ' categorías disponibles · elige una para filtrar')
-        : 'Cargando categorías…';
-    }
-    for (var i = 0; i < cats.length; i++) {
-      (function (cat) {
-        var tile = el('div', 'pcat-tile focusable');
-        tile.appendChild(el('div', 'pcat-name', cat.name));
-        if (currentLiveCategory && currentLiveCategory.id === cat.id) { tile.classList.add('is-selected'); }
-        tile._cat = cat;
-        tile._activate = function () {
-          switchLiveCategory(cat);
-          closeCategoryPicker(true);
-          var pill = playerChannels ? playerChannels.querySelector('.pc-cat-pill.is-selected') : null;
-          if (pill) { setFocus(pill); scrollSelectedCategoryPill(); }
-          else { closeChannelPanel(); }
-        };
-        pcatGrid.appendChild(tile);
-      })(cats[i]);
-    }
-    var exitBtn = $('pcat-btn-exit');
-    if (exitBtn) {
-      exitBtn._activate = function () { closeCategoryPicker(); };
-      exitBtn._onMove = function (dir) {
-        if (dir === 'up') {
-          var selTile = pcatGrid.querySelector('.pcat-tile.is-selected') || pcatGrid.lastChild;
-          if (selTile) { setFocus(selTile); return true; }
-        }
-        return false;
-      };
-    }
-  }
-
-  function scrollPillIntoView(bar, pill) {
-    if (!bar || !pill) { return; }
-    var pl = pill.offsetLeft;
-    var pw = pill.offsetWidth;
-    var bl = bar.scrollLeft;
-    var bw = bar.clientWidth;
-    if (pl < bl) { bar.scrollLeft = pl - 20; }
-    else if (pl + pw > bl + bw) { bar.scrollLeft = pl + pw - bw + 20; }
-  }
-
-  function focusPlayerChannel(index) {
-    if (!CHANNELS.length) { return; }
-    index = Math.max(0, Math.min(CHANNELS.length - 1, Number(index) || 0));
-    if (!playerChannelRows[index]) { renderPlayerChannels(index); }
-    if (playerChannelRows[index]) { setFocus(playerChannelRows[index]); }
-  }
-
-  function renderPlayerChannels(anchorIndex) {
-    if (!playerChannels) { return; }
-    var list = playerChannels.querySelector('.pc-list');
-    if (!list) { return; }
-    clear(list);
-    playerChannelRows = {};
-
-    /* If in Addons category, display manage promo header at top */
-    if (currentLiveCategory && currentLiveCategory.isAddon) {
-      var promo = el('div', 'pc-row-addon-promo focusable');
-      promo.appendChild(el('div', 'promo-icon', '⚙️'));
-      var promoInfo = el('div', 'promo-info');
-      promoInfo.appendChild(el('div', 'promo-text', '➕ Administrar Addons y Listas M3U'));
-      promoInfo.appendChild(el('div', 'promo-sub', 'Instala listas recomendadas o agrega tu enlace'));
-      promo.appendChild(promoInfo);
-      promo._activate = function () { openAddonsDialog(); };
-      promo._onMove = function (dir) {
-        if (dir === 'up') {
-          var selCat = playerChannels.querySelector('.pc-cat-pill.is-selected') || playerChannels.querySelector('.pc-cat-pill');
-          if (selCat) { setFocus(selCat); }
-          return true;
-        }
-        if (dir === 'down') {
-          if (CHANNELS.length) { focusPlayerChannel(0); }
-          return true;
-        }
-        if (dir === 'right') { setFocus(playerStage); return true; }
-        return false;
-      };
-      list.appendChild(promo);
-    }
-
-    if (!CHANNELS.length) {
-      var emptyRow = el('div', 'pc-empty-channels', 'No hay canales disponibles en esta categoría');
-      emptyRow.style.padding = '30px';
-      emptyRow.style.color = '#888';
-      emptyRow.style.fontSize = '20px';
-      list.appendChild(emptyRow);
-      return;
-    }
-
-    anchorIndex = Number(anchorIndex);
-    if (!isFinite(anchorIndex)) { anchorIndex = state.channel; }
-    anchorIndex = Math.max(0, Math.min(CHANNELS.length - 1, anchorIndex || 0));
-    var firstChannel = Math.max(0, anchorIndex - Math.floor(LIVE_PANEL_WINDOW / 2));
-    var lastChannel = Math.min(CHANNELS.length, firstChannel + LIVE_PANEL_WINDOW);
-    firstChannel = Math.max(0, lastChannel - LIVE_PANEL_WINDOW);
-
-    for (var c = firstChannel; c < lastChannel; c++) {
-      var row = el('div', 'pc-row focusable');
-      row._channel = c;
-      var ic = el('div', 'ic');
-      if (CHANNELS[c].logo) {
-        ic.style.backgroundImage = 'url(' + CHANNELS[c].logo + ')';
-        ic.style.backgroundSize = 'contain';
-        ic.style.backgroundRepeat = 'no-repeat';
-        ic.style.backgroundPosition = 'center';
-      }
-      var num = el('div', 'num', pad2(CHANNELS[c].index || (c + 1)));
-      var nm2 = el('div', 'nm', CHANNELS[c].name);
-      var epg = el('div', 'epg', CHANNELS[c].now || 'En vivo');
-      row.appendChild(ic); row.appendChild(num); row.appendChild(nm2); row.appendChild(epg);
-      if (c === state.channel) { row.classList.add('is-current'); }
-      row._activate = (function (idx) {
-        return function () {
-          setChannel(idx, true);
-          closeChannelPanel();
-          setFocus(playerStage);
-        };
-      })(c);
-      row._onMove = (function (idx) {
-        return function (dir) {
-          if (dir === 'right') { setFocus(playerStage); return true; }
-          if (dir === 'up') {
-            if (idx > 0) {
-              focusPlayerChannel(idx - 1);
-            } else if (idx === 0) {
-              var promo = playerChannels.querySelector('.pc-row-addon-promo');
-              if (promo) { setFocus(promo); }
-              else {
-                var selCat = playerChannels.querySelector('.pc-cat-pill.is-selected') || playerChannels.querySelector('.pc-cat-pill');
-                if (selCat) { setFocus(selCat); }
-              }
-            }
-            return true;
-          }
-          if (dir === 'down') {
-            if (idx < CHANNELS.length - 1) { focusPlayerChannel(idx + 1); }
-            return true;
-          }
-          return false;
-        };
-      })(c);
-      list.appendChild(row);
-      playerChannelRows[c] = row;
-    }
-  }
-
-  var lastProxyOrigin = '';
-  var lastPlayingUrl = '';
-  /* Generation counter: incremented every time we start a new stream.
-     Async resolve callbacks check this before calling playUrl() so that
-     stale responses from previously-selected items are silently dropped. */
-  var resolveSeq = 0;
-  var relayBaseUrl = '';
-  var relayStartOffset = 0;
-  /* A fragmented MP4 relay is a one-way HTTP stream.  Several older webOS
-     players do not resume that socket after a long pause; opening its local
-     URL again at the same offset is the reliable native resume operation. */
-  var relayPaused = false;
-  var relayStartWatch = null;
-  var relayFellBack = false;
-
-  /* Version of the TV, needed to choose the container of the local relay.
-     webOSTV.js `webOS.systemInfo` only exposes country/timezone (never a
-     version), so on its own it made every webOS 3.x/3.5 ask for fMP4 and the
-     native pipeline showed a black screen.  `PalmSystem.deviceInfo` is the
-     only synchronous source that really carries `platformVersion` on those
-     sets; the user agent string of LG TVs ("Web0S; Linux/SmartTV") has no
-     version at all.  0 means "unknown" and keeps the modern fMP4 path. */
-  var detectedWebOsMajor = null;
-  function webOsMajorVersion() {
-    if (typeof detectedWebOsMajor === 'number' && detectedWebOsMajor > 0) { return detectedWebOsMajor; }
-    var v = '';
-    try {
-      if (window.webOS && window.webOS.systemInfo && window.webOS.systemInfo.version) {
-        v = String(window.webOS.systemInfo.version);
-      }
-    } catch (eSysInfo) { v = ''; }
-    if (!v && window.PalmSystem && window.PalmSystem.deviceInfo) {
-      try {
-        var info = window.PalmSystem.deviceInfo;
-        if (typeof info === 'string') { info = JSON.parse(info); }
-        if (info) {
-          if (info.platformVersion) {
-            v = String(info.platformVersion);
-          } else if (info.version) {
-            v = String(info.version);
-          } else if (info.platformVersionMajor !== undefined && info.platformVersionMajor !== null) {
-            v = String(info.platformVersionMajor) + '.' + String(info.platformVersionMinor || 0);
-          } else if (info.sdkVersion) {
-            v = String(info.sdkVersion);
-          }
-        }
-      } catch (eDeviceInfo) { v = ''; }
-    }
-    if (!v && navigator && navigator.userAgent) {
-      var m = /(?:webOS|Web0S)[ \/]([0-9]+(?:\.[0-9]+)?)/i.exec(navigator.userAgent);
-      if (m && m[1]) { v = m[1]; }
-    }
-    /* Fallback by Chromium engine version:
-       webOS 3.0 to 3.4 shipped Chrome/38.0.2125.122; webOS 3.5 shipped Chrome/53.0.2785.34;
-       webOS 4 shipped Chrome/68.0.3440.106. On webOS 3.4.3 models with no version string in
-       the User-Agent, Chrome/38 is a 100% reliable guarantee of webOS 3.x. */
-    if (!v && navigator && navigator.userAgent) {
-      if (/Chrome\/38\./i.test(navigator.userAgent)) { v = '3.0'; }
-      else if (/Chrome\/53\./i.test(navigator.userAgent)) { v = '3.5'; }
-      else if (/Chrome\/68\./i.test(navigator.userAgent)) { v = '4.0'; }
-    }
-    var major = parseFloat(v);
-    detectedWebOsMajor = isNaN(major) ? 0 : major;
-    return detectedWebOsMajor;
-  }
-
-  function relayContainer() {
-    var major = webOsMajorVersion();
-    /* webOS 1/2/3 and 3.5 cannot demux the fragmented MP4 the relay emits;
-       they need MPEG-TS (authorized 2026-11-04 with "modificar fluido"). */
-    if (major > 0 && major < 4) { return 'ts'; }
-    return 'mp4';
-  }
-
-  function isRelayUrl(url) {
-    return typeof url === 'string' && (url.indexOf(':8787/s/') !== -1 || url.indexOf(':8787/t/') !== -1);
-  }
-
-  function clearRelayStartWatch() {
-    if (relayStartWatch) { clearTimeout(relayStartWatch); relayStartWatch = null; }
-  }
-
-  function armRelayStartWatch(url) {
-    clearRelayStartWatch();
-    if (!isRelayUrl(url) || relayFellBack) { return; }
-    relayStartWatch = setTimeout(function () {
-      relayStartWatch = null;
-      if (!playerVideo || playerVideo.readyState >= 2) { return; }
-      console.warn('[relay] Watchdog: Modo Fluido no arrancó en 15 s, volviendo a Modo Normal...');
-      relayFellBack = true;
-      state.streamMode = 'normal';
-      safeLocalWrite(STREAM_MODE_KEY, 'normal');
-      setPlayerStatus('Modo Fluido no respondió, usando Modo Normal…');
-      restartCurrentPlayback();
-    }, 15000);
-  }
-
-  function resumePlayerPlayback() {
-    if (!playerVideo) { return; }
-    if (relayPaused && relayBaseUrl && state.playerMode === 'vod') {
-      var base = relayBaseUrl;
-      var position = Math.max(0, Math.floor(relayStartOffset + (playerVideo.currentTime || 0)));
-      relayPaused = false;
-      var resumeUrl = base + '?start=' + position;
-      if (vodCurrentAudioTrack) { resumeUrl += '&a=' + vodCurrentAudioTrack; }
-      setPlayerStatus('Reanudando vídeo…');
-      playUrl(resumeUrl);
-      return;
-    }
-    try {
-      var p = playerVideo.play();
-      if (p && p.catch) { p.catch(function () {}); }
-    } catch (ePlay) { /* native player rejected resume */ }
-  }
-
-  /* Accumulated seek delta + timer for debouncing rapid seek keypresses.
-     webOS Starfish fires a full setPreload/dispatchBufferingStart cycle
-     for every currentTime assignment, so we batch rapid presses. */
-  var seekPending = 0;
-  var seekTimer = null;
-  /* Starfish emits transient waiting/stalled events even when its HLS buffer
-     recovers before a frame is missed.  Delay the visual notice so those
-     micro-events do not flash "Cargando vídeo" over a healthy channel. */
-  var bufferingNoticeTimer = null;
-  function clearBufferingNotice() {
-    if (bufferingNoticeTimer) {
-      clearTimeout(bufferingNoticeTimer);
-      bufferingNoticeTimer = null;
-    }
-  }
-  function scheduleBufferingNotice(text) {
-    if (bufferingNoticeTimer || state.streamError) { return; }
-    /* Starfish fires waiting/stalled even while the picture and the clock keep
-       advancing (typical on live HLS).  Remember the position so the notice is
-       only painted when playback really stopped; otherwise the overlay covered
-       a perfectly healthy stream and stayed there. */
-    var startPos = playerVideo ? (playerVideo.currentTime || 0) : 0;
-    bufferingNoticeTimer = setTimeout(function () {
-      bufferingNoticeTimer = null;
-      if (state.streamError || !playerVideo || playerVideo.paused) { return; }
-      if (playerVideo.readyState >= 3) { return; }
-      /* The clock moved since the event: the stream never stopped. */
-      if ((playerVideo.currentTime || 0) > startPos + 0.35) { return; }
-      setPlayerStatus(text);
-    }, 700);
-  }
-  /* Fragmented-MP4 seeks restart the native video pipeline on webOS 4.  Do
-     not start a second one until that pipeline has acknowledged the first. */
-  var relaySeekInFlight = false;
-  var relaySeekWatchdog = null;
-  function releaseRelaySeek() {
-    relaySeekInFlight = false;
-    if (relaySeekWatchdog) { clearTimeout(relaySeekWatchdog); relaySeekWatchdog = null; }
-  }
-  function flushSeek() {
-    seekTimer = null;
-    if (!playerVideo || !seekPending) { seekPending = 0; return; }
-    if (relayBaseUrl) {
-      if (relaySeekInFlight) { seekPending = 0; return; }
-      relaySeekInFlight = true;
-      var curSec = relayStartOffset + (playerVideo.currentTime || 0);
-      var target = Math.max(0, curSec + seekPending);
-      seekPending = 0;
-      var totalDur = (state.playerItem && state.playerItem.duration) || playerVideo.duration || 0;
-      if (totalDur > 0 && target > totalDur - 2) { target = Math.max(0, totalDur - 2); }
-      relayStartOffset = Math.floor(target);
-      var seekUrl = relayBaseUrl + '?start=' + relayStartOffset;
-      /* A failed upstream request must not leave controls locked forever. */
-      relaySeekWatchdog = setTimeout(releaseRelaySeek, 12000);
-      playUrl(seekUrl);
-      return;
-    }
-    var t = (playerVideo.currentTime || 0) + seekPending;
-    seekPending = 0;
-    var dur = playerVideo.duration || 0;
-    if (t < 0) { t = 0; }
-    if (dur > 0 && t > dur - 1) { t = dur - 1; }
-    try { playerVideo.currentTime = t; } catch (eSeek) { /* ignore */ }
-  }
-  function playerSeek(delta) {
-    if (!playerVideo) { return; }
-    seekPending += delta;
-    if (seekTimer) { clearTimeout(seekTimer); }
-    seekTimer = setTimeout(flushSeek, 800);
-    /* OSD feedback while seeking */
-    showOsdIcon(delta > 0 ? 'fwd' : 'rew');
-    setTimeout(function () { showOsdIcon('none'); }, 600);
-  }
-
-  function vodPlaybackPosition() {
-    if (!playerVideo) { return 0; }
-    return relayBaseUrl ? (relayStartOffset + (playerVideo.currentTime || 0)) : (playerVideo.currentTime || 0);
-  }
-
-  function vodPlaybackDuration() {
-    var duration = (playerVideo && isFinite(playerVideo.duration) && playerVideo.duration > 0) ? playerVideo.duration : 0;
-    if (!duration && state.playerEpisode && state.playerEpisode.duration) { duration = durationToSeconds(state.playerEpisode.duration); }
-    if (!duration && state.playerItem && state.playerItem.duration) { duration = durationToSeconds(state.playerItem.duration); }
-    return duration || 0;
-  }
-
-  function leaveVodScrub(apply) {
-    if (!vodScrubbing) { return; }
-    var target = vodScrubTime;
-    var before = vodPlaybackPosition();
-    vodScrubbing = false;
-    if (vodSeekbar) { vodSeekbar.classList.remove('is-scrubbing'); }
-    if (apply && Math.abs(target - before) >= 1) { playerSeek(target - before); }
-    updateVodProgress(vodPlaybackPosition(), vodPlaybackDuration());
-    setFocus(playerStage);
-    scheduleInfoHide();
-  }
-
-  function enterVodScrub() {
-    var duration = vodPlaybackDuration();
-    if (!vodSeekbar || !duration) { showInfobar(); return; }
-    vodScrubTime = Math.max(0, Math.min(duration - 1, vodPlaybackPosition()));
-    vodScrubbing = true;
-    vodSeekbar.classList.add('is-scrubbing');
-    showInfobar();
-    if (state.infoTimer) { clearTimeout(state.infoTimer); state.infoTimer = null; }
-    updateVodProgress(vodScrubTime, duration);
-    setFocus(vodSeekbar);
-  }
-
-  function moveVodScrub(direction) {
-    var duration = vodPlaybackDuration();
-    if (!vodScrubbing || !duration) { return; }
-    var step = Math.max(60, Math.min(300, Math.round(duration * 0.05)));
-    vodScrubTime = Math.max(0, Math.min(duration - 1, vodScrubTime + (direction * step)));
-    updateVodProgress(vodScrubTime, duration);
-  }
-
-  function stopPlayerVideo() {
-    clearRelayStartWatch();
-    if (state.playerMode === 'vod' && playerVideo) {
-      var stopPosition = relayBaseUrl ? (relayStartOffset + (playerVideo.currentTime || 0)) : (playerVideo.currentTime || 0);
-      var stopDuration = (playerVideo && isFinite(playerVideo.duration) && playerVideo.duration > 0) ? playerVideo.duration :
-        durationToSeconds((state.playerEpisode && state.playerEpisode.duration) || (state.playerItem && state.playerItem.duration) || 0);
-      rememberWatchProgress(stopPosition, stopDuration, true);
-    }
-    state.streamError = '';
-    clearBufferingNotice();
-    setPlayerStatus('');
-    showOsdIcon('none');
-    stopVodProgressTicker();
-    /* Keep the settings panel/dialog open across an audio/quality restart;
-       back() and screen changes close them. Keep the loaded cues too: an
-       audio/quality switch replaces the source but not the subtitles, and
-       showScreen() clears them when the player is really left. */
-    /* Cancel any pending seek */
-    if (seekTimer) { clearTimeout(seekTimer); seekTimer = null; seekPending = 0; }
-    releaseRelaySeek();
-    relayPaused = false;
-    relayBaseUrl = '';
-    relayStartOffset = 0;
-    /* Increment generation so any in-flight resolve() callback is ignored */
-    resolveSeq++;
-    var proxyToAbort = lastProxyOrigin;
-    if (!proxyToAbort && lastPlayingUrl && lastPlayingUrl.indexOf('127.0.0.1') !== -1) {
-      var m = /^(http:\/\/127\.0\.0\.1:\d+)/.exec(lastPlayingUrl);
-      if (m) { proxyToAbort = m[1]; }
-    }
-    if (proxyToAbort) {
-      try {
-        var abortXhr = new XMLHttpRequest();
-        abortXhr.open('GET', proxyToAbort + '/media/abort', true);
-        abortXhr.send();
-      } catch (eAbort) { /* ignore */ }
-    }
-    try {
-      portalServiceCall('abortMedia', {}, function () {});
-    } catch (eSvc) { /* ignore */ }
-    lastPlayingUrl = '';
-    lastProxyOrigin = '';
-    if (!playerVideo) { return; }
-    /* Detach the old Starfish pipeline callbacks before clearing its source.
-       Otherwise an asynchronous error from the previous episode can invoke
-       the new episode's handler and briefly paint a misleading código 4. */
-    playerVideo.onerror = null;
-    playerVideo.onwaiting = null;
-    playerVideo.onstalled = null;
-    playerVideo.onloadeddata = null;
-    playerVideo.oncanplay = null;
-    playerVideo.onloadedmetadata = null;
-    playerVideo.ondurationchange = null;
-    playerVideo.onplaying = null;
-    playerVideo.onended = null;
-    playerVideo.ontimeupdate = null;
-    playerVideo.onpause = null;
-    playerVideo.onplay = null;
-    try { playerVideo.pause(); } catch (e) { /* ignore */ }
-    try { playerVideo.currentTime = 0; } catch (e) { /* ignore */ }
-    playerVideo.removeAttribute('src');
-    try { playerVideo.src = ''; } catch (e) { /* ignore */ }
-    while (playerVideo.firstChild) {
-      playerVideo.removeChild(playerVideo.firstChild);
-    }
-    /* NOTE: do NOT call playerVideo.load() here.
-       A bare load() with no <source> briefly creates a WebMediaPlayerUMS
-       pipeline in Starfish (AID=N) that gets destroyed milliseconds later
-       when the real load() arrives, wasting one ACB slot and ~70ms. */
-    playerVideo.classList.remove('is-active');
-    if (playerFrame) { playerFrame.style.display = 'block'; }
-    clearStreamModeHint();
-  }
-
-  function setPlayerStatus(text) {
-    if (!playerStatus) { playerStatus = $('player-status'); }
-    if (!playerStatus) { return; }
-    if (text) {
-      playerStatus.textContent = text;
-      playerStatus.classList.add('is-active');
-    } else {
-      playerStatus.textContent = '';
-      playerStatus.classList.remove('is-active');
-    }
-  }
-
-  /* Large, temporary notice shown only while Modo Fluido plays fullscreen.
-     It has no focus/pointer behaviour: it is pure guidance so viewers know the
-     mode exists for stuttering movies, not as the default picture. */
-  var playerModeHintTimer = null;
-  var playerModeHintKey = '';
-  function clearStreamModeHint() {
-    if (playerModeHintTimer) { clearTimeout(playerModeHintTimer); playerModeHintTimer = null; }
-    if (!playerModeHint) { playerModeHint = $('player-mode-hint'); }
-    if (playerModeHint) {
-      playerModeHint.classList.remove('is-active');
-      playerModeHint.textContent = '';
-    }
-  }
-  function showStreamModeHint() {
-    if (state.playerMode !== 'vod') { return; }
-    if (state.streamMode !== 'smooth' && state.streamMode !== 'relay') { return; }
-    if (state.screen !== 'player') { return; }
-    if (!playerModeHint) { playerModeHint = $('player-mode-hint'); }
-    if (!playerModeHint) { return; }
-    /* Once per title/episode: seeking and the start watchdog restart the
-       stream, and the notice must not pop up again on every restart. */
-    var hintKey = String((state.playerItem && state.playerItem.id) || '') + '|' +
-      String((state.playerEpisode && state.playerEpisode.id) || '');
-    if (hintKey !== '|' && hintKey === playerModeHintKey) { return; }
-    playerModeHintKey = hintKey;
-    playerModeHint.textContent = '';
-    playerModeHint.appendChild(el('span', 'pmh-title', 'Modo Fluido activado'));
-    playerModeHint.appendChild(el('span', 'pmh-sub',
-      'Úsalo cuando las películas van trabadas o se cortan. ' +
-      'Si tu TV las reproduce bien en Normal, déjalo en Normal para ver mejor imagen.'));
-    playerModeHint.classList.add('is-active');
-    if (playerModeHintTimer) { clearTimeout(playerModeHintTimer); }
-    playerModeHintTimer = setTimeout(function () {
-      playerModeHintTimer = null;
-      if (playerModeHint) { playerModeHint.classList.remove('is-active'); }
-    }, 9000);
-  }
-
-  function playUrl(url, playOptions) {
-    if (!playerVideo || !url) { return; }
-    playOptions = playOptions || {};
-    var useNativeHlsFallback = !!playOptions.nativeHls;
-    stopPlayerVideo();
-    relayPaused = false;
-    lastPlayingUrl = url;
-    var mOrigin = /^(http:\/\/127\.0\.0\.1:\d+)/.exec(url);
-    if (mOrigin) { lastProxyOrigin = mOrigin[1]; }
-    if (isRelayUrl(url)) {
-      relayBaseUrl = url.split('?')[0];
-      var mStart = /[?&]start=(\d+)/.exec(url);
-      relayStartOffset = mStart ? parseInt(mStart[1], 10) : 0;
-      armRelayStartWatch(url);
-    } else {
-      relayBaseUrl = '';
-      relayStartOffset = 0;
-      clearRelayStartWatch();
-    }
-    setPlayerStatus('Conectando con el vídeo…');
-    state.streamError = '';
-
-    /* The markup defaults to auto too, but set it again because Starfish can
-       retain the previous resource's preload mode after source replacement. */
-    try { playerVideo.preload = 'auto'; } catch (ePreload) { /* ignore */ }
-
-    var rawMime = (state.playerItem && state.playerItem.streamMime) || '';
-    var isHls = (url.indexOf('.m3u8') !== -1) || (rawMime.indexOf('mpegurl') !== -1) || !!(state.playerItem && state.playerItem.isHls);
-    var mime = isHls ? 'application/vnd.apple.mpegurl' : ((url.indexOf('.mp4') !== -1 || rawMime.indexOf('mp4') !== -1) ? 'video/mp4' : 'video/mp2t');
-
-    playerVideo.onerror = function () {
-      hideNextEpisodeLoading();
-      releaseRelaySeek();
-      var code = playerVideo.error && playerVideo.error.code;
-      /* Some newer webOS releases reject Starfish's legacy mediaOption
-         parameter for every HLS channel and report MEDIA_ERR_SRC_NOT_SUPPORTED
-         (4). Retry only live HLS once with the standard HTML5 HLS source.
-         VOD and the FFmpeg Modo Fluido path are intentionally untouched. */
-      if (code === 4 && state.playerMode === 'live' && isHls && !useNativeHlsFallback) {
-        var failedChannelSeq = liveChannelSeq;
-        setPlayerStatus('Reintentando señal con compatibilidad webOS…');
-        setTimeout(function () {
-          if (state.playerMode === 'live' && liveChannelSeq === failedChannelSeq) {
-            playUrl(url, { nativeHls: true });
-          }
-        }, 0);
-        return;
-      }
-      /* A manual language change on the direct pipeline must preserve Normal
-         mode.  Do not mistake the transient native-track error for an
-         unsupported stream and silently restart through the FFmpeg relay. */
-      if (code === 4 && state.playerMode === 'vod' && state.streamMode === 'normal' &&
-          audioTrackSwitchUntil && Date.now() < audioTrackSwitchUntil) {
-        audioTrackSwitchUntil = 0;
-        state.streamError = 'No fue posible cambiar el idioma en reproducción Normal';
-        setPlayerStatus(state.streamError);
-        return;
-      }
-      /* Some portal VOD files are rejected by a TV's direct TS pipeline even
-         though the same HEVC/AAC content plays when remuxed as fragmented MP4.
-         Retry once through the protected Modo Fluido route, never in a loop.
-         The retry belongs to this episode only: remembering it for the whole
-         series opened every following episode in Modo Fluido even after the
-         viewer picked Normal. */
-      if (code === 4 && state.playerMode === 'vod' && state.streamMode === 'normal' && state.playerItem) {
-        var failedItem = state.playerItem;
-        var failedKey = mediaInfoKey(failedItem) || smoothModeKey(failedItem);
-        if (autoSmoothFallbackKey !== failedKey) {
-          autoSmoothFallbackKey = failedKey;
-          state.streamMode = 'smooth';
-          setPlayerStatus('Reintentando película en modo compatible…');
-          setTimeout(function () {
-            if (state.playerMode === 'vod' && state.playerItem === failedItem && state.streamMode === 'smooth') {
-              restartCurrentPlayback();
-            }
-          }, 0);
-          return;
-        }
-      }
-      state.streamError = 'No se pudo abrir el stream (código ' + (code || 'error') + ')';
-      playerVideo.classList.remove('is-active');
-      if (playerFrame) { playerFrame.style.display = 'block'; }
-      setPlayerStatus(state.streamError);
-    };
-    function clearStatus() {
-      clearBufferingNotice();
-      setPlayerStatus('');
-    }
-    playerVideo.onloadeddata = function () {
-      clearStatus();
-      showStreamModeHint();
-    };
-    playerVideo.oncanplay = function () { releaseRelaySeek(); clearStatus(); };
-    playerVideo.onloadedmetadata = function () {
-      clearStatus();
-      /* Prefer Spanish on the direct path as well.  Android chooses this PID
-         internally; on webOS it is exposed only when the native AudioTrackList
-         becomes available with the loaded media metadata. */
-      if (state.playerMode === 'vod' && state.streamMode === 'normal') {
-        var audioInfo = (state.playerItem && state.playerItem.streamAudioInfo);
-        var nativeTrack = vodAudioChosen ? vodCurrentAudioTrack : preferredAudioIndex(audioInfo);
-        if (selectNativeAudioTrack(nativeTrack)) {
-          vodCurrentAudioTrack = nativeTrack;
-        }
-      }
-      if (state.playerMode === 'vod') {
-        var cur = relayBaseUrl ? relayStartOffset : (playerVideo.currentTime || 0);
-        var vidDur = (playerVideo && isFinite(playerVideo.duration) && playerVideo.duration > 0) ? playerVideo.duration : 0;
-        var epDur = (state.playerEpisode && state.playerEpisode.duration) ? durationToSeconds(state.playerEpisode.duration) : 0;
-        var itemDur = (state.playerItem && state.playerItem.duration) ? durationToSeconds(state.playerItem.duration) : 0;
-        var totalDur = vidDur || epDur || itemDur || 0;
-        updateVodProgress(cur, totalDur);
-      }
-    };
-    playerVideo.ondurationchange = function () {
-      if (state.playerMode === 'vod') {
-        var cur = relayBaseUrl ? (relayStartOffset + (playerVideo.currentTime || 0)) : (playerVideo.currentTime || 0);
-        var vidDur = (playerVideo && isFinite(playerVideo.duration) && playerVideo.duration > 0) ? playerVideo.duration : 0;
-        var epDur = (state.playerEpisode && state.playerEpisode.duration) ? durationToSeconds(state.playerEpisode.duration) : 0;
-        var itemDur = (state.playerItem && state.playerItem.duration) ? durationToSeconds(state.playerItem.duration) : 0;
-        var totalDur = vidDur || epDur || itemDur || 0;
-        updateVodProgress(cur, totalDur);
-      }
-    };
-    playerVideo.onplaying = function () {
-      clearRelayStartWatch();
-      hideNextEpisodeLoading();
-      clearStatus();
-    };
-    playerVideo.onended = function () {
-      if (state.playerMode === 'vod') { advanceToNextEpisode(); }
-    };
-    playerVideo.ontimeupdate = function () {
-      /* Any advancing clock means the picture is decoding: never leave the
-         "Conectando…" overlay over a stream that is already playing. */
-      if (!state.streamError && (playerVideo.currentTime > 0 || playerVideo.readyState >= 2)) { clearStatus(); }
-      if (state.playerMode === 'vod') {
-        var cur = relayBaseUrl ? (relayStartOffset + (playerVideo.currentTime || 0)) : (playerVideo.currentTime || 0);
-        var vidDur = (playerVideo && isFinite(playerVideo.duration) && playerVideo.duration > 0) ? playerVideo.duration : 0;
-        var epDur = (state.playerEpisode && state.playerEpisode.duration) ? durationToSeconds(state.playerEpisode.duration) : 0;
-        var itemDur = (state.playerItem && state.playerItem.duration) ? durationToSeconds(state.playerItem.duration) : 0;
-        var totalDur = vidDur || epDur || itemDur || 0;
-        updateVodProgress(cur, totalDur);
-        updateSubtitleDisplay(cur);
-        rememberWatchProgress(cur, totalDur);
-      }
-    };
-    playerVideo.onpause = function () {
-      stopVodProgressTicker();
-      if (state.playerMode === 'vod') {
-        var pausePosition = relayBaseUrl ? (relayStartOffset + (playerVideo.currentTime || 0)) : (playerVideo.currentTime || 0);
-        var pauseDuration = (playerVideo && isFinite(playerVideo.duration) && playerVideo.duration > 0) ? playerVideo.duration :
-          durationToSeconds((state.playerEpisode && state.playerEpisode.duration) || (state.playerItem && state.playerItem.duration) || 0);
-        rememberWatchProgress(pausePosition, pauseDuration, true);
-        showOsdIcon('pause');
-        if (relayBaseUrl) { relayPaused = true; }
-      }
-    };
-    playerVideo.onplay = function () {
-      if (state.playerMode === 'vod') {
-        showOsdIcon('none');
-        startVodProgressTicker();
-      }
-    };
-    playerVideo.onwaiting = function () {
-      scheduleBufferingNotice('Cargando vídeo…');
-    };
-    playerVideo.onstalled = function () {
-      scheduleBufferingNotice('Conectando…');
-    };
-
-    var transportOptions = {
-      mediaTransportType: isHls ? 'HLS' : 'URI',
-      option: {
-        transmission: {
-          playTime: { start: 0 }
-        }
-      }
-    };
-    var mediaOption = encodeURI(JSON.stringify(transportOptions));
-    var typeStr = useNativeHlsFallback ? mime : (mime + ';mediaOption=' + mediaOption);
-
-    while (playerVideo.firstChild) {
-      playerVideo.removeChild(playerVideo.firstChild);
-    }
-    playerVideo.removeAttribute('src');
-    /* Newer webOS uses the MIME type and rejects the old custom property.
-       Older sets retain the existing path above as their first attempt. */
-    if (!useNativeHlsFallback) {
-      try { playerVideo.mediaOption = transportOptions; } catch (eOpt) {}
-    } else {
-      try { playerVideo.mediaOption = null; } catch (eClearOpt) {}
-    }
-
-    var srcNode = document.createElement('source');
-    srcNode.setAttribute('src', url);
-    srcNode.setAttribute('type', typeStr);
-    if (isHls) {
-      /* LG's HLS pipeline reads mediaOption from the source element. Setting
-         video.src afterwards replaces that source and silently drops HLS mode
-         on recent webOS releases, resulting in MEDIA_ERR_SRC_NOT_SUPPORTED. */
-      try { playerVideo.load(); } catch (eHlsReset) { /* ignore */ }
-    }
-    playerVideo.appendChild(srcNode);
-
-    if (!isHls) {
-      /* Starfish on webOS 3–6 does not reliably start a non-HLS <source>
-         alone.  Keep the source node (for mediaOption) AND assign src, also
-         for the local Fluent relay.  This is the proven 1.6.15 behaviour and
-         prevents the player from staying forever at “Conectando…”. */
-      try { playerVideo.src = url; } catch (eSrc) {}
-    }
-    try { playerVideo.currentTime = 0; } catch (eCt) {}
-
-    playerVideo.classList.add('is-active');
-    if (playerFrame) { playerFrame.style.display = 'none'; }
-    try {
-      playerVideo.load();
-      var p = playerVideo.play();
-      if (p && p.catch) {
-        p.catch(function () {
-          if (playerVideo.error) { return; }
-          state.streamError = 'Pulsa OK para iniciar la reproducción';
-          setPlayerStatus(state.streamError);
-        });
-      }
-    } catch (e2) {
-      state.streamError = 'Pulsa OK para iniciar la reproducción';
-      setPlayerStatus(state.streamError);
-    }
-  }
-
-  /* Portal titles need a license + CDN auth that <video> cannot send: the
-     service resolves them and exposes a loopback proxy URL.
-     We capture the current resolveSeq at call time; if it changes before
-     the async response arrives (user navigated away), we discard the result. */
-  function resolvePlayerStream(item, done) {
-    var mySeq = resolveSeq;
-    function resolveNow() {
-      var params = { contentId: item.id };
-      params.playbackMode = state.streamMode;
-      params.forceRelay = state.streamMode === 'smooth' || state.streamMode === 'relay';
-      if (params.forceRelay) {
-        var container = relayContainer();
-        params.container = container;
-      }
-      params.trackIndex = state.trackIndex || 0;
-      /* Prefer the Spanish PID like the real app when mediaInfo already
-         answered; the relay maps it with ffmpeg -map 0:a:<n>. */
-      var ep = state.playerEpisode;
-      var epKey = (ep && ep.id) || (item && item.id) || '';
-      var cachedInfo = mediaInfoCache[epKey] || mediaInfoCache[mediaInfoKey(item)];
-      /* Spanish is the default for every episode.  Index 0 is NOT Spanish:
-         the portal lists the PIDs in stream order ("por,spa,eng"), so sending
-         0 after an episode change made playback start in Portuguese (and the
-         FFmpeg relay map the Portuguese PID). */
-      var audioList = (cachedInfo && cachedInfo.audio) || (ep && ep.streamAudioInfo) || item.streamAudioInfo || '';
-      if (vodAudioChosen) {
-        vodCurrentAudioTrack = Math.max(0, Number(vodCurrentAudioTrack) || 0);
-      } else {
-        vodCurrentAudioTrack = preferredAudioIndex(audioList);
-      }
-      params.audioTrack = vodCurrentAudioTrack || 0;
-      if (isSeriesItem(item)) {
-        var epSeries = state.playerEpisode;
-        var seriesRef = item.seasonId || item.id;
-        if (epSeries && epSeries.id) {
-          params.contentId = epSeries.id;
-          params.seriesContentId = seriesRef;
-        } else {
-          if (!item.episodes || !item.episodes.length) { return done(''); }
-          state.playerEpisode = item.episodes[0];
-          params.contentId = item.episodes[0].id;
-          params.seriesContentId = seriesRef;
-        }
-      }
-      var resolveMethod = params.forceRelay ? 'resolveSmooth' : 'resolve';
-      portalServiceCall(resolveMethod, params, function (error, payload) {
-        /* Stale response: user already navigated to something else */
-        if (mySeq !== resolveSeq) { return; }
-        if (error || !payload || payload.returnValue === false) {
-          state.streamError = 'No se pudo resolver el título' + (error ? ': ' + error : '');
-          setPlayerStatus(state.streamError);
-          return done('');
-        }
-        rememberCdnProbe('vod', payload);
-        item.streamMime = payload.mime || '';
-        item.streamCodec = payload.codec || '';
-        if (payload.duration > 0) {
-          item.duration = payload.duration;
-          if (state.playerEpisode) { state.playerEpisode.duration = payload.duration; }
-        } else {
-          item.duration = item.duration || 0;
-        }
-        item.subtitles = payload.subtitles || [];
-        item.streamAudioInfo = payload.audio || item.streamAudioInfo || '';
-        if (state.playerEpisode) { state.playerEpisode.streamAudioInfo = payload.audio || ''; }
-        item.isHls = !!payload.isHls;
-        if (!vodAudioChosen && payload.audio) {
-          vodCurrentAudioTrack = preferredAudioIndex(payload.audio);
-        }
-        /* resolve already completed startPlayVOD.  Reuse its audio/subtitle
-           metadata in the panel instead of requesting the same episode a
-           second time when the viewer changes chapters. */
-        var resolvedInfo = {
-          audio: payload.audio || item.streamAudioInfo,
-          subtitles: item.subtitles,
-          tracks: payload.availableTracks || [],
-          selected: payload.selectedTrack || {},
-          duration: payload.duration || 0
-        };
-        mediaInfoCache[mediaInfoKey(item)] = resolvedInfo;
-        applySubtitleDefaults(resolvedInfo);
-        /* Read-only local diagnostics for the webOS inspector.  Do not place
-           the stream URL, licence or headers here. */
-        try {
-          window.__xuperStreamInfo = {
-            selectedTrack: payload.selectedTrack || {},
-            availableTracks: payload.availableTracks || []
-          };
-        } catch (eDiag) { /* ignore */ }
-        done(payload.proxyPath || payload.url || '');
-      });
-    }
-    if (isSeriesItem(item) && !state.playerEpisode && (!item.episodes || !item.episodes.length) && !item._detailsLoaded) {
-      setPlayerStatus('Cargando capítulos…');
-      loadVodDetail(item, function () {
-        if (mySeq !== resolveSeq) { return; }
-        resolveNow();
-      });
-      return;
-    }
-    resolveNow();
-  }
-
-  function startPlayerVideo(item, episode) {
-    if (!playerVideo) { return; }
-    if (episode) {
-      state.playerEpisode = episode;
-      state.playerSeasonIndex = state.detailSeason || 0;
-    }
-    if (item) { state.playerItem = item; }
-    var it = item || state.playerItem;
-    if (it) { restoreSmoothMode(it); }
-    stopPlayerVideo();
-    if (!it) { return; }
-    vodAudioChosen = false;
-    vodCurrentAudioTrack = 0;
-    /* resolvePlayerStream returns the same audio/subtitle metadata needed by
-       the dialog.  Do not issue mediaInfo in parallel here: on every episode
-       change that duplicated startPlayVOD and delayed the next chapter.  It is
-       only requested while the audio PID order is still unknown, because the
-       portal lists it in stream order (index 0 is not Spanish) and Modo Fluido
-       maps that index inside FFmpeg. */
-    var currentEp = episode || state.playerEpisode;
-    var epKey = (currentEp && currentEp.id) || (it && it.id) || '';
-    var epInfo = epKey ? mediaInfoCache[epKey] : null;
-    var knownAudio = (epInfo && epInfo.audio) || (currentEp && currentEp.streamAudioInfo) || '';
-    if (it._portal && !vodAudioChosen && !knownAudio) {
-      var started = false;
-      var startSeq = resolveSeq;
-      var proceed = function () {
-        if (started || startSeq !== resolveSeq) { return; }
-        started = true;
-        var epNum = episode ? (episode.number || episode.seriesNumber || '') : '';
-        setPlayerStatus(epNum ? ('Cargando capítulo ' + epNum + '…') : 'Cargando capítulo…');
-        resolvePlayerStream(it, function (url) {
-          if (url) { playUrl(url); }
-          else if (!state.streamError) { setPlayerStatus('Sin fuente de reproducción'); }
-        });
-      };
-      /* Never hold playback on the metadata call: after 2.5 s resolve anyway. */
-      setTimeout(proceed, 2500);
-      ensureMediaInfo(it, function (info) {
-        proceed();
-      });
-      return;
-    }
-    if (it._portal) {
-      var epNum = episode ? (episode.number || episode.seriesNumber || '') : '';
-      setPlayerStatus(epNum ? ('Cargando capítulo ' + epNum + '…') : 'Cargando capítulo…');
-      resolvePlayerStream(it, function (url) {
-        if (url) { playUrl(url); }
-        else if (!state.streamError) { setPlayerStatus('Sin fuente de reproducción'); }
-      });
-      return;
-    }
-    if (!it.streamUrl) { return; }
-    playUrl(it.streamUrl);
-  }
-
-  function expandToFullscreen(item, episode) {
-    if (!playerStage) { buildPlayer(); }
-    /* The detail screen already owns a mini player.  Moving that exact stream
-       to fullscreen must not resolve it again, otherwise direct and relay
-       VOD both restart from zero. */
-    var sameEpisode = !episode || !state.playerEpisode ||
-      state.playerEpisode === episode || state.playerEpisode.id === episode.id;
-    var keepCurrentVideo = state.screen === 'detail' && playerVideo &&
-      !!playerVideo.src && state.playerItem === item && sameEpisode;
-    state.playerMode = 'vod';
-    if (item && state.playerItem !== item) { resetMediaSelection(); }
-    if (item) { state.playerItem = item; }
-    if (episode) { state.playerEpisode = episode; }
-    if (item) { restoreSmoothMode(item); }
-    state.playerReturn = { screen: 'detail', focus: state.focus };
-
-    var scrPlayer = $('screen-player');
-    var scrDetail = $('screen-detail');
-    if (scrPlayer) {
-      scrPlayer.classList.remove('is-mini');
-      scrPlayer.classList.add('is-active');
-    }
-    if (scrDetail) {
-      scrDetail.classList.remove('is-active');
-    }
-    state.screen = 'player';
-    playerStage.classList.add('is-vod');
-    updatePlayer();
-    setFocus(playerStage);
-    showVodInfobar();
-
-    if (!keepCurrentVideo) {
-      startPlayerVideo(state.playerItem, state.playerEpisode);
-    } else {
-      /* The mini player may still show a preparation notice; the same stream
-         keeps playing fullscreen, so drop any stale overlay instead of leaving
-         "Conectando…" over live video. */
-      if (!state.streamError) {
-        clearBufferingNotice();
-        setPlayerStatus('');
-        showStreamModeHint();
-      }
-    }
-  }
-
-  function openPlayer(mode, item, episode) {
-    if (mode === 'vod' && state.screen === 'detail') {
-      expandToFullscreen(item, episode);
-      return;
-    }
-    if (!playerStage) { buildPlayer(); }
-    if (mode === 'live') { stopLivePreview(); }
-    state.playerMode = mode;
-    if (item && state.playerItem !== item) { resetMediaSelection(); }
-    state.playerItem = item || null;
-    state.playerEpisode = episode || null;
-    if (mode === 'vod' && item) { restoreSmoothMode(item); }
-    state.playerReturn = { screen: state.screen, focus: state.focus };
-    state.channelsOpen = false;
-    playerInfo.classList.remove('is-active');
-    playerChannels.classList.remove('is-active');
-    playerStage.classList.toggle('is-vod', mode === 'vod');
-    updatePlayer();
-    showScreen('player');
-    setFocus(playerStage);
-    updatePlayer();                 /* re-measure now that the screen is visible */
-    if (mode === 'vod') {
-      showVodInfobar();
-      startPlayerVideo(state.playerItem, state.playerEpisode);
-    } else {
-      showInfobar();
-      startLiveChannel(CHANNELS[state.channel]);
-    }
-  }
-
-  var liveChannelSeq = 0;
-  var liveChannelDebounceTimer = null;
-  function startLiveChannel(ch, immediate) {
-    if (liveChannelDebounceTimer) {
-      clearTimeout(liveChannelDebounceTimer);
-      liveChannelDebounceTimer = null;
-    }
-    if (!ch) { ch = CHANNELS[state.channel]; }
-    if (!ch) { return; }
-    if (!ch.channelCode && !ch.streamUrl) { return; }
-
-    var doStart = function () {
-      var mySeq = ++liveChannelSeq;
-      setPlayerStatus('Cargando señal ' + (ch.name || '') + '…');
-      var resolveParams = ch.streamUrl ? { streamUrl: ch.streamUrl } : { channelCode: ch.channelCode };
-      portalServiceCall('resolveLive', resolveParams, function (err, payload) {
-        if (mySeq !== liveChannelSeq) { return; }
-        if (err || !payload || payload.returnValue === false) {
-          state.streamError = 'No se pudo conectar con la señal' + (err ? ': ' + err : '');
-          setPlayerStatus(state.streamError);
-          return;
-        }
-        rememberCdnProbe('live', payload);
-        var streamUrl = payload.proxyPath || payload.url;
-        if (!streamUrl) {
-          state.streamError = 'Señal no disponible';
-          setPlayerStatus(state.streamError);
-          return;
-        }
-        setPlayerStatus('');
-        showInfobar();
-        playUrl(streamUrl);
-      });
-    };
-
-    if (immediate) {
-      doStart();
-    } else {
-      liveChannelDebounceTimer = setTimeout(doStart, 180);
-    }
-  }
-
-  function updatePlayerChannel() {
-    if (!playerStage) { return; }
-    updatePlayer();
-  }
-
-  function updatePlayer() {
-    var live = state.playerMode === 'live';
-    var ch = CHANNELS[state.channel] || {};
-    var idx = playerInfo.querySelector('.pi-index');
-    var name = playerInfo.querySelector('.pi-name');
-    var date = playerInfo.querySelector('.pi-date');
-    var range = playerInfo.querySelector('.pi-range');
-    var now = playerInfo.querySelector('.pi-now');
-    var next = playerInfo.querySelector('.pi-next');
-    var uhd = playerInfo.querySelector('.pi-uhd');
-    var logo = playerInfo.querySelector('.pi-logo');
-
-    if (live) {
-      if (playerVodInfo) { playerVodInfo.classList.remove('is-active'); }
-      if (playerInfo) { playerInfo.style.display = ''; }
-      idx.style.display = 'block';
-      idx.textContent = pad2(ch.index || (state.channel + 1));
-      name.textContent = ch.name || '';
-      nameRowPosition();
-      date.textContent = 'Hoy';
-      range.textContent = ch.time || '';
-      now.style.display = 'block';
-      now.textContent = ch.now || 'En vivo';
-      next.style.display = ch.next ? 'block' : 'none';
-      if (ch.next) { next.textContent = 'Siguiente: ' + ch.next; }
-      uhd.style.display = ch.uhd ? 'block' : 'none';
-      logo.style.display = 'block';
-      if (logo) {
-        if (ch.logo) {
-          logo.style.backgroundImage = 'url(' + ch.logo + ')';
-        } else {
-          logo.style.backgroundImage = '';
-        }
-      }
-    } else {
-      if (playerInfo) { playerInfo.classList.remove('is-active'); playerInfo.style.display = 'none'; }
-      var item = state.playerItem || VOD[0];
-      if (vodInfobarTitle) {
-        if (isSeriesItem(item) && state.playerEpisode) {
-          var epTitle = state.playerEpisode.title || state.playerEpisode.name;
-          var epNum = state.playerEpisode.number || state.playerEpisode.seriesNumber;
-          var epLabel = epTitle || (epNum ? ('Capítulo ' + epNum) : '');
-          vodInfobarTitle.textContent = epLabel ? (item.title + ' - ' + epLabel) : item.title;
-        } else {
-          vodInfobarTitle.textContent = item.title;
-        }
-      }
-      if (vodInfobarPoster) {
-        vodInfobarPoster.src = item.poster || item.cover || 'assets/original/common/bg_placehoder_vertical.png';
-      }
-      updateVodProgress(playerVideo ? playerVideo.currentTime : 0, playerVideo ? playerVideo.duration : 0);
-    }
-    for (var rowIndex in playerChannelRows) {
-      if (playerChannelRows.hasOwnProperty(rowIndex)) {
-        playerChannelRows[rowIndex].classList.toggle('is-current', playerChannelRows[rowIndex]._channel === state.channel);
-      }
-    }
-    layoutInfoTexts();
-  }
-
-  function nameRowPosition() {
-    var row = playerInfo.querySelector('.pi-namerow');
-    if (!row) { return; }
-    var idx = playerInfo.querySelector('.pi-index');
-    var nm = row.querySelector('.pi-name');
-    var uhd = row.querySelector('.pi-uhd');
-    /* Keep a fixed lane for the channel number.  Measuring an auto-width
-       number while Starfish is animating the infobar returns inconsistent
-       values and can place the name on top of it. */
-    var base = 165;
-
-    row.style.position = 'absolute';
-    row.style.left = (367.5 + base) + 'px';
-    row.style.top = '13.5px';
-    row.style.width = '480px';
-    row.style.height = '58px';
-    row.style.display = 'block';
-
-    nm.style.position = 'absolute';
-    nm.style.left = '0px';
-    nm.style.top = '8px';                       /* alignBottom with mTextChannelIndex */
-    nm.style.width = '480px';
-    nm.style.height = '50px';
-    nm.style.lineHeight = '50px';
-
-    if (uhd) {
-      uhd.style.left = (nm.offsetWidth + 30) + 'px';   /* 20dp */
-      uhd.style.top = '18.5px';                        /* alignTop name + 7dp */
-    }
-  }
-
-  function layoutInfoTexts() {
-    var q = playerInfo.querySelector('.pi-quality');
-    var s = playerInfo.querySelector('.pi-scale');
-    var f = playerInfo.querySelector('.pi-func');
-    if (!q || !s || !f) { return; }
-    q.style.left = '517.5px';                   /* 345dp */
-    s.style.left = (q.offsetLeft + q.offsetWidth + 30) + 'px';   /* 20dp */
-    f.style.left = (s.offsetLeft + s.offsetWidth + 30) + 'px';   /* 20dp */
-  }
-
-  function openChannelPanel() {
-    if (state.playerMode !== 'live') { return; }
-    state.channelsOpen = true;
-    playerChannels.classList.add('is-active');
-    renderPlayerCategories();
-    renderPlayerChannels(state.channel);
-    /* Bring the active column into view: with 38 portal categories the rail
-       is 5000px wide and the selected pill is usually off-screen. */
-    scrollSelectedCategoryPill();
-    var row = playerChannelRows[state.channel];
-    if (row) {
-      setFocus(row);
-      var list = row.parentNode;
-      var top = state.channel * 111;
-      if (top < list.scrollTop || top + 109.5 > list.scrollTop + list.clientHeight) {
-        list.scrollTop = Math.max(0, top - 120);
-      }
-    }
-  }
-
-  function closeChannelPanel() {
-    state.channelsOpen = false;
-    playerChannels.classList.remove('is-active');
-    if (state.screen === 'player') { setFocus(playerStage); }
-  }
-
-  function restorePlayerReturn() {
-    hideInfobar();
-    hideVodInfobar();
-    var ret = state.playerReturn;
-    if (ret && ret.screen === 'detail') {
-      var scrPlayer = $('screen-player');
-      var scrDetail = $('screen-detail');
-      if (scrPlayer) {
-        scrPlayer.classList.add('is-mini');
-        scrPlayer.classList.add('is-active');
-      }
-      if (scrDetail) {
-        scrDetail.classList.add('is-active');
-      }
-      state.screen = 'detail';
-      var rebuiltDetail = false;
-      if (state.detailNeedsRebuild && state.detail) {
-        /* The episode browser switched season: rebuild the detail list so the
-           season dropdown and the episode grid match what is playing. */
-        state.detailNeedsRebuild = false;
-        buildDetail(state.detail);
-        rebuiltDetail = true;
-        var sBtn = detailBottom ? detailBottom.querySelector('.detail-season') : null;
-        if (sBtn) { setFocus(sBtn); }
-      } else if (state.detail) {
-        syncDetailEpisodeHighlight(state.detail);
-      }
-      if (!rebuiltDetail) {
-        if (ret.focus && isVisible(ret.focus)) {
-          setFocus(ret.focus);
-        } else {
-          var firstBtn = detailButtons ? detailButtons.querySelector('.focusable') : null;
-          if (firstBtn) { setFocus(firstBtn); }
-        }
-      }
-    } else {
-      stopPlayerVideo();
-      var scrP = $('screen-player');
-      if (scrP) {
-        scrP.classList.remove('is-mini');
-        scrP.classList.remove('is-active');
-      }
-      if (ret && ret.screen === 'search') {
-        showScreen('search');
-        setFocus(ret.focus);
-      } else {
-        showScreen('home');
-        selectTab(state.tab, false);
-        if (ret && ret.focus && isVisible(ret.focus)) { setFocus(ret.focus); }
-        else if (tabEls[state.tab]) { setFocus(tabEls[state.tab]); }
-      }
-    }
-  }
-
-  /* ---------------------------------------------------------------- display */
-  /* The reference UI is authored at 1920×1080. Older sets expose that exact
-     logical viewport, whereas some UHD webOS 22/25 sets expose 3840×2160.
-     Without this fit pass only the left half of the fixed canvas is painted
-     and the right half of the TV remains black. */
-  function viewportSize() {
-    /* Most webOS builds report the CSS viewport here. Some 2K/4K firmware
-       reports a legacy 1280×720 inner viewport while compositing to its full
-       physical 1920/3840 panel; using that value alone paints the left part
-       of the TV and leaves the right side black. */
-    var vw = window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 0;
-    var vh = window.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 0;
-    if (!vw || !vh) { vw = 1920; vh = 1080; }
-    var panelW = Math.floor((screen && screen.width) || 0);
-    var panelH = Math.floor((screen && screen.height) || 0);
-    var cssRatio = vw / vh;
-    var panelRatio = panelW && panelH ? panelW / panelH : 0;
-    /* Only trust screen.* when it is a true UHD/4K panel (>= 2560).
-       Never override an HD/720p viewport (1280×720) with a virtual 1920 panel,
-       which would force scale=1.0 and crop 640px on the right and 360px on the bottom. */
-    if (panelW >= 2560 && panelW >= vw * 1.25 && panelH >= vh * 1.25 &&
-        Math.abs(cssRatio - panelRatio) < 0.03) {
-      vw = panelW;
-      vh = panelH;
-    }
-    var panel = (panelW > 0 && panelH > 0) ? { w: panelW, h: panelH } : null;
-    return { w: vw, h: vh, panel: panel };
-  }
-
-  function fitDesignViewport() {
-    var app = $('app');
-    if (!app) { return; }
-    var size = viewportSize();
-    var vw = size.w;
-    var vh = size.h;
-    var scale = Math.min(vw / 1920, vh / 1080);
-    if (!isFinite(scale) || scale <= 0) { scale = 1; }
-    scale = Math.round(scale * 10000) / 10000;
-    /* Keep a non-16:9 display letterboxed instead of stretching the design. */
-    var left = Math.max(0, Math.round((vw - (1920 * scale)) / 2));
-    var top = Math.max(0, Math.round((vh - (1080 * scale)) / 2));
-    app.style.left = left + 'px';
-    app.style.top = top + 'px';
-    app.style.webkitTransform = 'scale(' + scale + ')';
-    app.style.transform = 'scale(' + scale + ')';
-    /* Read by the network diagnostics panel: a photo of that screen tells
-       which viewport the TV really gave the app (720p / 2K / 4K sets differ). */
-    window.__xuperViewport = {
-      w: vw, h: vh, scale: scale,
-      panelW: size.panel ? size.panel.w : 0,
-      panelH: size.panel ? size.panel.h : 0
-    };
-  }
-
-  /* ------------------------------------------------------------------ boot */
-  function boot() {
-    fitDesignViewport();
-    window.addEventListener('resize', fitDesignViewport, false);
-    window.addEventListener('orientationchange', fitDesignViewport, false);
-    document.addEventListener('visibilitychange', fitDesignViewport, false);
-    /* Some webOS builds only report the final window size after the splash
-       animation, and 720p / 2K sets take longer than 1080p ones. */
-    setTimeout(fitDesignViewport, 250);
-    setTimeout(fitDesignViewport, 1200);
-    setTimeout(fitDesignViewport, 3000);
-    document.addEventListener('keydown', handleKey, false);
-    document.addEventListener('keyup', function (e) {
-      var code = e.keyCode || e.which;
-      if (code === 461 || e.key === 'Back' || e.key === 'GoBack') {
-        handleKey(e);
-      }
-    }, false);
-    window.addEventListener('popstate', function () {
-      back();
-    }, false);
-    document.addEventListener('click', function (e) {
-      var f = closest(e.target, '.focusable');
-      if (!f) { return; }
-      setFocus(f, true);
-      if (f._activate) { f._activate(); }
-    });
-    try { buildSearch(); } catch (eSearch) { console.error('buildSearch error:', eSearch); }
-    try {
-      if (window.webOS && typeof window.webOS.deviceInfo === 'function') {
-        window.webOS.deviceInfo(function (dev) {
-          if (dev && (dev.version || dev.versionMajor || dev.sdkVersion)) {
-            var devVer = parseFloat(String(dev.version || dev.versionMajor || dev.sdkVersion || ''));
-            if (!isNaN(devVer) && devVer > 0) { detectedWebOsMajor = devVer; }
-          }
-        });
-      }
-    } catch (eDev) { /* ignore */ }
-    try { startServiceKeepAlive(); } catch (eKa) {}
-    try { portalServiceCall('prewarm', {}, function () {}); } catch (ePw) {}
-    startWelcome();
-    try { loadVodCatalog(); } catch (eVod) { console.error('loadVodCatalog error:', eVod); }
-    try { loadLiveChannels(); } catch (eLive) { console.error('loadLiveChannels error:', eLive); }
-    setTimeout(function () { try { checkForUpdates(true); } catch (eUp) {} }, 6000);
-
-    window.__xuper = {
-      version: '4.34.4',
-      state: state,
-      vod: VOD,
-      channels: CHANNELS,
-      api: vodApiState,
-      portal: portalState,
-      service: portalServiceCall,
-      refreshPortal: refreshPortalCatalog,
-      reloadVod: loadVodCatalog,
-      skipWelcome: finishWelcome,
-      show: function (name) {
-        if (name === 'home') { finishWelcome(); }
-        else if (name === 'detail') { openDetail(VOD[0]); }
-        else if (name === 'search') { openSearch(); }
-        else if (name === 'settings') { openSettings(); }
-        else if (name === 'player') { openPlayer('live'); }
-        else { showScreen(name); }
-      },
-      selectTab: function (i) { finishWelcome(); selectTab(i, true); },
-      openDetail: function (i) { openDetail(VOD[i] || VOD[0]); },
-      openSearch: openSearch,
-      openSettings: openSettings,
-      openPlayer: function (mode, i) { openPlayer(mode || 'live', VOD[i] || null); },
-      focus: function (sel) {
-        var n = typeof sel === 'string' ? document.querySelector(sel) : sel;
-        if (n) { setFocus(n); }
-      },
-      key: function (code) { handleKey({ keyCode: code, preventDefault: function () {} }); },
-      search: function (q) { openSearch(); setSearchQuery(q); },
-      settingsPanel: function (i) { openSettings(); showSettingsPanel(i, true); }
-    };
-
-    applyQuery();
-  }
-
-  /* Deep-link support for the visual comparison harness, e.g.
-     index.html?screen=home&tab=2   index.html?screen=detail&vod=3
-     index.html?screen=search&q=demo index.html?screen=settings&panel=1
-     index.html?screen=player&ch=2&channels=1                            */
-  function applyQuery() {
-    var raw = String(location.search || '').replace(/^\?/, '');
-    if (!raw) { return; }
-    var map = {};
-    var parts = raw.split('&');
-    for (var i = 0; i < parts.length; i++) {
-      if (!parts[i]) { continue; }
-      var kv = parts[i].split('=');
-      map[decodeURIComponent(kv[0])] = decodeURIComponent(kv.slice(1).join('=') || '');
-    }
-    if (map.ch !== undefined) {
-      var ch = parseInt(map.ch, 10) || 0;
-      state.channel = Math.max(0, Math.min(CHANNELS.length - 1, ch));
-    }
-    var screen = map.screen || 'home';
-    if (screen === 'welcome') { return; }
-
-    finishWelcome();
-    if (map.tab !== undefined) {
-      selectTab(parseInt(map.tab, 10) || 0, true);
-    } else {
-      selectTab(0, false);
-      setFocus(liveFocus);
-    }
-
-    if (screen === 'detail') {
-      openDetail(VOD[parseInt(map.vod, 10) || 0]);
-    } else if (screen === 'search') {
-      openSearch();
-      if (map.q) { setSearchQuery(map.q); }
-    } else if (screen === 'settings') {
-      openSettings();
-      if (map.panel !== undefined) { showSettingsPanel(parseInt(map.panel, 10) || 0, true); }
-    } else if (screen === 'player') {
-      openPlayer(map.mode === 'vod' ? 'vod' : 'live', VOD[parseInt(map.vod, 10) || 0]);
-      if (map.channels === '1') { openChannelPanel(); }
-    }
-
-    if (map.focus) {
-      var n = document.querySelector(map.focus);
-      if (n) { setFocus(n); }
-    }
-  }
-
-  function purgeMemoryCache() {
-    stopPlayerVideo();
-    clearSearchState();
-  }
-
-  window.addEventListener('beforeunload', purgeMemoryCache);
-  window.addEventListener('unload', purgeMemoryCache);
-  document.addEventListener('visibilitychange', function () {
-    if (document.hidden) {
-      purgeMemoryCache();
-    }
-  });
-
-  window.onerror = function (msg, url, line, col, err) {
-    try {
-      console.error('[XuperTV error] ' + msg + ' at ' + url + ':' + line + (col ? ':' + col : ''));
-      if (state && state.screen === 'welcome') {
-        finishWelcome();
-      }
-    } catch (eErr) {}
-    return false;
-  };
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
-  } else {
-    boot();
-  }
-})();
+!(function () {
+  "use strict";
+  function e(e, t, a) {
+    var i = document.createElement(e);
+    return (t && (i.className = t), null != a && (i.textContent = a), i);
+  }
+  function t(e) {
+    return document.getElementById(e);
+  }
+  function a(e) {
+    if (e) for (; e.firstChild;) e.removeChild(e.firstChild);
+  }
+  function i(e, t, a, i, n) {
+    return (
+      (e.style.position = "absolute"),
+      (e.style.left = t + "px"),
+      (e.style.top = a + "px"),
+      void 0 !== i && (e.style.width = i + "px"),
+      void 0 !== n && (e.style.height = n + "px"),
+      e
+    );
+  }
+  function n(e, t) {
+    for (; e && e !== document;) {
+      if (1 === e.nodeType && e.matches && e.matches(t)) return e;
+      e = e.parentNode;
+    }
+    return null;
+  }
+  function r(e) {
+    return e < 10 ? "0" + e : "" + e;
+  }
+  function o(e) {
+    return (
+      (e = String(e).toLowerCase()).normalize &&
+        (e = e.normalize("NFD").replace(/[\u0300-\u036f]/g, "")),
+      e
+    );
+  }
+  var s = [
+      "Acción",
+      "Drama",
+      "Comedia",
+      "Suspenso",
+      "Aventura",
+      "Animación",
+      "Familiar",
+      "Ciencia ficción",
+    ],
+    l = [],
+    d = {
+      Destacado: "destacado",
+      Película: "pelicula",
+      Serie: "serie",
+      Gratis: "gratis",
+      Infantil: "infantil",
+      UHD: "uhd",
+      Extra: "extra",
+    };
+  function c(e, t, a) {
+    for (var i = 1; i <= t; i++) {
+      var n = s[(a + i) % s.length],
+        o = s[(a + i + 3) % s.length];
+      l.push({
+        id: l.length + 1,
+        title: e + " demo " + r(i),
+        category: d[e] || "",
+        score: (7.9 + ((a + i) % 16) / 10).toFixed(1),
+        year: 2018 + ((a + i) % 7),
+        duration:
+          1 + ((a + i) % 2) + " h " + (10 + ((7 * a + 5 * i) % 45)) + " min",
+        genres: n === o ? [n] : [n, o],
+        director: "Director demo " + r(i),
+        actors: "Actor demo " + r(i) + ", Actriz demo " + r(i + 1),
+        synopsis:
+          "Sinopsis de demostración para " +
+          e.toLowerCase() +
+          " demo " +
+          r(i) +
+          '. Este texto sólo existe para comprobar el recorte a dos líneas, el interlineado y la sangría de la etiqueta "Sinopsis :" definidos en activity_voddetails.',
+        kind: e.toLowerCase(),
+      });
+    }
+  }
+  (c("Destacado", 5, 1),
+    c("Película", 7, 2),
+    c("Serie", 7, 3),
+    c("Gratis", 5, 4),
+    c("Infantil", 8, 5),
+    c("UHD", 4, 6),
+    c("Extra", 4, 7));
+  var p = window.XUPERTV_API || {},
+    u = /[?&]service=([^&]+)/.exec(window.location.search || "");
+  u && (p.devServiceUrl = decodeURIComponent(u[1]));
+  var v = { loading: !1, source: "demo", error: null },
+    f = { refreshing: !1, lastSync: 0, roots: 0, error: null },
+    h = ["featured", "movies", "series", "anime", "kids", "free"];
+  function m(e) {
+    if ("[object Array]" === Object.prototype.toString.call(e)) return e;
+    if (!e) return [];
+    for (
+      var t = [
+          "items",
+          "movies",
+          "results",
+          "recommendList",
+          "movieList",
+          "totalMovieList",
+          "programList",
+          "data",
+        ],
+        a = 0;
+      a < t.length;
+      a++
+    ) {
+      if ("[object Array]" === Object.prototype.toString.call(e[t[a]]))
+        return e[t[a]];
+      if (e[t[a]] && "object" == typeof e[t[a]]) {
+        var i = m(e[t[a]]);
+        if (i.length) return i;
+      }
+    }
+    return [];
+  }
+  function g(e) {
+    var t = p[e + "Url"];
+    if (t) return String(t);
+    var a = String(p.baseUrl || "").replace(/\/$/, ""),
+      i = String(p[e + "Path"] || "");
+    return a && i ? a + ("/" === i.charAt(0) ? i : "/" + i) : "";
+  }
+  function y() {
+    var e = p.session || {};
+    return {
+      userId: String(e.userId || ""),
+      userToken: String(e.userToken || ""),
+      portalCode: String(e.portalCode || ""),
+      homePageCode: String(e.homePageCode || ""),
+      version: String(e.version || "4.34.4"),
+    };
+  }
+  function b() {
+    var e = y();
+    return !!(e.userId && e.userToken && e.portalCode);
+  }
+  function C(e, t) {
+    var a = y();
+    return "catalog" === e
+      ? {
+          userId: a.userId,
+          userToken: a.userToken,
+          portalCode: a.portalCode,
+          homePageCode: a.homePageCode,
+          version: a.version,
+        }
+      : "search" === e
+        ? {
+            userToken: a.userToken,
+            userId: a.userId,
+            portalCode: a.portalCode,
+            columnId: "",
+            value: t || "",
+            type: "",
+            pageSize: 20,
+            pageNum: 1,
+            filter: "",
+          }
+        : {
+            userToken: a.userToken,
+            userId: a.userId,
+            portalCode: a.portalCode,
+            programId: t,
+          };
+  }
+  function w(e) {
+    return e
+      ? ((e = String(e)),
+        /^https?:\/\//i.test(e) || 0 === e.indexOf("data:")
+          ? e
+          : p.imageBaseUrl
+            ? String(p.imageBaseUrl).replace(/\/$/, "") +
+              "/" +
+              e.replace(/^\//, "")
+            : e)
+      : "";
+  }
+  function S(e, t) {
+    return null == e || "" === e ? t : String(e);
+  }
+  function x(e) {
+    return (
+      !!e &&
+      ("teleplay" === e.type ||
+        "series" === e.type ||
+        "serie" === e.kind ||
+        (e.category && -1 !== e.category.indexOf("serie")) ||
+        (e.episodes && e.episodes.length > 0) ||
+        (e.seasons && e.seasons.length > 0) ||
+        (e.volumeCount && parseInt(e.volumeCount, 10) > 1))
+    );
+  }
+  function T(e, t) {
+    var a = (e = e || {}).genres || e.genre || [];
+    ("string" == typeof a && (a = a.split(",")),
+      "[object Array]" !== Object.prototype.toString.call(a) && (a = []));
+    for (var i = [], n = 0; n < a.length; n++)
+      i.push("string" == typeof a[n] ? a[n] : a[n].name || "");
+    var r = e.duration || e.runtime || e.runtimeMinutes || "";
+    "number" == typeof r &&
+      (r = Math.floor(r / 60) + " h " + (r % 60) + " min");
+    var s = S(e.type || e.programType, ""),
+      l =
+        "teleplay" === s ||
+        "series" === s ||
+        "serie" === o(S(e.kind || "", "")) ||
+        -1 !== o(S(e.category || "", "")).indexOf("serie") ||
+        (e.episodes && e.episodes.length > 0) ||
+        (e.seasons && e.seasons.length > 0) ||
+        (e.volumeCount && parseInt(e.volumeCount, 10) > 1) ||
+        (e.volumnCount && parseInt(e.volumnCount, 10) > 1);
+    return {
+      id: S(
+        e.id || e.vodId || e.programId || e.program_id || e.tmdb_id,
+        "api-" + t,
+      ),
+      title: S(
+        e.title ||
+          e.name ||
+          e.programName ||
+          e.programTitle ||
+          e.original_title,
+        "Sin título",
+      ),
+      category: o(
+        S(e.category || e.section || e.collection || e.homeSection, ""),
+      ),
+      score: S(
+        e.score || e.vote_average || e.rating || e.movieRate || e.programScore,
+        "—",
+      ),
+      year: S(
+        e.year ||
+          e.release_year ||
+          e.programYear ||
+          (e.releaseDate || e.releaseTime || e.release_date || "").slice(0, 4),
+        "—",
+      ),
+      duration: S(r, "—"),
+      genres: i.length ? i : ["Sin clasificar"],
+      director: S(e.director, "—"),
+      actors: S(e.actors || e.actorDisplay || e.cast, "—"),
+      synopsis: S(
+        e.synopsis || e.overview || e.description || e.programUpdateContent,
+        "Sin sinopsis disponible.",
+      ),
+      kind: l ? "serie" : S(e.kind || e.media_type, "película"),
+      poster: w(
+        e.posterUrl ||
+          e.poster_url ||
+          e.poster ||
+          e.poster_path ||
+          e.image ||
+          e.imageUrl ||
+          e.cover ||
+          e.coverUrl ||
+          e.programPoster ||
+          e.programImage,
+      ),
+      landscape: w(
+        e.landscapeUrl ||
+          e.landscape_url ||
+          e.landscape ||
+          e.wideImage ||
+          e.bannerImage,
+      ),
+      backdrop: w(
+        e.backdropUrl || e.backdrop_url || e.backdrop || e.backdrop_path,
+      ),
+      streamUrl: e.streamUrl || e.stream_url || "",
+      type: s || (l ? "teleplay" : "movie"),
+      row: S(e.row, ""),
+      alias: S(e.alias, ""),
+      country: S(e.country || e.originalCountry, ""),
+      releaseDate: S(e.releaseDate || e.releaseTime, ""),
+      tagline: S(e.tagline || e.viewPoint, ""),
+      volumeCount: parseInt(e.volumeCount || e.volumnCount, 10) || 0,
+      updateCount: parseInt(e.updateCount, 10) || 0,
+      episodes: e.episodes || [],
+      seasons: e.seasons || [],
+      moreAudio: void 0 !== e.moreAudio ? e.moreAudio : 0,
+      moreSubtitle: void 0 !== e.moreSubtitle ? e.moreSubtitle : 0,
+      _portal:
+        !0 === e.portal ||
+        !0 === e._portal ||
+        (p && "portal" === p.mode && String(e.id || "").length > 10),
+    };
+  }
+  function _(e, t, a) {
+    a = a || {};
+    var i = new XMLHttpRequest(),
+      n = !1,
+      r = parseInt(p.timeoutMs, 10) || 1e4;
+    function o(e, a) {
+      n || ((n = !0), t(e, a));
+    }
+    (i.open(a.method || "GET", e, !0), (i.timeout = r));
+    var s = p.headers || {};
+    for (var l in s)
+      Object.prototype.hasOwnProperty.call(s, l) && i.setRequestHeader(l, s[l]);
+    (void 0 === a.body ||
+      s["Content-Type"] ||
+      s["content-type"] ||
+      i.setRequestHeader("Content-Type", "application/json;charset=utf-8"),
+      (i.onreadystatechange = function () {
+        if (4 === i.readyState)
+          if (i.status < 200 || i.status >= 300) o("HTTP " + i.status);
+          else
+            try {
+              o(null, JSON.parse(i.responseText));
+            } catch (e) {
+              o("La API no devolvió JSON válido");
+            }
+      }),
+      (i.onerror = function () {
+        o("Error de red o CORS");
+      }),
+      (i.ontimeout = function () {
+        o("Tiempo de espera agotado");
+      }));
+    try {
+      i.send(void 0 === a.body ? null : JSON.stringify(a.body));
+    } catch (e) {
+      o(e.message || "No se pudo iniciar la petición");
+    }
+  }
+  function k(e) {
+    if (!e || !x(e)) return null;
+    var t = String(e.title || e.alias || "")
+        .replace(/\s+/g, " ")
+        .replace(/^\s+|\s+$/g, ""),
+      a =
+        /^(.*?)(?:\s*[-–:|]?\s*(?:temporada|season)\s*(\d+)|\s*[-–:|]?\s*[st]\s*0?(\d+))\s*$/i.exec(
+          t,
+        );
+    if (!a || !a[1]) return null;
+    var i = parseInt(a[2] || a[3], 10);
+    return !i || i > 99 ? null : { title: a[1].replace(/\s+$/, ""), number: i };
+  }
+  function L(e, a, i) {
+    if (!e.length) return !1;
+    for (var r = {}, s = 0; s < l.length; s++) r[String(l[s].id)] = l[s];
+    l.splice(0, l.length);
+    for (var d = [], c = 0; c < e.length; c++) {
+      var p = T(e[c], c + 1);
+      i && !1 !== e[c].portal && (p._portal = !0);
+      var u = r[String(p.id)];
+      (u &&
+        (u.episodes && (p.episodes = u.episodes),
+        u.seasons && (p.seasons = u.seasons),
+        u._detailsLoaded && (p._detailsLoaded = !0),
+        !p.streamUrl && u.streamUrl && (p.streamUrl = u.streamUrl)),
+        d.push(p));
+    }
+    for (
+      var f = (function (e) {
+          for (var t = {}, a = [], i = 0; i < e.length; i++) {
+            var n = k(e[i]);
+            n
+              ? (t[(r = o(n.title))] || (t[r] = { title: n.title, items: [] }),
+                t[r].items.push({ item: e[i], number: n.number }))
+              : a.push(e[i]);
+          }
+          for (var r in t)
+            if (t.hasOwnProperty(r)) {
+              var s = t[r];
+              if (s.items.length < 2) a.push(s.items[0].item);
+              else {
+                s.items.sort(function (e, t) {
+                  return e.number - t.number;
+                });
+                var l = s.items[0].item,
+                  d = {};
+                ((l._catalogSeasons = []),
+                  (l._seriesGroup = !0),
+                  (l._seriesTitle = s.title),
+                  (l.title = s.title),
+                  (l.alias = s.title),
+                  (l.seasons = []));
+                for (var c = 0; c < s.items.length; c++) {
+                  for (
+                    var p = s.items[c],
+                      u = String(p.item.category || "").split(","),
+                      v = 0;
+                    v < u.length;
+                    v++
+                  )
+                    u[v] && (d[u[v]] = !0);
+                  var f = { id: p.item.id, number: p.number, title: s.title };
+                  (l._catalogSeasons.push(f), l.seasons.push(f));
+                }
+                ((l.category = Object.keys(d).join(",")), a.push(l));
+              }
+            }
+          return a;
+        })(d),
+        h = 0;
+      h < f.length;
+      h++
+    )
+      l.push(f[h]);
+    if (X.detail) {
+      for (var m = !1, g = 0; g < l.length; g++)
+        if (String(l[g].id) === String(X.detail.id)) {
+          ((X.detail = l[g]), (m = !0));
+          break;
+        }
+      m || (X.detail = l[0]);
+    }
+    return (
+      (v.source = a),
+      (v.error = null),
+      (function () {
+        if (Ve) {
+          var e = t("home-tabs"),
+            a = !(
+              !e ||
+              !e.classList.contains("is-expanded") ||
+              e.classList.contains("is-collapsed")
+            ),
+            i = !(!X.focus || void 0 === X.focus._tab),
+            r = !(!X.focus || !n(X.focus, "#home-notify")),
+            o = !(!X.focus || !n(X.focus, ".home-page"));
+          if (
+            ((He = []), (Ue = []), gt(), bt(X.tab, !1), "home" === X.screen)
+          ) {
+            if (i && Ue[X.tab]) rt(Ue[X.tab], !0);
+            else if (r) {
+              var s = ot(t("home-notify"));
+              s && rt(s, !0);
+            } else if (o) {
+              var l = He[z[X.tab].page],
+                d = l ? ot(l) : null;
+              d && rt(d, !0);
+            }
+            if (a && e) {
+              (e.classList.add("is-expanded"),
+                e.classList.remove("is-collapsed"));
+              var c = document.querySelector(".home-sidebar-bg");
+              c && c.classList.add("is-on");
+            }
+          }
+        }
+        ce && (_a(), X.searchQuery && Pa());
+        X.detail && Ca(X.detail);
+      })(),
+      !0
+    );
+  }
+  function M() {
+    var e = window.XUPERTV_CATALOG;
+    return e ? m(e) : [];
+  }
+  function I() {
+    return (
+      !window.PalmServiceBridge ||
+        (window.webOS && window.webOS.service) ||
+        ((window.webOS = window.webOS || {}),
+        (window.webOS.service = {
+          request: function (e, t) {
+            t = t || {};
+            var a = new window.PalmServiceBridge();
+            a.onservicecallback = function (e) {
+              var a;
+              try {
+                a = JSON.parse(e);
+              } catch (t) {
+                a = { returnValue: !1, errorText: e };
+              }
+              !1 === a.returnValue
+                ? t.onFailure && t.onFailure(a)
+                : t.onSuccess && t.onSuccess(a);
+            };
+            var i = t.method ? e.replace(/\/$/, "") + "/" + t.method : e;
+            return (a.call(i, JSON.stringify(t.parameters || {})), a);
+          },
+        })),
+      !!(window.webOS && window.webOS.service && window.webOS.service.request)
+    );
+  }
+  var E =
+    "La TV tiene bloqueado el servicio de XuperTV. Desenchufa la TV 10 segundos y vuelve a abrir la app; si sigue igual, reinstala con el instalador.";
+  var A = { live: null, vod: null };
+  function D(e, t) {
+    try {
+      if (!t) return;
+      var a = t.url || "";
+      if (!/^https?:\/\//i.test(a)) return;
+      if (/^https?:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(a)) return;
+      A[e] = { url: a, headers: t.headers || {} };
+    } catch (e) {}
+  }
+  function P(e, t, a, i) {
+    var n = p.serviceId || "com.webosflux.xuptertv.fidelity.service",
+      r = !1,
+      o = i || parseInt(p.timeoutMs, 10) || 2e4,
+      s = null;
+    function l(e, t) {
+      var i, n;
+      r ||
+        ((r = !0),
+        s && (clearTimeout(s), (s = null)),
+        a(
+          e
+            ? ((i = e),
+              (n = String(null == i ? "" : i)),
+              /denied|permission|not permitted/i.test(n)
+                ? E + " (" + n + ")"
+                : n)
+            : e,
+          t,
+        ));
+    }
+    if (
+      ((s = setTimeout(function () {
+        l(
+          "El servicio de la TV no respondió en " +
+            Math.round(o / 1e3) +
+            " s. Desenchufa la TV de la corriente 10 segundos y vuelve a abrir la app.",
+          null,
+        );
+      }, o + 1e3)),
+      I() && window.PalmServiceBridge)
+    )
+      try {
+        return (
+          window.webOS.service.request("luna://" + n, {
+            method: e,
+            parameters: t || {},
+            timeout: i || parseInt(p.timeoutMs, 10) || 2e4,
+            onSuccess: function (e) {
+              l(null, e);
+            },
+            onFailure: function (e) {
+              l((e && e.errorText) || "Error del servicio XuperTV", null);
+            },
+          }),
+          !0
+        );
+      } catch (e) {
+        if (!p.devServiceUrl)
+          return (
+            l("Error comunicando con el servicio: " + (e.message || e), null),
+            !1
+          );
+      }
+    return p.devServiceUrl
+      ? (_(
+          String(p.devServiceUrl).replace(/\/$/, "") +
+            "/" +
+            e +
+            "?" +
+            (function (e) {
+              var t = [];
+              for (var a in e)
+                Object.prototype.hasOwnProperty.call(e, a) &&
+                  t.push(
+                    encodeURIComponent(a) + "=" + encodeURIComponent(e[a]),
+                  );
+              return t.join("&");
+            })(t || {}),
+          function (e, t) {
+            l(e, t);
+          },
+          null,
+        ),
+        !0)
+      : (l("El servicio XuperTV no está disponible", null), !1);
+  }
+  function O(e) {
+    var t = {},
+      a = [],
+      i = {};
+    function n(e) {
+      if (e && e.id) {
+        var n = String(e.id);
+        if (t[n]) {
+          var r = t[n];
+          for (var o in e)
+            Object.prototype.hasOwnProperty.call(e, o) &&
+              "" !== e[o] &&
+              "—" !== e[o] &&
+              null !== e[o] &&
+              void 0 !== e[o] &&
+              (r[o] = e[o]);
+        } else ((t[n] = e), a.push(n));
+        var s = String(e.category || "").split(",");
+        i[n] = i[n] || {};
+        for (var l = 0; l < s.length; l++) s[l] && (i[n][s[l]] = !0);
+      }
+    }
+    for (var r = 0; r < h.length; r++)
+      for (var o = e[h[r]] || [], s = 0; s < o.length; s++)
+        ((o[s].portal = !0), n(o[s]));
+    if (a.length) {
+      for (var l = [], d = 0; d < a.length; d++) {
+        var c = t[a[d]];
+        ((c.category = Object.keys(i[a[d]]).join(",")), l.push(c));
+      }
+      for (
+        var p = (function () {
+            for (var e = M(), t = [], a = 0; a < e.length; a++)
+              if (e[a] && e[a].streamUrl) {
+                var i = {};
+                for (var n in e[a])
+                  Object.prototype.hasOwnProperty.call(e[a], n) &&
+                    (i[n] = e[a][n]);
+                ((i.category = "demo"), (i.portal = !1), t.push(i));
+              }
+            return t;
+          })(),
+          u = 0;
+        u < p.length;
+        u++
+      )
+        l.push(p[u]);
+      l.length && L(l, "portal", !0);
+    }
+  }
+  function q() {
+    if (!f.refreshing) {
+      ((f.refreshing = !0), (f.error = null));
+      var e = {},
+        t = 0,
+        a = !1;
+      !(function i() {
+        if (t >= h.length)
+          return (
+            (f.refreshing = !1),
+            (f.lastSync = Date.now()),
+            O(e),
+            a &&
+              f.retryTimer &&
+              (clearTimeout(f.retryTimer), (f.retryTimer = null)),
+            void (
+              a ||
+              f.retryTimer ||
+              ((f.error =
+                f.error || "El portal de XuperTV no respondió desde tu red"),
+              Yt(
+                "El portal de XuperTV no respondió. Reintentando en 20 segundos…",
+              ),
+              (f.retryTimer = setTimeout(function () {
+                ((f.retryTimer = null), q());
+              }, 2e4)))
+            )
+          );
+        var n = h[t++],
+          r = function (t) {
+            P("home", { root: n }, function (o, s) {
+              if (!o && s && !1 !== s.returnValue && s.items && s.items.length)
+                return ((e[n] = s.items), f.roots++, (a = !0), i());
+              t < 2
+                ? setTimeout(function () {
+                    r(t + 1);
+                  }, 900 * t)
+                : (o && (f.error = o), i());
+            });
+          };
+        r(1);
+      })();
+    }
+  }
+  function N() {
+    var e,
+      t = (e = window.XUPERTV_PORTAL) ? m(e) : [];
+    (t.length && L(t, "portal-snapshot", !0),
+      !1 !== p.refresh
+        ? q()
+        : t.length || (v.error = "Sin snapshot del portal"));
+  }
+  function R(e, t) {
+    return L(M(), e || "bundled")
+      ? (t && (v.error = t), !0)
+      : ((v.error = t || "No hay catálogo local ni remoto"), !1);
+  }
+  function V() {
+    if (p.enabled)
+      if ("portal" !== p.mode)
+        if ("static" !== p.mode) {
+          var e = g("catalog");
+          "xuper" !== p.mode || b()
+            ? e
+              ? ((v.loading = !0),
+                _(
+                  e,
+                  function (e, t) {
+                    v.loading = !1;
+                    var a = (function (e) {
+                      if (!e || "object" != typeof e) return "";
+                      var t = e.returnCode || e.code || e.errorCode || "",
+                        a = e.errorMessage || e.message || e.msg || "";
+                      return t || a
+                        ? (t ? String(t) + ": " : "") +
+                            (a ? String(a) : "La API rechazó la petición")
+                        : "";
+                    })(t);
+                    if (e || a || !L(m(t), "api")) {
+                      var i = e || a || "La API no devolvió películas";
+                      R("bundled-fallback", i) || (v.error = i);
+                    }
+                  },
+                  "xuper" === p.mode
+                    ? { method: "POST", body: C("catalog") }
+                    : null,
+                ))
+              : p.useBundledCatalog
+                ? R("bundled", null)
+                : (v.error = "Falta baseUrl/catalogUrl del catálogo autorizado")
+            : (v.error =
+                "Falta la sesión XuperTV (userId, userToken y portalCode)");
+        } else R("bundled", null);
+      else N();
+  }
+  function H(e, t) {
+    var a = e && e._seriesGroup ? e.id : null,
+      i = e && e._seriesGroup ? e._seriesTitle : null,
+      n = T(t, e.id);
+    for (var r in n)
+      Object.prototype.hasOwnProperty.call(n, r) &&
+        "—" !== n[r] &&
+        "" !== n[r] &&
+        "Sin sinopsis disponible." !== n[r] &&
+        (e[r] = n[r]);
+    null !== a &&
+      ((e.id = a),
+      (e.title = i),
+      (e.alias = i),
+      (e.seasons = e._catalogSeasons || e.seasons));
+  }
+  function U(e, t) {
+    if (((t = t || function () {}), !e)) return t(null);
+    if (e._detailsLoaded) return t(e);
+    if (e._detailLoading)
+      return (
+        (e._detailWait = e._detailWait || []),
+        void e._detailWait.push(t)
+      );
+    if ("portal" === p.mode && e._portal)
+      return (
+        (e._detailLoading = !0),
+        (e._detailWait = [t]),
+        void P("detail", { contentId: e.id }, function (t, a) {
+          if (
+            ((e._detailLoading = !1), !t && a && !1 !== a.returnValue && a.item)
+          ) {
+            if (
+              (H(e, a.item),
+              (e.episodes = a.episodes || []),
+              (e.seasons = e._catalogSeasons || a.seasons || []),
+              e.seasonId || (e.seasonId = e.id),
+              e.seasons &&
+                e.seasons.length &&
+                e.seasons.sort(function (e, t) {
+                  return (
+                    (parseInt(e.number, 10) || 0) -
+                    (parseInt(t.number, 10) || 0)
+                  );
+                }),
+              (!e.seasons || !e.seasons.length) && x(e))
+            ) {
+              var i = 1,
+                n =
+                  /S(\d+)/i.exec(e.alias || "") ||
+                  /T(\d+)/i.exec(e.title || "");
+              (n && (i = parseInt(n[1], 10) || 1),
+                (e.seasons = [{ id: e.id, number: i }]));
+            }
+            if (e.seasons && e.seasons.length) {
+              for (var r = 0, o = 0; o < e.seasons.length; o++)
+                if (e.seasons[o].id === e.id) {
+                  r = o;
+                  break;
+                }
+              X.detailSeason = r;
+            }
+            (e.episodes &&
+              e.episodes.length &&
+              !X.detailEpisode &&
+              (X.detailEpisode = e.episodes[0]),
+              dn(e),
+              (e._detailsLoaded = !0));
+          } else
+            ((e._detailsLoaded = !0),
+              e.episodes || (e.episodes = []),
+              e.seasons || (e.seasons = []));
+          var s = e._detailWait || [];
+          e._detailWait = [];
+          for (var l = s.length > 0, d = 0; d < s.length; d++) s[d](e);
+          X.detail === e &&
+            "detail" === X.screen &&
+            (Ca(e),
+            l || (xe && xe.src && !xe.paused) || Jr(e, X.detailEpisode));
+        })
+      );
+    var a = g("detail");
+    return p.enabled && a && ("xuper" !== p.mode || b())
+      ? ((e._detailLoading = !0),
+        void _(
+          a.replace("{id}", encodeURIComponent(e.id)),
+          function (a, i) {
+            if (((e._detailLoading = !1), !a)) {
+              var n = m(i),
+                r = n.length ? n[0] : i && (i.item || i.movie || i);
+              r &&
+                "object" == typeof r &&
+                (H(e, r),
+                (e._detailsLoaded = !0),
+                X.detail === e &&
+                  "detail" === X.screen &&
+                  (Ca(e),
+                  (xe && xe.src && !xe.paused) || Jr(e, X.detailEpisode)));
+            }
+            t(e);
+          },
+          "xuper" === p.mode
+            ? { method: "POST", body: C("detail", e.id) }
+            : null,
+        ))
+      : t(e);
+  }
+  var F = [],
+    B = {
+      tv: '<svg viewBox="0 0 33 33"><rect x="3.5" y="7" width="26" height="17" rx="2.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M11 24.5v3h11v-3" fill="none" stroke="currentColor" stroke-width="2.4"/></svg>',
+      thumb:
+        '<svg viewBox="0 0 33 33"><path d="M12 15.5V28H7.6A2.6 2.6 0 0 1 5 25.4v-7.3a2.6 2.6 0 0 1 2.6-2.6H12z" fill="currentColor"/><path d="M14 15.6l4.3-9.2a2.2 2.2 0 0 1 4 1.6V13h5.6a2.9 2.9 0 0 1 2.8 3.6l-2 9A3.4 3.4 0 0 1 25.4 28H14z" fill="currentColor"/></svg>',
+      film: '<svg viewBox="0 0 33 33"><circle cx="16.5" cy="16.5" r="11.5" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="16.5" cy="16.5" r="2.4" fill="currentColor"/><circle cx="16.5" cy="9.5" r="2.1" fill="currentColor"/><circle cx="16.5" cy="23.5" r="2.1" fill="currentColor"/><circle cx="9.5" cy="16.5" r="2.1" fill="currentColor"/><circle cx="23.5" cy="16.5" r="2.1" fill="currentColor"/></svg>',
+      strip:
+        '<svg viewBox="0 0 33 33"><rect x="4" y="7" width="25" height="19" rx="2" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M9 7v19M24 7v19" stroke="currentColor" stroke-width="1.8"/><rect x="5.6" y="9" width="2.4" height="2.6" fill="currentColor"/><rect x="5.6" y="15.2" width="2.4" height="2.6" fill="currentColor"/><rect x="5.6" y="21.4" width="2.4" height="2.6" fill="currentColor"/><rect x="25" y="9" width="2.4" height="2.6" fill="currentColor"/><rect x="25" y="15.2" width="2.4" height="2.6" fill="currentColor"/><rect x="25" y="21.4" width="2.4" height="2.6" fill="currentColor"/></svg>',
+      kids: '<svg viewBox="0 0 33 33"><circle cx="8.6" cy="8.6" r="4" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="24.4" cy="8.6" r="4" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="16.5" cy="18" r="9.6" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="13" cy="17" r="1.5" fill="currentColor"/><circle cx="20" cy="17" r="1.5" fill="currentColor"/><ellipse cx="16.5" cy="21.6" rx="2.4" ry="1.7" fill="currentColor"/></svg>',
+      anime:
+        '<svg viewBox="0 0 33 33"><circle cx="8.5" cy="9" r="4.5" fill="currentColor"/><circle cx="24.5" cy="9" r="4.5" fill="currentColor"/><path d="M16.5 9c5.8 0 10.5 4.6 10.5 10.3 0 5.7-4.7 9.7-10.5 9.7S6 25 6 19.3C6 13.6 10.7 9 16.5 9z" fill="currentColor"/><circle cx="12.5" cy="18" r="1.6" fill="#0b0b0b"/><circle cx="20.5" cy="18" r="1.6" fill="#0b0b0b"/><ellipse cx="16.5" cy="23" rx="3" ry="2" fill="#0b0b0b"/></svg>',
+      compass:
+        '<svg viewBox="0 0 33 33"><circle cx="16.5" cy="16.5" r="11.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M22 11l-3.2 7.8L11 22l3.2-7.8z" fill="currentColor"/></svg>',
+      novel:
+        '<svg viewBox="0 0 33 33"><path d="M5 6.5h9.5c2.2 0 3.7 1 4.5 2.3.8-1.3 2.3-2.3 4.5-2.3H28v20h-5.5c-2.1 0-3.4.6-4.5 1.8-1.1-1.2-2.4-1.8-4.5-1.8H5z" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M18 9v19" stroke="currentColor" stroke-width="2.2"/></svg>',
+      history:
+        '<svg viewBox="0 0 33 33"><circle cx="16.5" cy="17" r="10.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M16.5 10.5V17l5 3" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M8 7v6h6" fill="none" stroke="currentColor" stroke-width="2.4"/></svg>',
+    },
+    z = [
+      { label: "TV", page: 0, icon: "tv" },
+      { label: "DESTACADOS", page: 1, icon: "thumb" },
+      { label: "PELICULA", page: 2, icon: "film" },
+      { label: "SERIES", page: 3, icon: "strip" },
+      { label: "KIDS", page: 4, icon: "kids" },
+      { label: "ANIME", page: 5, icon: "anime" },
+      { label: "NOVELAS", page: 6, icon: "novel" },
+      { label: "EXPLORAR", page: 7, icon: "compass" },
+      { label: "HISTORIAL", page: -1, icon: "history", action: "history" },
+    ],
+    j = [
+      {
+        id: "profile",
+        label: "Mi cuenta",
+        desc: "Tu perfil en este televisor",
+        group: "Tu cuenta",
+      },
+      {
+        id: "history",
+        label: "Mi lista",
+        desc: "Historial y favoritos",
+        group: "Tu cuenta",
+      },
+      {
+        id: "addons",
+        label: "Agregar Addons",
+        desc: "Anime, Cine, Novelas y TDT",
+        group: "Contenido",
+      },
+      {
+        id: "share",
+        label: "Compartir APP",
+        desc: "Instálala en otra TV",
+        group: "Aplicación",
+      },
+      {
+        id: "playback",
+        label: "Configuración global",
+        desc: "Subtítulos y preferencias",
+        group: "Aplicación",
+      },
+      {
+        id: "parent",
+        label: "Control parental",
+        desc: "Bloqueo de contenido adulto",
+        group: "Aplicación",
+      },
+      {
+        id: "netdiag",
+        label: "Diagnóstico",
+        desc: "Pruebas de red y streaming",
+        group: "Sistema",
+      },
+      {
+        id: "feedback",
+        label: "Ayuda y Feedback",
+        desc: "Comunidad y soporte",
+        group: "Sistema",
+      },
+      {
+        id: "about",
+        label: "Sobre nosotros",
+        desc: "Versión y actualizaciones",
+        group: "Sistema",
+      },
+    ],
+    W = {
+      profile:
+        '<svg viewBox="0 0 32 32"><circle cx="16" cy="10" r="5"/><path d="M6 27c.7-6 4.3-9 10-9s9.3 3 10 9"/></svg>',
+      history:
+        '<svg viewBox="0 0 32 32"><rect x="4" y="4" width="9" height="9"/><rect x="19" y="4" width="9" height="9"/><rect x="4" y="19" width="9" height="9"/><rect x="19" y="19" width="9" height="9"/></svg>',
+      addons:
+        '<svg viewBox="0 0 32 32"><rect x="5" y="5" width="9" height="9" rx="1.5"/><rect x="18" y="5" width="9" height="9" rx="1.5"/><rect x="5" y="18" width="9" height="9" rx="1.5"/><path d="M22.5 18v9M18 22.5h9"/></svg>',
+      share:
+        '<svg viewBox="0 0 32 32"><circle cx="8" cy="16" r="3"/><circle cx="24" cy="7" r="3"/><circle cx="24" cy="25" r="3"/><path d="M10.6 14.5l10.8-6M10.6 17.5l10.8 6"/></svg>',
+      parent:
+        '<svg viewBox="0 0 32 32"><rect x="7" y="14" width="18" height="14" rx="2"/><path d="M11 14V10a5 5 0 0 1 10 0v4"/><path d="M16 19v4"/></svg>',
+      playback:
+        '<svg viewBox="0 0 32 32"><rect x="4" y="6" width="24" height="20" rx="3"/><path d="M13 11l8 5-8 5z"/></svg>',
+      netdiag:
+        '<svg viewBox="0 0 32 32"><path d="M3 13a19 19 0 0 1 26 0"/><path d="M8 18a12 12 0 0 1 16 0"/><path d="M13 23a6 6 0 0 1 6 0"/><circle cx="16" cy="27.5" r="1.2"/></svg>',
+      feedback:
+        '<svg viewBox="0 0 32 32"><path d="M6 4h15l5 5v19H6z"/><path d="M20 4v6h6M10 16h12M10 21h8"/></svg>',
+      about:
+        '<svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="12"/><path d="M16 14v8M16 10h.1"/></svg>',
+    },
+    X = {
+      screen: "welcome",
+      tab: 0,
+      channel: 0,
+      focus: null,
+      detail: null,
+      detailReturn: null,
+      detailRange: 0,
+      detailSeason: 0,
+      detailNeedsRebuild: !1,
+      playerReturn: null,
+      playerMode: "live",
+      playerItem: null,
+      playerEpisode: null,
+      playerSeasonIndex: 0,
+      episodeBrowserOpen: !1,
+      categoryPickerOpen: !1,
+      browserSeason: 0,
+      streamError: "",
+      streamMode: "normal",
+      trackIndex: 0,
+      channelsOpen: !1,
+      infobar: !0,
+      infoTimer: null,
+      searchQuery: "",
+      searchNumeric: !1,
+      searchSeq: 0,
+      searchFocus: null,
+      playback: {
+        streamMode: "normal",
+        screen: 0,
+        audio: 0,
+        subLang: 0,
+        size: 0,
+        style: 0,
+        subtitle: !0,
+      },
+      crOn: !1,
+      favs: {},
+    },
+    $ = "xuper_local_profile_v1",
+    G = "xuper_global_playback_v1",
+    Q = { id: "", createdAt: 0, history: [] };
+  function J(e, t) {
+    try {
+      var a = localStorage.getItem(e);
+      return a ? JSON.parse(a) : t;
+    } catch (e) {
+      return t;
+    }
+  }
+  function K(e, t) {
+    try {
+      localStorage.setItem(e, JSON.stringify(t));
+    } catch (e) {}
+  }
+  function Y() {
+    K(G, X.playback);
+  }
+  function Z(e) {
+    if (!e || !e.id) return !1;
+    var t = String(e.id),
+      a = !X.favs[t];
+    return (
+      a ? (X.favs[t] = !0) : delete X.favs[t],
+      (Q.favs = X.favs),
+      K($, Q),
+      a
+    );
+  }
+  !(function () {
+    var e = J(G, null);
+    if (e)
+      for (var t in X.playback)
+        X.playback.hasOwnProperty(t) &&
+          void 0 !== e[t] &&
+          (X.playback[t] = e[t]);
+    var a = J($, null);
+    (a && a.id
+      ? ((Q = a).history && Q.history.length) || (Q.history = [])
+      : ((Q.id = "TV-" + String(Date.now()).slice(-8)),
+        (Q.createdAt = Date.now()),
+        K($, Q)),
+      Q.favs || (Q.favs = {}),
+      (X.favs = Q.favs));
+  })();
+  var ee,
+    te,
+    ae,
+    ie,
+    ne,
+    re,
+    oe,
+    se,
+    le,
+    de,
+    ce,
+    pe,
+    ue,
+    ve,
+    fe,
+    he,
+    me,
+    ge,
+    ye,
+    be,
+    Ce,
+    we,
+    Se,
+    xe,
+    Te,
+    _e,
+    ke,
+    Le,
+    Me,
+    Ie,
+    Ee,
+    Ae,
+    De,
+    Pe,
+    Oe,
+    qe,
+    Ne,
+    Re,
+    Ve = !1,
+    He = [],
+    Ue = [],
+    Fe = [],
+    Be = [],
+    ze = {},
+    je = [],
+    We = "history",
+    Xe = {},
+    $e = null,
+    Ge = null,
+    Qe = null,
+    Je = "",
+    Ke = 48,
+    Ye = !1,
+    Ze = 0,
+    et = null,
+    tt = null;
+  function at(e) {
+    if (!e || !e.getBoundingClientRect) return !1;
+    if (null === e.offsetParent) return !1;
+    var t = e.getBoundingClientRect();
+    if (t.width < 1 || t.height < 1) return !1;
+    if (X.episodeBrowserOpen) return !!n(e, "#player-episodes");
+    if (X.categoryPickerOpen) return !!n(e, "#player-categories");
+    if (ji) return !!n(e, "#dialog-playsettings");
+    if (Ut) return !!n(e, "#dialog-update");
+    if (zi) return !!n(e, "#player-playsetting-view");
+    var a = n(e, ".home-page");
+    if (a && !a.classList.contains("is-current")) return !1;
+    var i = n(e, ".settings-panel");
+    if (i && !i.classList.contains("is-active")) return !1;
+    var r = n(e, ".search-hot");
+    if (r && r.classList.contains("is-hidden")) return !1;
+    var o = n(e, ".search-results");
+    if (o && !o.classList.contains("is-active")) return !1;
+    var s = n(e, ".player-channels");
+    if (s && !s.classList.contains("is-active")) return !1;
+    var l = n(e, ".player-infobar");
+    return !(l && !l.classList.contains("is-active"));
+  }
+  function it() {
+    for (
+      var e = document.querySelectorAll(".focusable"), t = [], a = 0;
+      a < e.length;
+      a++
+    )
+      at(e[a]) && t.push(e[a]);
+    return t;
+  }
+  function nt(e) {
+    for (var t = n(e, ".scrollable"); t;) {
+      var a = e.getBoundingClientRect(),
+        i = t.getBoundingClientRect();
+      (a.top < i.top
+        ? (t.scrollTop -= i.top - a.top + 12)
+        : a.bottom > i.bottom && (t.scrollTop += a.bottom - i.bottom + 12),
+        t.scrollWidth > t.clientWidth + 1 &&
+          (a.left < i.left
+            ? (t.scrollLeft -= i.left - a.left + 12)
+            : a.right > i.right && (t.scrollLeft += a.right - i.right + 12)),
+        (t = n(t.parentNode, ".scrollable")));
+    }
+  }
+  function rt(e, a) {
+    if (e)
+      if (X.focus !== e) {
+        (X.focus && X.focus.classList.remove("is-focused"),
+          (X.focus = e),
+          e.classList.add("is-focused"),
+          e._onFocus && e._onFocus(),
+          Nn());
+        var i = t("home-tabs");
+        if (i && "home" === X.screen) {
+          var r = n(e, ".home-tabs");
+          (i.classList.toggle("is-expanded", !!r),
+            i.classList.toggle("is-collapsed", !r));
+          var o = document.querySelector(".home-sidebar-bg");
+          o && o.classList.toggle("is-on", !!r);
+          var s = t("screen-home");
+          s && s.classList.toggle("is-rail-open", !!r);
+        }
+        (a || nt(e), wt());
+      } else a || nt(e);
+  }
+  function ot(e) {
+    for (var t = e.querySelectorAll(".focusable"), a = 0; a < t.length; a++)
+      if (at(t[a])) return t[a];
+    return null;
+  }
+  function st(e) {
+    if (X.focus) {
+      if (!X.focus._onMove || !X.focus._onMove(e)) {
+        for (
+          var t = "home" === X.screen && n(X.focus, ".home-page"),
+            a = "home" === X.screen && n(X.focus, ".home-tabs"),
+            i = it(),
+            r = X.focus.getBoundingClientRect(),
+            o = r.left + r.width / 2,
+            s = r.top + r.height / 2,
+            l = null,
+            d = 1e9,
+            c = 0;
+          c < i.length;
+          c++
+        ) {
+          var p = i[c];
+          if (
+            p !== X.focus &&
+            (!t || !n(p, ".home-tabs")) &&
+            (!a || n(p, ".home-tabs"))
+          ) {
+            var u,
+              v,
+              f,
+              h = p.getBoundingClientRect(),
+              m = h.left + h.width / 2 - o,
+              g = h.top + h.height / 2 - s;
+            if ("left" === e) {
+              if (m > -4) continue;
+              ((u = Math.max(0, r.left - h.right)),
+                (v = Math.abs(g)),
+                (f = h.bottom > r.top + 2 && h.top < r.bottom - 2));
+            } else if ("right" === e) {
+              if (m < 4) continue;
+              ((u = Math.max(0, h.left - r.right)),
+                (v = Math.abs(g)),
+                (f = h.bottom > r.top + 2 && h.top < r.bottom - 2));
+            } else if ("up" === e) {
+              if (g > -4) continue;
+              ((u = Math.max(0, r.top - h.bottom)),
+                (v = Math.abs(m)),
+                (f = h.right > r.left + 2 && h.left < r.right - 2));
+            } else {
+              if (g < 4) continue;
+              ((u = Math.max(0, h.top - r.bottom)),
+                (v = Math.abs(m)),
+                (f = h.right > r.left + 2 && h.left < r.right - 2));
+            }
+            var y = u + 2 * v + (f ? 0 : 320);
+            y < d && ((d = y), (l = p));
+          }
+        }
+        l ? rt(l) : "left" === e && t && Ue[X.tab] && rt(Ue[X.tab]);
+      }
+    } else {
+      var b = it();
+      b.length && rt(b[0]);
+    }
+  }
+  function lt(e) {
+    for (var a = document.querySelectorAll(".screen"), i = 0; i < a.length; i++)
+      a[i].classList.remove("is-active");
+    var n = t("screen-" + e);
+    if (
+      (n && n.classList.add("is-active"),
+      (X.screen = e),
+      "player" !== e && X.episodeBrowserOpen && zn(!0),
+      "player" !== e && X.categoryPickerOpen && ur(!0),
+      "player" !== e && "detail" !== e)
+    ) {
+      (ji && tr(), zi && On());
+      var r = t("screen-player");
+      (r && (r.classList.remove("is-mini"), r.classList.remove("is-active")),
+        zr(),
+        Yi++,
+        (pn = []),
+        Bi && (Bi.innerHTML = ""));
+    }
+    wt();
+  }
+  var dt = 0;
+  function ct() {
+    var e = Date.now();
+    if (!(e - dt < 250))
+      if (((dt = e), "welcome" !== X.screen))
+        if (ji) tr();
+        else {
+          if ("player" === X.screen)
+            return Ye
+              ? void Ur(!1)
+              : X.categoryPickerOpen
+                ? ((dt = Date.now()), void ur())
+                : X.episodeBrowserOpen
+                  ? ((dt = Date.now()), void zn())
+                  : zi
+                    ? void On()
+                    : void (X.channelsOpen
+                        ? ro()
+                        : X.infobar
+                          ? ui()
+                          : X.vodInfobarVisible
+                            ? fi()
+                            : (function () {
+                                (ui(), fi());
+                                var e = X.playerReturn;
+                                if (e && "detail" === e.screen) {
+                                  var a = t("screen-player"),
+                                    i = t("screen-detail");
+                                  (a &&
+                                    (a.classList.add("is-mini"),
+                                    a.classList.add("is-active")),
+                                    i && i.classList.add("is-active"),
+                                    (X.screen = "detail"));
+                                  var n = !1;
+                                  if (X.detailNeedsRebuild && X.detail) {
+                                    ((X.detailNeedsRebuild = !1),
+                                      Ca(X.detail),
+                                      (n = !0));
+                                    var r = de
+                                      ? de.querySelector(".detail-season")
+                                      : null;
+                                    r && rt(r);
+                                  } else X.detail && Jn(X.detail);
+                                  if (!n)
+                                    if (e.focus && at(e.focus)) rt(e.focus);
+                                    else {
+                                      var o = le
+                                        ? le.querySelector(".focusable")
+                                        : null;
+                                      o && rt(o);
+                                    }
+                                } else {
+                                  zr();
+                                  var s = t("screen-player");
+                                  (s &&
+                                    (s.classList.remove("is-mini"),
+                                    s.classList.remove("is-active")),
+                                    e && "search" === e.screen
+                                      ? (lt("search"), rt(e.focus))
+                                      : (lt("home"),
+                                        bt(X.tab, !1),
+                                        e && e.focus && at(e.focus)
+                                          ? rt(e.focus)
+                                          : Ue[X.tab] && rt(Ue[X.tab])));
+                                }
+                              })());
+          if ("detail" !== X.screen) {
+            if ("search" === X.screen)
+              return (
+                Da(),
+                lt("home"),
+                bt(X.tab, !1),
+                void (Ue[X.tab] && rt(Ue[X.tab]))
+              );
+            if ("settings" === X.screen)
+              return (
+                lt("home"),
+                bt(X.tab, !1),
+                void (Ue[X.tab] && rt(Ue[X.tab]))
+              );
+            if ("home" === X.screen) {
+              if (0 !== X.tab) return (bt(0, !0), void (Ue[0] && rt(Ue[0])));
+              window.webOSTV && window.webOSTV.platformBack
+                ? window.webOSTV.platformBack()
+                : window.PalmSystem &&
+                  window.PalmSystem.platformBack &&
+                  window.PalmSystem.platformBack();
+            }
+          } else {
+            if (xa) {
+              Ta();
+              var a = de ? de.querySelector(".detail-season") : null;
+              return void (a && rt(a));
+            }
+            var i = t("screen-detail");
+            if (i && i.classList.contains("is-synopsis-open"))
+              return void (function () {
+                var e = t("screen-detail");
+                if (!e) return;
+                var a = !e.classList.contains("is-synopsis-open");
+                e.classList.toggle("is-synopsis-open", a);
+                var i = document.querySelector(".detail-more");
+                i && (i.textContent = a ? "Menos" : "Más");
+              })();
+            zr();
+            var n = t("screen-player");
+            n &&
+              (n.classList.remove("is-mini"), n.classList.remove("is-active"));
+            var r = X.detailReturn;
+            r && "search" === r.screen
+              ? (lt("search"), rt(r.focus))
+              : (lt("home"),
+                bt(X.tab, !1),
+                r && r.focus && at(r.focus)
+                  ? rt(r.focus)
+                  : Ue[X.tab] && rt(Ue[X.tab]));
+          }
+        }
+      else vt();
+  }
+  function pt() {
+    X.focus && X.focus._activate && X.focus._activate();
+  }
+  function ut(e) {
+    var t = e.keyCode || e.which,
+      a = e.key || "",
+      i = !0;
+    if ("welcome" === X.screen)
+      return (vt(), void (e.preventDefault && e.preventDefault()));
+    if (
+      461 === t ||
+      27 === t ||
+      8 === t ||
+      "Back" === a ||
+      "GoBack" === a ||
+      "Escape" === a
+    )
+      return X.categoryPickerOpen
+        ? (ur(),
+          e.preventDefault && e.preventDefault(),
+          void (e.stopPropagation && e.stopPropagation()))
+        : X.episodeBrowserOpen
+          ? (zn(),
+            e.preventDefault && e.preventDefault(),
+            void (e.stopPropagation && e.stopPropagation()))
+          : Ut
+            ? ((dt = Date.now()),
+              zt || ea(),
+              e.preventDefault && e.preventDefault(),
+              void (e.stopPropagation && e.stopPropagation()))
+            : Ht
+              ? ((dt = Date.now()),
+                la(),
+                e.preventDefault && e.preventDefault(),
+                void (e.stopPropagation && e.stopPropagation()))
+              : ji
+                ? ((dt = Date.now()),
+                  tr(),
+                  e.preventDefault && e.preventDefault(),
+                  void (e.stopPropagation && e.stopPropagation()))
+                : zi
+                  ? ((dt = Date.now()),
+                    On(),
+                    e.preventDefault && e.preventDefault(),
+                    void (e.stopPropagation && e.stopPropagation()))
+                  : (ct(),
+                    e.preventDefault && e.preventDefault(),
+                    void (e.stopPropagation && e.stopPropagation()));
+    if (X.categoryPickerOpen)
+      return (
+        37 === t
+          ? st("left")
+          : 38 === t
+            ? st("up")
+            : 39 === t
+              ? st("right")
+              : 40 === t
+                ? st("down")
+                : 13 === t || 32 === t
+                  ? pt()
+                  : (i = !1),
+        void (i && e.preventDefault && e.preventDefault())
+      );
+    if (X.episodeBrowserOpen) {
+      var r = n(X.focus, "#pe-seasons"),
+        o = n(X.focus, "#pe-episodes");
+      if (37 === t) {
+        if (o && Ei && "none" !== Ei.style.display) {
+          var s = Ii ? Ii.children[X.browserSeason] || ot(Ii) : null;
+          s && rt(s);
+        }
+      } else if (39 === t) {
+        if (r) {
+          var l = Ai ? Ai.querySelector(".pe-ep.is-current") || ot(Ai) : null;
+          l && rt(l);
+        }
+      } else
+        38 === t
+          ? st("up")
+          : 40 === t
+            ? st("down")
+            : 13 === t || 32 === t
+              ? pt()
+              : (i = !1);
+      i && e.preventDefault && e.preventDefault();
+    } else {
+      var d = 415 === t || "MediaPlay" === a || "Play" === a,
+        c = 19 === t || "MediaPause" === a || "Pause" === a,
+        p = 10252 === t || "MediaPlayPause" === a,
+        u = 417 === t || "MediaFastForward" === a || "FastForward" === a,
+        v = 412 === t || "MediaRewind" === a || "Rewind" === a,
+        f = 413 === t || "MediaStop" === a || "Stop" === a;
+      if ("player" === X.screen) {
+        if (d)
+          return (
+            xe && xe.paused && (Mr(), si("none"), pi()),
+            void (e.preventDefault && e.preventDefault())
+          );
+        if (c) {
+          if (xe && !xe.paused) {
+            try {
+              xe.pause();
+            } catch (e) {}
+            (si("pause"), pi());
+          }
+          return void (e.preventDefault && e.preventDefault());
+        }
+        if (p) return (di(), void (e.preventDefault && e.preventDefault()));
+        if (u) return (li(15), void (e.preventDefault && e.preventDefault()));
+        if (v) return (li(-15), void (e.preventDefault && e.preventDefault()));
+        if (f) return (ct(), void (e.preventDefault && e.preventDefault()));
+      }
+      var h =
+        457 === t ||
+        93 === t ||
+        467 === t ||
+        "Menu" === a ||
+        "ContextMenu" === a;
+      if ("player" === X.screen && "vod" === X.playerMode && h)
+        return (
+          ji ? tr() : zi ? On() : Pn(),
+          void (e.preventDefault && e.preventDefault())
+        );
+      if (
+        "player" === X.screen &&
+        (37 === t || 38 === t || 39 === t || 40 === t)
+      ) {
+        if (ji)
+          return (
+            37 === t
+              ? st("left")
+              : 38 === t
+                ? st("up")
+                : 39 === t
+                  ? st("right")
+                  : 40 === t && st("down"),
+            void (e.preventDefault && e.preventDefault())
+          );
+        if (zi)
+          return (
+            Dn(),
+            37 === t
+              ? st("left")
+              : 38 === t
+                ? st("up")
+                : 39 === t
+                  ? st("right")
+                  : 40 === t && st("down"),
+            void (e.preventDefault && e.preventDefault())
+          );
+        if ("vod" === X.playerMode) {
+          if (X.focus === Pe && Ye) {
+            if (37 === t)
+              return (Br(-1), void (e.preventDefault && e.preventDefault()));
+            if (39 === t)
+              return (Br(1), void (e.preventDefault && e.preventDefault()));
+            if (38 === t || 40 === t)
+              return (Ur(!1), void (e.preventDefault && e.preventDefault()));
+          }
+          if (37 === t)
+            return (li(-10), void (e.preventDefault && e.preventDefault()));
+          if (39 === t)
+            return (li(10), void (e.preventDefault && e.preventDefault()));
+          if (40 === t)
+            return (Pn(), void (e.preventDefault && e.preventDefault()));
+          if (38 === t)
+            return (Fr(), void (e.preventDefault && e.preventDefault()));
+        } else {
+          var m = X.focus && n(X.focus, ".player-channels");
+          if (X.channelsOpen || m) {
+            if (
+              X.focus &&
+              X.focus.classList &&
+              X.focus.classList.contains("pc-cat-pill")
+            )
+              return (
+                37 === t
+                  ? st("left")
+                  : 38 === t
+                    ? st("up")
+                    : 39 === t
+                      ? st("right")
+                      : 40 === t && st("down"),
+                void (e.preventDefault && e.preventDefault())
+              );
+            if (38 === t) {
+              if (
+                0 ===
+                (y =
+                  X.focus && void 0 !== X.focus._channel
+                    ? X.focus._channel
+                    : X.channel)
+              ) {
+                var g = Se
+                  ? Se.querySelector(".pc-cat-pill.is-selected") ||
+                    Se.querySelector(".pc-cat-pill")
+                  : null;
+                g && rt(g);
+              } else {
+                fr(y - 1);
+              }
+              return void (e.preventDefault && e.preventDefault());
+            }
+            if (40 === t) {
+              var y =
+                X.focus && void 0 !== X.focus._channel
+                  ? X.focus._channel
+                  : X.channel;
+              return (
+                fr(Math.min(F.length - 1, y + 1)),
+                void (e.preventDefault && e.preventDefault())
+              );
+            }
+            if (39 === t)
+              return (ro(), void (e.preventDefault && e.preventDefault()));
+          } else {
+            if (38 === t)
+              return (
+                X.channel > 0
+                  ? Kt(X.channel - 1, !1)
+                  : F.length && Kt(F.length - 1, !1),
+                pi(),
+                void (e.preventDefault && e.preventDefault())
+              );
+            if (40 === t)
+              return (
+                X.channel < F.length - 1
+                  ? Kt(X.channel + 1, !1)
+                  : F.length && Kt(0, !1),
+                pi(),
+                void (e.preventDefault && e.preventDefault())
+              );
+            if (37 === t)
+              return (no(), void (e.preventDefault && e.preventDefault()));
+            X.infobar ? ci() : pi();
+          }
+        }
+      }
+      if (37 === t) st("left");
+      else if (38 === t) st("up");
+      else if (39 === t) st("right");
+      else if (40 === t) st("down");
+      else if (13 === t || 32 === t) {
+        if (X.episodeBrowserOpen) return void pt();
+        ji
+          ? pt()
+          : zi
+            ? (Dn(), pt())
+            : "player" === X.screen &&
+                "vod" === X.playerMode &&
+                X.focus === Pe &&
+                Ye
+              ? Ur(!0)
+              : "player" === X.screen &&
+                  X.streamError &&
+                  xe &&
+                  xe.src &&
+                  !n(X.focus, ".player-channels")
+                ? (Mr(), (X.streamError = ""), jr(""))
+                : "player" === X.screen && "vod" === X.playerMode
+                  ? di()
+                  : pt();
+      } else i = !1;
+      i && e.preventDefault && e.preventDefault();
+    }
+  }
+  function vt() {
+    (tt && (clearTimeout(tt), (tt = null)),
+      et && (clearInterval(et), (et = null)));
+    var e = t("screen-welcome"),
+      a = t("screen-home");
+    try {
+      Ve || gt();
+    } catch (e) {
+      console.error("buildHome error:", e);
+    }
+    try {
+      lt("home");
+    } catch (t) {
+      (console.error("showScreen error:", t),
+        e && e.classList.remove("is-active"),
+        a && a.classList.add("is-active"),
+        (X.screen = "home"));
+    }
+    (e && e.classList.contains("is-active") && e.classList.remove("is-active"),
+      a &&
+        !a.classList.contains("is-active") &&
+        (a.classList.add("is-active"), (X.screen = "home")));
+    try {
+      bt(0, !1);
+    } catch (e) {
+      console.error("selectTab error:", e);
+    }
+    try {
+      ne && rt(ne);
+    } catch (e) {
+      console.error("setFocus error:", e);
+    }
+    try {
+      var i = t("home-tabs");
+      i && (i.classList.add("is-expanded"), i.classList.remove("is-collapsed"));
+      var n = document.querySelector(".home-sidebar-bg");
+      n && n.classList.add("is-on");
+      var r = t("screen-home");
+      r && r.classList.add("is-rail-open");
+    } catch (e) {}
+  }
+  var ft = [
+      function (t) {
+        ((ie = e("div", "live-main")),
+          ((Ot = document.createElement("video")).className =
+            "live-preview-video"),
+          (Ot.preload = "auto"),
+          (Ot.muted = !0),
+          (Ot.volume = 0),
+          Ot.setAttribute("muted", "muted"),
+          Ot.setAttribute("playsinline", ""),
+          Ot.setAttribute("webkit-playsinline", ""),
+          ie.appendChild(Ot),
+          ie.appendChild(e("div", "live-frame")),
+          ie.appendChild(e("div", "live-logo")),
+          (qt = e("div", "live-preview-status")),
+          ie.appendChild(qt),
+          t.appendChild(ie));
+        var a = e("div", "live-info");
+        (((ae = e("div", "live-channel")).style.right = "112.5px"),
+          a.appendChild(ae));
+        var i = e("div", "live-fullscreen");
+        ((i._activate = function () {
+          Yr("live");
+        }),
+          a.appendChild(i),
+          ie.appendChild(a));
+        var n = e("div", "live-arrow-up"),
+          r = e("div", "live-arrow-down");
+        (t.appendChild(n),
+          t.appendChild(r),
+          (re = e("div", "live-list scrollable")),
+          t.appendChild(re),
+          Qt(!1),
+          Gt(),
+          ((ne = e("div", "live-focus focusable"))._onMove = function (e) {
+            if ("up" === e) return (X.channel > 0 && Kt(X.channel - 1), !0);
+            if ("down" === e)
+              return (X.channel < F.length - 1 && Kt(X.channel + 1), !0);
+            if ("right" === e) {
+              var t = Fe.filter(function (e) {
+                return e._channel === X.channel;
+              })[0];
+              return (t ? rt(t) : Fe.length && rt(Fe[0]), !0);
+            }
+            return "left" === e && (Ue[0] && rt(Ue[0]), !0);
+          }),
+          (ne._activate = function () {
+            Yr("live");
+          }),
+          t.appendChild(ne));
+      },
+      function (e) {
+        var t = ha("destacado"),
+          a = t.slice(0, 6),
+          i = !(!a[0] || !a[0]._portal);
+        fa(e, a, { titles: i, dots: i ? 4 : 0, shade: i });
+        var n = t.slice(6);
+        n.length &&
+          ya(e, n, 860, {
+            popularTitle: "Títulos más vistos",
+            bentoItems: a,
+            fallbackRow: "Títulos destacados",
+          });
+      },
+      function (e) {
+        var t = ha("pelicula"),
+          a = t.slice(0, 6),
+          i = !(!a[0] || !a[0]._portal);
+        fa(e, a, { titles: i, dots: i ? 4 : 0, shade: i });
+        var n = t.slice(6);
+        n.length &&
+          ya(e, n, 860, {
+            popularTitle: "Películas más populares",
+            bentoItems: a,
+            fallbackRow: "Más películas",
+          });
+      },
+      function (e) {
+        var t = ha("serie"),
+          a = t.slice(0, 6),
+          i = !(!a[0] || !a[0]._portal);
+        fa(e, a, { titles: i, dots: i ? 3 : 2, shade: i });
+        var n = t.slice(6);
+        n.length &&
+          ya(e, n, 860, {
+            popularTitle: "Series más populares",
+            bentoItems: a,
+            fallbackRow: "Más series",
+          });
+      },
+      function (t) {
+        var a = (function (e, t, a) {
+          var i,
+            n = [];
+          if (e)
+            for (i = 0; i < l.length; i++)
+              -1 !==
+                o(l[i].category || "")
+                  .split(",")
+                  .indexOf(e) && n.push(l[i]);
+          if (
+            (n.length || (n = l.slice(a, a + t)),
+            n.length || (n = l.slice(0, t)),
+            n.length < t && l.length)
+          ) {
+            var r = {};
+            for (i = 0; i < n.length; i++) r[String(n[i].id)] = !0;
+            for (var s = 0; n.length < t && s < 2 * l.length;) {
+              var d = l[s % l.length];
+              (s++, r[String(d.id)] || (n.push(d), (r[String(d.id)] = !0)));
+            }
+          }
+          return n;
+        })("infantil", 12, 0);
+        a.length || (a = l);
+        var n = !(!a[0] || !a[0]._portal);
+        t.appendChild(ua(a[0], 192, 38.5, 831, 534, { shade: !0, title: n }));
+        for (
+          var r = [
+              [1029, 38.5],
+              [1446, 38.5],
+              [1029, 269.5],
+              [1446, 269.5],
+            ],
+            s = 0;
+          s < r.length;
+          s++
+        )
+          t.appendChild(
+            ua(a[(s + 1) % a.length], r[s][0], r[s][1], 413, 222, {}),
+          );
+        if ((t.appendChild(va(833, 468.5, 4, 0)), a[0])) {
+          var d = e("div", "kids-subtitle", a[0].tagline || a[0].title);
+          (i(d, 192, 526.5, 1249, 40), t.appendChild(d));
+        }
+        var c = e("div", "poster-row");
+        i(c, 192, 578.5, 1920, 310);
+        for (var p = 0; p < 7; p++) {
+          var u = a[p % a.length];
+          if (!u) break;
+          c.appendChild(xt(u, 266 * p, 0, 266, 310, { gold: !0 }));
+        }
+        t.appendChild(c);
+      },
+      function (e) {
+        var t = ha("anime"),
+          a = t.slice(0, 6),
+          i = !(!a[0] || !a[0]._portal);
+        fa(e, a, { titles: i, dots: i ? 3 : 2, shade: i });
+        var n = t.slice(6);
+        n.length &&
+          ya(e, n, 860, {
+            popularTitle: "Anime más popular",
+            bentoItems: a,
+            fallbackRow: "Anime y animación",
+          });
+      },
+      function (t) {
+        var a = (function () {
+          for (var e = [], t = 0; t < l.length; t++) {
+            var a = l[t],
+              i = o(
+                [
+                  a.row || "",
+                  a.category || "",
+                  a.kind || "",
+                  a.title || "",
+                  a.alias || "",
+                  a.genres && a.genres.join
+                    ? a.genres.join(" ")
+                    : a.genres || "",
+                ].join(" "),
+              );
+            (-1 === i.indexOf("novela") && -1 === i.indexOf("telenovela")) ||
+              e.push(a);
+          }
+          return e;
+        })();
+        if (a.length) {
+          var n = a.slice(0, 6),
+            r = !(!n[0] || !n[0]._portal);
+          (fa(t, n, { titles: r, dots: r ? 3 : 2, shade: r }),
+            ma(t, a, 860, "Más novelas"));
+        } else {
+          var s = e(
+            "div",
+            "catalog-empty",
+            "No se encontraron novelas en el catálogo actual.",
+          );
+          (i(s, 192, 170, 1500, 80), t.appendChild(s));
+        }
+      },
+      function (t) {
+        var a = l.length ? l : [];
+        t.appendChild(ua(a[0], 192, 38.5, 1249, 703, { shade: !0 }));
+        for (var n = 0; n < 3; n++)
+          t.appendChild(
+            ua(a[(n + 1) % a.length], 1446, 38.5 + 231 * n, 413, 226, {
+              badge: 2 === n ? "Adult" : "",
+            }),
+          );
+        t.appendChild(e("div", "explore-row-title", "Netflix"));
+        var r = e("div", "explore-strip");
+        i(r, 192, 811.5, 1920, 130);
+        for (var o = 0; o < 8; o++) {
+          var s = e("div", "explore-logo");
+          (i(s, 272 * o, 0, 260, 120), r.appendChild(s));
+        }
+        t.appendChild(r);
+      },
+    ],
+    ht = {};
+  function mt(e) {
+    !ht[e] && He[e] && ft[e] && ((ht[e] = !0), ft[e](He[e]));
+  }
+  function gt() {
+    ((Ve = !0),
+      (ee = t("home-pages")),
+      (te = t("home-notify")),
+      a(ee),
+      (He = []),
+      (ht = {}));
+    for (var i = 0; i < ft.length; i++) {
+      var n = e("div", "home-page scrollable");
+      (0 === i && n.classList.add("is-current"), ee.appendChild(n), He.push(n));
+    }
+    (mt(z[X.tab] && z[X.tab].page >= 0 ? z[X.tab].page : 0),
+      (function () {
+        var i = t("home-tabs");
+        (a(i),
+          i.classList.add("scrollable"),
+          i.classList.add("is-expanded"),
+          (Ue = []));
+        for (var n = 0; n < z.length; n++) {
+          var r = e("div", "tab-item focusable");
+          r.appendChild(e("div", "tab-pill"));
+          var o = e("div", "tab-icon");
+          ((o.innerHTML = B[z[n].icon] || ""), r.appendChild(o));
+          var s = e("div", "tab-title", z[n].label);
+          (r.appendChild(s),
+            (r._tab = n),
+            (r._activate = (function (e) {
+              return function () {
+                if ("history" === z[e].action)
+                  return ((We = "history"), Ha(), void Ua(1, !0));
+                if ((bt(e, !1), 0 === e)) {
+                  var t = Fe.filter(function (e) {
+                    return e._channel === X.channel;
+                  })[0];
+                  t ? rt(t) : Fe.length ? rt(Fe[0]) : ne && rt(ne);
+                } else if (z[e].page >= 0) {
+                  var a = ot(He[z[e].page]);
+                  a && rt(a);
+                }
+              };
+            })(n)),
+            (r._onMove = (function (e) {
+              return function (t) {
+                if ("up" === t)
+                  return (
+                    e > 0 && Ue[e - 1] && (rt(Ue[e - 1]), bt(e - 1, !1)),
+                    !0
+                  );
+                if ("down" === t)
+                  return (
+                    e < Ue.length - 1 &&
+                      Ue[e + 1] &&
+                      (rt(Ue[e + 1]), bt(e + 1, !1)),
+                    !0
+                  );
+                if ("left" === t) return !0;
+                if ("right" === t) {
+                  if ("history" === z[e].action)
+                    return ((We = "history"), Ha(), Ua(1, !0), !0);
+                  if ((bt(e, !1), 0 === e)) {
+                    var a = Fe.filter(function (e) {
+                      return e._channel === X.channel;
+                    })[0];
+                    a ? rt(a) : Fe.length ? rt(Fe[0]) : ne && rt(ne);
+                  } else if (z[e].page >= 0) {
+                    var i = ot(He[z[e].page]);
+                    i && rt(i);
+                  }
+                  return !0;
+                }
+                return !1;
+              };
+            })(n)),
+            i.appendChild(r),
+            Ue.push(r));
+        }
+      })(),
+      (function () {
+        a(te);
+        for (
+          var t = [
+              {
+                cls: "search",
+                icon: "assets/original/home/icon_notify_search.png",
+                small: !0,
+              },
+              {
+                cls: "filter",
+                icon: "assets/original/search/icon_category_filter_n.png",
+                small: !0,
+              },
+              {
+                cls: "personal",
+                icon: "assets/original/home/icon_notify_personal.png",
+                small: !0,
+              },
+            ],
+            i = 0;
+          i < t.length;
+          i++
+        ) {
+          var n = t[i],
+            r = e(
+              "div",
+              "notify-item focusable " + n.cls + (n.small ? " is-small" : ""),
+            ),
+            o = e("div", "n-normal");
+          ((o.style.backgroundImage = "url(" + n.icon + ")"),
+            r.appendChild(o),
+            "personal" === n.cls
+              ? (r._activate = function () {
+                  Ha();
+                })
+              : "search" === n.cls
+                ? (r._activate = function () {
+                    La();
+                  })
+                : (r._activate = function () {}),
+            te.appendChild(r));
+        }
+        var s = e("div", "notify-divider");
+        te.appendChild(s);
+        var l = e("div", "notify-wifi");
+        ((l.innerHTML =
+          '<svg viewBox="0 0 30 22"><path d="M15 19.5a2.1 2.1 0 1 1 0-4.2 2.1 2.1 0 0 1 0 4.2z" fill="currentColor"/><path d="M8.4 12.2a9.6 9.6 0 0 1 13.2 0" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M4.2 7.6a15.6 15.6 0 0 1 21.6 0" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>'),
+          te.appendChild(l));
+        var d = e("div", "notify-time");
+        ((d.id = "notify-time"), te.appendChild(d), yt(), setInterval(yt, 3e4));
+      })());
+  }
+  function yt() {
+    var e = t("notify-time");
+    if (e) {
+      var a = new Date(),
+        i = a.getHours(),
+        n = i >= 12 ? "PM" : "AM";
+      0 === (i %= 12) && (i = 12);
+      var o = a.getMinutes();
+      e.textContent = i + ":" + r(o) + " " + n;
+    }
+  }
+  function bt(e, t) {
+    var a = z[e];
+    if (a && !a.action) {
+      var i = z[X.tab] ? z[X.tab].page : a.page;
+      X.tab = e;
+      for (var n = 0; n < Ue.length; n++)
+        Ue[n].classList.toggle("is-selected", n === e);
+      (a.page >= 0 && mt(a.page), 0 === a.page ? Wt(F[X.channel]) : jt());
+      for (var r = 0; r < He.length; r++)
+        (He[r].classList.remove("is-entering", "from-left", "from-right"),
+          He[r].classList.toggle("is-current", r === a.page));
+      if (a.page !== i && He[a.page]) {
+        var o = He[a.page];
+        (o.classList.add(
+          "is-entering",
+          a.page > i ? "from-right" : "from-left",
+        ),
+          setTimeout(function () {
+            o.classList.remove("is-entering", "from-left", "from-right");
+          }, 320));
+      }
+      if (t)
+        if (0 === a.page) {
+          var s = Fe.filter(function (e) {
+            return e._channel === X.channel;
+          })[0];
+          s ? rt(s) : Fe.length ? rt(Fe[0]) : ne && rt(ne);
+        } else {
+          var l = ot(He[a.page]);
+          l && rt(l);
+        }
+      wt();
+    }
+  }
+  var Ct = null;
+  function wt() {
+    (Ct && clearTimeout(Ct),
+      (Ct = setTimeout(function () {
+        ((Ct = null),
+          (function () {
+            for (
+              var e = document.querySelectorAll("img[data-poster-src]"),
+                t = window.innerWidth || 1920,
+                a = window.innerHeight || 1080,
+                i = 0;
+              i < e.length;
+              i++
+            ) {
+              var r = e[i],
+                o = n(r, ".poster, .bento"),
+                s =
+                  o && o.getBoundingClientRect
+                    ? o.getBoundingClientRect()
+                    : null;
+              if (
+                St(r) &&
+                s &&
+                s.bottom > -420 &&
+                s.top < a + 420 &&
+                s.right > -320 &&
+                s.left < t + 320
+              )
+                r.getAttribute("src") ||
+                  ((r.style.display = ""),
+                  (r.src = r.getAttribute("data-poster-src")));
+              else if (r.getAttribute("src")) {
+                r.removeAttribute("src");
+                try {
+                  r.src = "";
+                } catch (e) {}
+              }
+            }
+          })());
+      }, 80)));
+  }
+  function St(e) {
+    if ("home" === X.screen) {
+      var t = n(e, ".home-page");
+      return !(!t || !t.classList.contains("is-current"));
+    }
+    if ("search" === X.screen) {
+      var a = n(e, ".search-results"),
+        i = n(e, ".search-hot");
+      return !!(
+        (a && a.classList.contains("is-active")) ||
+        (i && !i.classList.contains("is-hidden"))
+      );
+    }
+    if ("detail" === X.screen) {
+      var r = n(e, "#screen-detail");
+      return !(!r || !r.classList.contains("is-active"));
+    }
+    return !1;
+  }
+  function xt(t, a, n, r, o, s) {
+    var l = e(
+      "div",
+      "poster focusable" +
+        ((s = s || {}).gold ? " gold" : "") +
+        (s.type3 ? " type3" : ""),
+    );
+    if ((i(l, a, n, r, o), t.poster)) {
+      var d = e("img", "p-img");
+      (d.setAttribute("data-poster-src", t.poster),
+        (d.onerror = function () {
+          if (
+            this.src &&
+            0 === this.src.indexOf("https://") &&
+            !this._httpFallback
+          )
+            return (
+              (this._httpFallback = !0),
+              void (this.src = this.src.replace("https://", "http://"))
+            );
+          this.style.display = "none";
+        }),
+        l.appendChild(d));
+    }
+    return (
+      s.gold ||
+        (l.appendChild(e("div", "p-shade")),
+        l.appendChild(e("div", "p-title", t.title))),
+      (l._item = t),
+      (l._activate = function () {
+        ba(t);
+      }),
+      wt(),
+      l
+    );
+  }
+  var Tt = [
+    {
+      id: "es_tdt",
+      name: "España - Canales Nacionales y TDT",
+      url: "https://iptv-org.github.io/iptv/countries/es.m3u",
+      desc: "320+ canales: La 1, La 2, Antena 3, Telecinco, laSexta, autonómicas",
+    },
+    {
+      id: "latam_spa",
+      name: "Latinoamérica y Deportes (Hispano)",
+      url: "https://iptv-org.github.io/iptv/languages/spa.m3u",
+      desc: "Canales en español de Colombia, México, Argentina, Chile y Perú",
+    },
+    {
+      id: "sports_iptv",
+      name: "Deportes Internacionales",
+      url: "https://iptv-org.github.io/iptv/categories/sports.m3u",
+      desc: "Transmisiones deportivas y canales de competiciones",
+    },
+    {
+      id: "movies_iptv",
+      name: "Cine y Series 24/7",
+      url: "https://iptv-org.github.io/iptv/categories/movies.m3u",
+      desc: "Cine clásico, cine de acción y canales continuos de series",
+    },
+  ];
+  function _t() {
+    try {
+      var e = localStorage.getItem("xuper_m3u_addons");
+      if (e) {
+        var t = JSON.parse(e);
+        if (Array.isArray(t) && t.length) return t;
+      }
+    } catch (e) {}
+    var a = [Tt[0]];
+    try {
+      localStorage.setItem("xuper_m3u_addons", JSON.stringify(a));
+    } catch (e) {}
+    return a;
+  }
+  function kt(e) {
+    try {
+      localStorage.setItem("xuper_m3u_addons", JSON.stringify(e || []));
+    } catch (e) {}
+  }
+  var Lt = [],
+    Mt = null,
+    It = !1,
+    Et = !1,
+    At = !1,
+    Dt = 0,
+    Pt = null,
+    Ot = null,
+    qt = null,
+    Nt = 0,
+    Rt = null,
+    Vt = "",
+    Ht = !1,
+    Ut = !1,
+    Ft = null,
+    Bt = !1,
+    zt = !1;
+  function jt() {
+    if (
+      (Nt++,
+      (Vt = ""),
+      Rt && (clearTimeout(Rt), (Rt = null)),
+      ie && ie.classList.remove("is-preview-playing", "is-preview-loading"),
+      qt && (qt.textContent = ""),
+      Ot)
+    ) {
+      try {
+        Ot.pause();
+      } catch (e) {}
+      Ot.removeAttribute("src");
+      try {
+        ((Ot.src = ""), Ot.load());
+      } catch (e) {}
+    }
+  }
+  function Wt(e) {
+    (Rt && clearTimeout(Rt),
+      (Rt = setTimeout(function () {
+        ((Rt = null),
+          (function (e) {
+            if (
+              Ot &&
+              e &&
+              (e.channelCode || e.streamUrl) &&
+              "home" === X.screen &&
+              0 === X.tab
+            ) {
+              var t = e.channelCode || e.streamUrl;
+              if (
+                t !== Vt ||
+                !ie ||
+                (!ie.classList.contains("is-preview-loading") &&
+                  !ie.classList.contains("is-preview-playing"))
+              ) {
+                (jt(), (Vt = t));
+                var a = ++Nt;
+                (ie.classList.add("is-preview-loading"),
+                  qt &&
+                    (qt.textContent = "Cargando " + (e.name || "canal") + "…"),
+                  P(
+                    "resolveLive",
+                    e.streamUrl
+                      ? { streamUrl: e.streamUrl }
+                      : { channelCode: e.channelCode },
+                    function (e, t) {
+                      if (a === Nt && "home" === X.screen && 0 === X.tab) {
+                        !e && t && D("live", t);
+                        var i =
+                          !e &&
+                          t &&
+                          !1 !== t.returnValue &&
+                          (t.proxyPath || t.url);
+                        if (!i)
+                          return (
+                            ie.classList.remove("is-preview-loading"),
+                            void (qt && (qt.textContent = ""))
+                          );
+                        ((Ot.onloadeddata = function () {
+                          a === Nt &&
+                            (ie.classList.remove("is-preview-loading"),
+                            ie.classList.add("is-preview-playing"),
+                            qt && (qt.textContent = ""));
+                        }),
+                          (Ot.onerror = function () {
+                            a === Nt &&
+                              (ie.classList.remove(
+                                "is-preview-loading",
+                                "is-preview-playing",
+                              ),
+                              qt && (qt.textContent = ""));
+                          }));
+                        try {
+                          ((Ot.src = i), Ot.load());
+                          var n = Ot.play();
+                          n && n.catch && n.catch(function () {});
+                        } catch (e) {
+                          ie.classList.remove("is-preview-loading");
+                        }
+                      }
+                    },
+                  ));
+              }
+            }
+          })(e || F[X.channel]));
+      }, 220)));
+  }
+  function Xt(e, t) {
+    e &&
+      ((Mt = e),
+      dr(),
+      e.isAddon
+        ? $t(function () {
+            t && t();
+          })
+        : Gt(e.id, function () {
+            t && t();
+          }));
+  }
+  function $t(e) {
+    var t = _t();
+    if (!t || !t.length)
+      return (F.splice(0, F.length), Qt(!1), hr(), void (e && e()));
+    jr("Cargando canales de Addon…");
+    for (var a = [], i = t.length, n = 0; n < t.length; n++)
+      (function (t) {
+        P("fetchM3u", { url: t.url }, function (t, n) {
+          if (n && n.channels && n.channels.length)
+            for (var r = 0; r < n.channels.length; r++) a.push(n.channels[r]);
+          if (--i <= 0) {
+            (jr(""), F.splice(0, F.length));
+            for (var o = 0; o < a.length; o++)
+              ((a[o].index = o + 1), F.push(a[o]));
+            ((X.channel = 0),
+              Qt(!1),
+              hr(),
+              F[0] && ae && (ae.textContent = F[0].name),
+              "player" === X.screen &&
+                "live" === X.playerMode &&
+                (ao(), to(F[0], !0)),
+              e && e());
+          }
+        });
+      })(t[n]);
+  }
+  function Gt(e, t) {
+    var a = e || 76182;
+    if (!At || Pt !== a) {
+      var i = ++Dt;
+      ((Pt = a),
+        (At = !0),
+        (Et = !1),
+        F.length || ((X.channel = 0), Qt(!1), hr()));
+      var n = 1,
+        r = !1;
+      !(function e() {
+        P(
+          "liveChannels",
+          { columnId: a, pageNum: n, pageSize: 20 },
+          function (o, s) {
+            if (i === Dt) {
+              var l = s && s.channels ? s.channels : [];
+              if (!o && l.length) {
+                1 === n && F.splice(0, F.length);
+                for (var d = {}, c = 0; c < F.length; c++)
+                  F[c] && F[c].channelCode && (d[F[c].channelCode] = !0);
+                for (var p = 0; p < l.length; p++) {
+                  var u = l[p];
+                  !u ||
+                    (u.channelCode && d[u.channelCode]) ||
+                    (u.channelCode && (d[u.channelCode] = !0), F.push(u));
+                }
+                ((Et = !0),
+                  Qt(!1),
+                  hr(),
+                  X.channel >= F.length && (X.channel = 0),
+                  F[X.channel] && ae && (ae.textContent = F[X.channel].name),
+                  "player" === X.screen && "live" === X.playerMode
+                    ? ao()
+                    : Wt(F[X.channel]));
+              }
+              if (
+                (r ||
+                  ((r = !0),
+                  It ||
+                    (function (e) {
+                      It && Lt.length
+                        ? e && e(null, Lt)
+                        : P("liveCategories", {}, function (t, a) {
+                            var i = [];
+                            if (a && a.categories && a.categories.length)
+                              for (var n = 0; n < a.categories.length; n++) {
+                                var r = a.categories[n],
+                                  o = r.name;
+                                (("ChannelList" !== o && 76182 !== r.id) ||
+                                  (o = "Todos"),
+                                  i.push({
+                                    id: r.id,
+                                    name: o,
+                                    code: r.code,
+                                    isAddon: !1,
+                                  }));
+                              }
+                            else
+                              i = [
+                                { id: 76182, name: "Todos" },
+                                { id: 76206, name: "Deportes" },
+                                { id: 76205, name: "Cine y Series" },
+                                { id: 76188, name: "Colombia" },
+                                { id: 76191, name: "España" },
+                                { id: 76197, name: "México" },
+                              ];
+                            (i.push({
+                              id: "addons",
+                              name: "➕ Addons M3U",
+                              isAddon: !0,
+                            }),
+                              (Lt = i),
+                              (It = !0),
+                              Mt || (Mt = Lt[0]),
+                              dr(),
+                              e && e(null, Lt));
+                          });
+                    })(),
+                  t && t(o, s)),
+                !o && s && s.hasMore && l.length)
+              )
+                return (n++, void setTimeout(e, 25));
+              ((At = !1),
+                o &&
+                  !Et &&
+                  setTimeout(function () {
+                    i === Dt && Gt(a);
+                  }, 2500));
+            }
+          },
+        );
+      })();
+    }
+  }
+  function Qt(t) {
+    if (re)
+      if ((a(re), (Fe = []), F.length)) {
+        for (var i = 0; i < F.length; i++)
+          if (!t || F[i].fav) {
+            var n = e("div", "live-row focusable");
+            n._channel = i;
+            var r = e("div", "row-icon");
+            F[i].logo &&
+              ((r.style.backgroundImage = "url(" + F[i].logo + ")"),
+              (r.style.backgroundSize = "contain"),
+              (r.style.backgroundRepeat = "no-repeat"),
+              (r.style.backgroundPosition = "center"));
+            var o = e("div", "row-play"),
+              s = e("div", "row-name", F[i].name);
+            (n.appendChild(r),
+              n.appendChild(o),
+              n.appendChild(s),
+              i === X.channel && n.classList.add("is-current"),
+              (n._activate = (function (e) {
+                return function () {
+                  (Kt(e, !0), Yr("live"));
+                };
+              })(i)),
+              (n._onMove = (function (e) {
+                return function (t) {
+                  return "left" === t
+                    ? (ne ? rt(ne) : Ue[0] && rt(Ue[0]), !0)
+                    : "up" === t
+                      ? (e > 0 && Fe[e - 1] && rt(Fe[e - 1]), !0)
+                      : "down" === t &&
+                        (e < Fe.length - 1 && Fe[e + 1] && rt(Fe[e + 1]), !0);
+                };
+              })(i)),
+              re.appendChild(n),
+              Fe.push(n));
+          }
+        (F[X.channel] && ae && (ae.textContent = F[X.channel].name), Jt());
+      } else
+        re.appendChild(
+          e(
+            "div",
+            "live-list-status",
+            Et ? "No se encontraron canales" : "Cargando canales…",
+          ),
+        );
+  }
+  function Jt() {
+    if (Fe.length) {
+      var e = Fe.filter(function (e) {
+        return e._channel === X.channel;
+      })[0];
+      if (e) {
+        var t = 120 * Fe.indexOf(e),
+          a = Math.max(0, re.scrollHeight - re.clientHeight),
+          i = re.scrollTop;
+        (t < i && (i = t),
+          t + 100.5 > i + re.clientHeight && (i = t + 100.5 - re.clientHeight),
+          (re.scrollTop = Math.max(0, Math.min(a, i))));
+      }
+    }
+  }
+  function Kt(e, t) {
+    (e < 0 && (e = 0), e > F.length - 1 && (e = F.length - 1), (X.channel = e));
+    for (var a = 0; a < Fe.length; a++)
+      Fe[a].classList.toggle("is-current", Fe[a]._channel === e);
+    (F[e] && ae && (ae.textContent = F[e].name),
+      Jt(),
+      "player" === X.screen
+        ? (!(function () {
+            if (!Ce) return;
+            ao();
+          })(),
+          "live" === X.playerMode && to(F[e], !!t))
+        : "home" === X.screen && 0 === X.tab && Wt(F[e]));
+  }
+  function Yt(a) {
+    var i = t("app-toast");
+    i ||
+      (((i = e("div", "app-toast")).id = "app-toast"),
+      (t("app") || document.body).appendChild(i));
+    ((i.textContent = a),
+      (i.style.display = "block"),
+      (i.style.opacity = "1"),
+      Yt._timer && clearTimeout(Yt._timer),
+      (Yt._timer = setTimeout(function () {
+        ((i.style.opacity = "0"),
+          setTimeout(function () {
+            i.style.display = "none";
+          }, 300));
+      }, 3200)));
+  }
+  function Zt(i) {
+    ((Ft = i || {}), (Ut = !0));
+    var n = t("dialog-update");
+    if (n) {
+      n.classList.add("is-active");
+      var r = t("du-title");
+      r && (r.textContent = "Nueva versión disponible");
+      var o = t("du-version-subtitle");
+      o &&
+        (o.textContent =
+          "Versión " +
+          (i.latestVersion || "") +
+          (i.releaseDate ? " (" + i.releaseDate + ")" : ""));
+      var s = t("du-changelog");
+      s &&
+        (s.textContent =
+          i.changelog ||
+          "Mejoras de estabilidad, rendimiento y optimizaciones de catálogo.");
+      var l = t("du-status-container");
+      l && (l.style.display = "none");
+      var d = t("du-footer-actions");
+      if (d) {
+        a(d);
+        var c = e(
+          "button",
+          "du-btn du-btn-primary focusable",
+          "Actualizar ahora",
+        );
+        ((c.id = "du-btn-update"),
+          (c._activate = function () {
+            !(function () {
+              if (!Ft || !Ft.ipkUrl) return;
+              zt = !0;
+              var i = t("du-status-container");
+              i && (i.style.display = "block");
+              var n = t("du-progress-bar"),
+                r = t("du-status-text"),
+                o = t("du-status-subtext"),
+                s = t("du-footer-actions");
+              s && a(s);
+              n && (n.style.width = "4%");
+              r && (r.textContent = "Iniciando descarga...");
+              o &&
+                (o.textContent =
+                  "Por favor no apagues la TV ni salgas de la aplicación.");
+              var l = p.serviceId || "com.webosflux.xuptertv.fidelity.service";
+              if (I() && window.PalmServiceBridge)
+                try {
+                  return void window.webOS.service.request("luna://" + l, {
+                    method: "applyUpdate",
+                    parameters: { ipkUrl: Ft.ipkUrl, subscribe: !0 },
+                    subscribe: !0,
+                    resubscribe: !1,
+                    onSuccess: function (e) {
+                      e &&
+                        (void 0 !== e.percent &&
+                          n &&
+                          (n.style.width =
+                            Math.min(100, Math.max(0, e.percent)) + "%"),
+                        e.message && r && (r.textContent = e.message),
+                        "success" === e.state &&
+                          (r &&
+                            (r.textContent =
+                              "¡Actualización completada! Reiniciando XuperTV..."),
+                          n && (n.style.width = "100%"),
+                          setTimeout(function () {
+                            try {
+                              window.location.reload();
+                            } catch (e) {}
+                          }, 4e3)));
+                    },
+                    onFailure: function (t) {
+                      zt = !1;
+                      var i =
+                          (t && t.errorText) || "Error durante la instalación",
+                        n = i;
+                      if (
+                        (/denied|permission|not permitted|method.*not|no existe/i.test(
+                          String(i),
+                        ) &&
+                          (n =
+                            "El instalador de la TV está desactualizado. Desenchufa la TV 30 segundos, vuelve a abrir XuperTV y busca la actualización de nuevo."),
+                        r && (r.textContent = "Error: " + n),
+                        o &&
+                          (o.textContent =
+                            "Comprueba tu red o intenta más tarde."),
+                        s)
+                      ) {
+                        a(s);
+                        var l = e(
+                          "button",
+                          "du-btn du-btn-secondary focusable",
+                          "Cerrar",
+                        );
+                        ((l._activate = function () {
+                          ea();
+                        }),
+                          s.appendChild(l),
+                          rt(l));
+                      }
+                    },
+                  });
+                } catch (e) {
+                  ((zt = !1),
+                    r && (r.textContent = "Error: " + (e && e.message)));
+                }
+              else if (
+                (r &&
+                  (r.textContent =
+                    "Modo simulador: actualizacion solo disponible en webOS"),
+                (zt = !1),
+                s)
+              ) {
+                var d = e(
+                  "button",
+                  "du-btn du-btn-secondary focusable",
+                  "Cerrar",
+                );
+                ((d._activate = function () {
+                  ea();
+                }),
+                  s.appendChild(d),
+                  rt(d));
+              }
+            })();
+          }));
+        var u = e("button", "du-btn du-btn-secondary focusable", "Más tarde");
+        ((u.id = "du-btn-later"),
+          (u._activate = function () {
+            ((Bt = !0), ea());
+          }),
+          d.appendChild(c),
+          d.appendChild(u),
+          rt(c));
+      }
+    }
+  }
+  function ea() {
+    Ut = !1;
+    var e = t("dialog-update");
+    if ((e && e.classList.remove("is-active"), "home" === X.screen)) {
+      var a = document.querySelector(".home-tab.is-selected");
+      if (a) rt(a);
+      else {
+        var i = firstFocusable();
+        i && rt(i);
+      }
+    } else if ("settings" === X.screen) {
+      var n = document.querySelector(".settings-item.is-selected");
+      if (n) rt(n);
+      else {
+        var r = firstFocusable();
+        r && rt(r);
+      }
+    }
+  }
+  var ta = [
+    "https://cdn.jsdelivr.net/gh/cristianco7/XUPER-HYDRA-PORT-WEBOS@main/version.json",
+    "https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/feature/catalog-webos-compat/version.json",
+    "https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/main/version.json",
+  ];
+  function aa(e) {
+    for (
+      var t = String(e || "")
+          .replace(/^[^\d]*/, "")
+          .split("."),
+        a = [],
+        i = 0;
+      i < t.length;
+      i++
+    )
+      a.push(parseInt(t[i], 10) || 0);
+    return a;
+  }
+  function ia(e, t) {
+    for (
+      var a = aa(e), i = aa(t), n = Math.max(a.length, i.length), r = 0;
+      r < n;
+      r++
+    ) {
+      var o = a[r] || 0,
+        s = i[r] || 0;
+      if (o !== s) return o > s ? 1 : -1;
+    }
+    return 0;
+  }
+  function na(e, t) {
+    if (e >= ta.length)
+      return t("No se pudo consultar el servidor de actualizaciones");
+    var a = new XMLHttpRequest(),
+      i = !1,
+      n = setTimeout(function () {
+        if (!i) {
+          i = !0;
+          try {
+            a.abort();
+          } catch (e) {}
+          na(e + 1, t);
+        }
+      }, 12e3);
+    function r() {
+      i || ((i = !0), clearTimeout(n), na(e + 1, t));
+    }
+    try {
+      (a.open("GET", ta[e] + "?t=" + Date.now(), !0),
+        (a.onreadystatechange = function () {
+          if (4 === a.readyState)
+            if (a.status < 200 || a.status >= 300) r();
+            else {
+              var e;
+              try {
+                e = JSON.parse(a.responseText);
+              } catch (e) {
+                return void r();
+              }
+              e && e.version
+                ? i || ((i = !0), clearTimeout(n), t(null, e))
+                : r();
+            }
+        }),
+        (a.onerror = r),
+        (a.ontimeout = r),
+        a.send(null));
+    } catch (e) {
+      r();
+    }
+  }
+  function ra(e, t) {
+    na(0, function (a, i) {
+      if (a) return t(a);
+      var n = i.version || "0.0.0";
+      t(null, {
+        updateAvailable: ia(n, e) > 0,
+        currentVersion: e,
+        latestVersion: n,
+        ipkUrl: i.ipkUrl || "",
+        changelog: i.changelog || "",
+        releaseDate: i.releaseDate || "",
+        viaFallback: !0,
+      });
+    });
+  }
+  function oa(e, t) {
+    var a = "2.2.48";
+    function i(i) {
+      (t && t(null, i),
+        i && i.updateAvailable
+          ? (e && Bt) || Zt(i)
+          : e || Yt("Tienes la versión más reciente (v" + a + ")"));
+    }
+    P(
+      "checkUpdate",
+      { currentVersion: a },
+      function (n, r) {
+        if (!n) return i(r);
+        /denied|permission|not permitted|method|not exist|no existe|unknown|módulo|modulo|no carg|no disponible|no está disponible/i.test(
+          String(n || ""),
+        )
+          ? ra(a, function (a, r) {
+              if (!a && r) return i(r);
+              (t && t(n, null),
+                e ||
+                  Yt(
+                    "El módulo de actualizaciones necesita reiniciarse: desenchufa la TV 30 segundos y vuelve a intentarlo.",
+                  ));
+            })
+          : (t && t(n, null),
+            e || Yt("No se pudo comprobar actualizaciones: " + n));
+      },
+      15e3,
+    );
+  }
+  function sa() {
+    Ht = !0;
+    var e = t("dialog-addons");
+    if (e) {
+      (e.classList.add("is-active"), da());
+      var a = e.querySelector(".focusable");
+      a && rt(a);
+    }
+  }
+  function la() {
+    Ht = !1;
+    var e = t("dialog-addons");
+    if (e && (e.classList.remove("is-active"), X.channelsOpen)) {
+      var a = Se ? Se.querySelector("#pc-btn-addons") : null;
+      rt(a || Ce);
+    }
+  }
+  function da() {
+    for (
+      var i = t("da-presets-list"),
+        n = t("da-installed-list"),
+        r = _t(),
+        o = {},
+        s = 0;
+      s < r.length;
+      s++
+    )
+      o[r[s].url] = !0;
+    if (i) {
+      a(i);
+      for (var l = 0; l < Tt.length; l++)
+        (function (t) {
+          var a = e("div", "da-preset-item"),
+            n = e("div", "da-preset-info");
+          (n.appendChild(e("div", "da-preset-name", t.name)),
+            n.appendChild(e("div", "da-preset-desc", t.desc)),
+            a.appendChild(n));
+          var r = !!o[t.url],
+            s = e(
+              "button",
+              "da-preset-btn focusable" + (r ? " is-installed" : ""),
+              r ? "✔ Instalado" : "+ Instalar",
+            );
+          ((s._activate = function () {
+            r ||
+              ((s.textContent = "Instalando…"),
+              ca(t, function (e, t) {
+                e
+                  ? ((s.textContent = "Error"),
+                    setTimeout(function () {
+                      s.textContent = "+ Instalar";
+                    }, 2e3))
+                  : (da(), Mt && Mt.isAddon && $t());
+              }));
+          }),
+            a.appendChild(s),
+            i.appendChild(a));
+        })(Tt[l]);
+    }
+    if (n)
+      if ((a(n), r.length))
+        for (var d = 0; d < r.length; d++)
+          (function (t, a) {
+            var i = e("div", "da-installed-item"),
+              o = e("div", "da-installed-info"),
+              s = e("div", "da-preset-name", t.name),
+              l = e(
+                "div",
+                "da-preset-desc",
+                (t.count ? t.count + " canales • " : "") + t.url,
+              );
+            (o.appendChild(s), o.appendChild(l), i.appendChild(o));
+            var d = e("button", "da-del-btn focusable", "Eliminar");
+            ((d._activate = function () {
+              (r.splice(a, 1), kt(r), da(), Mt && Mt.isAddon && $t());
+            }),
+              i.appendChild(d),
+              n.appendChild(i));
+          })(r[d], d);
+      else
+        n.appendChild(
+          e(
+            "div",
+            "da-installed-empty",
+            "No hay addons personalizados instalados aún. Instala una lista recomendada arriba o escribe una URL.",
+          ),
+        );
+    var c = t("da-btn-add-custom");
+    c &&
+      (c._activate = function () {
+        var e = t("da-custom-url"),
+          a = e ? (e.value || "").trim() : "";
+        a && /^https?:\/\//i.test(a)
+          ? ((c.textContent = "Descargando…"),
+            ca(
+              {
+                id: "custom_" + Date.now(),
+                name: "Lista Personalizada",
+                url: a,
+              },
+              function (t, a) {
+                ((c.textContent = "Agregar"),
+                  t
+                    ? alert("No se pudo cargar la lista M3U: " + t)
+                    : (e && (e.value = ""), da(), Mt && Mt.isAddon && $t()));
+              },
+            ))
+          : alert("Por favor introduce una URL válida (http:// o https://)");
+      });
+    var p = t("da-btn-exit");
+    p &&
+      (p._activate = function () {
+        la();
+      });
+  }
+  function ca(e, t) {
+    P("fetchM3u", { url: e.url }, function (a, i) {
+      if (!a && i && i.channels && i.channels.length) {
+        for (var n = _t(), r = !1, o = 0; o < n.length; o++)
+          if (n[o].url === e.url) {
+            ((n[o].count = i.channels.length), (r = !0));
+            break;
+          }
+        (r ||
+          n.push({
+            id: e.id || "addon_" + Date.now(),
+            name: e.name || "Lista M3U",
+            url: e.url,
+            count: i.channels.length,
+          }),
+          kt(n),
+          t && t(null, i.channels.length));
+      } else t && t(a || "No se encontraron canales en la lista");
+    });
+  }
+  var pa = {
+    bigW: 831,
+    bigH: 534,
+    bigY: 38.5,
+    smallW: 413,
+    smallH: 222,
+    smallY: 578.5,
+    bigX: [192, 1029],
+    smallX: [192, 609, 1028, 1446],
+  };
+  function ua(t, a, n, r, o, s) {
+    s = s || {};
+    var l = e("div", "bento focusable");
+    i(l, a, n, r, o);
+    var d = t ? t.landscape || t.poster : "";
+    if (d) {
+      var c = e("img", "bento-img");
+      (c.setAttribute("data-poster-src", d),
+        (c.onerror = function () {
+          if (
+            this.src &&
+            0 === this.src.indexOf("https://") &&
+            !this._httpFallback
+          )
+            return (
+              (this._httpFallback = !0),
+              void (this.src = this.src.replace("https://", "http://"))
+            );
+          this.style.display = "none";
+        }),
+        l.appendChild(c));
+    }
+    return (
+      s.shade && l.appendChild(e("div", "bento-shade")),
+      s.title && t && l.appendChild(e("div", "bento-title", t.title)),
+      s.badge && l.appendChild(e("div", "bento-badge", s.badge)),
+      (l._item = t),
+      t &&
+        (l._activate = function () {
+          ba(t);
+        }),
+      wt(),
+      l
+    );
+  }
+  function va(t, a, n, r) {
+    var o = e("div", "bento-dots");
+    i(o, t, a, 21 + 40 * Math.max(0, n - 1), 11);
+    for (var s = 0; s < n; s++)
+      o.appendChild(e("span", "bento-dot" + (s === r ? " is-active" : "")));
+    return o;
+  }
+  function fa(e, t, a) {
+    a = a || {};
+    var i = t.length ? t : l;
+    if (i.length) {
+      var n;
+      for (n = 0; n < 2; n++)
+        e.appendChild(
+          ua(i[n % i.length], pa.bigX[n], pa.bigY, pa.bigW, pa.bigH, {
+            shade: !1 !== a.shade,
+            title: a.titles,
+          }),
+        );
+      for (n = 0; n < 4; n++)
+        e.appendChild(
+          ua(
+            i[(n + 2) % i.length],
+            pa.smallX[n],
+            pa.smallY,
+            pa.smallW,
+            pa.smallH,
+            {},
+          ),
+        );
+      a.dots && e.appendChild(va(848, 535.5, a.dots, 0));
+    }
+  }
+  function ha(e) {
+    var t,
+      a = [];
+    if (e)
+      for (t = 0; t < l.length; t++) {
+        (-1 !==
+          o(l[t].category || "")
+            .split(",")
+            .indexOf(e) ||
+          (l[t].kind && -1 !== o(l[t].kind).indexOf(e))) &&
+          a.push(l[t]);
+      }
+    return a.length ? a : l;
+  }
+  function ma(t, a, n, r) {
+    if (!a || !a.length) return n;
+    var o = n || 860,
+      s = e("div", "kids-subtitle", r || "Catálogo");
+    (i(s, 192, o, 1249, 40), t.appendChild(s), (o += 50));
+    for (var l = Math.min(a.length, 60), d = 0; d < l; d++) {
+      var c = 192 + 276 * (d % 6),
+        p = o + 390 * Math.floor(d / 6);
+      t.appendChild(xt(a[d], c, p, 250, 360, { gold: !0 }));
+    }
+    return o + 390 * Math.ceil(l / 6) + 25;
+  }
+  function ga(t, a, n, r) {
+    if (!a || !a.length) return n;
+    var o = n || 860,
+      s = e("div", "kids-subtitle", r || "Catálogo");
+    (i(s, 192, o, 1400, 40), t.appendChild(s), (o += 50));
+    for (var l = Math.min(a.length, 6), d = 0; d < l; d++) {
+      var c = 192 + 276 * d;
+      t.appendChild(xt(a[d], c, o, 250, 360, { gold: !0 }));
+    }
+    return o + 360 + 35;
+  }
+  function ya(e, t, a, i) {
+    if (!t || !t.length) return a;
+    var n,
+      r,
+      o,
+      s,
+      l,
+      d,
+      c,
+      p,
+      u = a || 860,
+      v = {};
+    if ((i = i || {}).bentoItems && i.bentoItems.length)
+      for (n = 0; n < i.bentoItems.length; n++)
+        i.bentoItems[n] &&
+          i.bentoItems[n].id &&
+          (v[String(i.bentoItems[n].id)] = !0);
+    if (i.popularTitle) {
+      var f = t.slice().sort(function (e, t) {
+          var a = parseFloat(e && e.score) || 0;
+          return (parseFloat(t && t.score) || 0) - a;
+        }),
+        h = [];
+      for (r = 0; r < f.length && h.length < 6; r++) {
+        var m = f[r];
+        m && m.id && !v[String(m.id)] && (h.push(m), (v[String(m.id)] = !0));
+      }
+      h.length && (u = ga(e, h, u, i.popularTitle));
+    }
+    var g = {},
+      y = [];
+    for (o = 0; o < t.length; o++) {
+      var b = t[o],
+        C = b.row ? String(b.row).trim() : "";
+      ((C &&
+        "all" !== C.toLowerCase() &&
+        "todas" !== C.toLowerCase() &&
+        "todos" !== C.toLowerCase()) ||
+        (C =
+          b.genres && b.genres[0] && "Sin clasificar" !== b.genres[0]
+            ? b.genres[0]
+            : ""),
+        C || (C = i.fallbackRow || "Más títulos"),
+        g[C] || ((g[C] = []), y.push(C)),
+        g[C].push(b));
+    }
+    var w = {
+        "2026 Peliculas teatrales": "Estrenos en cartelera",
+        2026: "Novedades 2026",
+        "Máscara perfecta": "Máscara perfecta (Especial)",
+        "Asesino en serie": "Suspense y asesinos en serie",
+        "Películas TOP15 clasificadas": "Películas TOP 15",
+        "Dramas clasificados TOP15": "Series y dramas TOP 15",
+        "HBO Movie": "Películas HBO",
+        "Prime Video Movie": "Películas Prime Video",
+        "Apple TV+ Movie": "Películas Apple TV+",
+        "Paramount + Movie": "Películas Paramount+",
+        "Hulu Movie": "Películas Hulu",
+        "Netflix Movie": "Películas Netflix",
+        "Disney Movie": "Películas Disney",
+        "Netflix Series": "Series Netflix",
+        "Disney Series": "Series Disney",
+        "HBO Series": "Series HBO",
+        "Prime Video Series": "Series Prime Video",
+        "Apple TV+ Series": "Series Apple TV+",
+        "Paramount + Series": "Series Paramount+",
+        "Hulu Series": "Series Hulu",
+        "TV Series": "Series de televisión",
+        "Serie Turquía": "Series turcas",
+        "Drama Coreano": "Dramas coreanos (K-Drama)",
+        Telenovelas: "Telenovelas populares",
+        "Vida familiar famosa": "Familias famosas y dramas",
+        Acción: "Acción y aventura",
+        Comedia: "Comedias destacadas",
+        Horror: "Terror y horror",
+        "Ciencia ficción": "Ciencia ficción y fantasía",
+        Suspenso: "Suspense y misterio",
+        Crimen: "Crimen y policíaco",
+        Familia: "Películas en familia",
+        Fantastico: "Fantasía épica",
+        Romántico: "Romance y drama",
+        "Animación Clásica": "Animación clásica",
+        "Película de Animación": "Películas de animación",
+        "Serie de Animación": "Series animadas",
+        "Dragon Ball Collection": "Colección Dragon Ball",
+        "Colección de Marvel": "Colección Marvel",
+        "Coalition for DC": "Universo DC",
+        "Anime Asiático": "Anime asiático",
+        "Anime Europeo y Americano": "Anime internacional",
+        "Película de Anime": "Películas de anime",
+        "Serie de Anime": "Series de anime",
+      },
+      S = !1;
+    for (s = 0; s < y.length; s++) {
+      var x = y[s],
+        T = g[x];
+      if (T && T.length) {
+        var _ = [],
+          k = [];
+        for (l = 0; l < T.length; l++) v[String(T[l].id)] || k.push(T[l]);
+        for (d = 0; d < k.length && _.length < 6; d++)
+          (_.push(k[d]), (v[String(k[d].id)] = !0));
+        if (_.length < 6 && T.length >= 6)
+          for (c = 0; c < T.length && _.length < 6; c++)
+            -1 === _.indexOf(T[c]) && _.push(T[c]);
+        if (_.length) ((u = ga(e, _, u, w[x] || x)), (S = !0));
+      }
+    }
+    var L = [];
+    for (p = 0; p < t.length; p++) v[String(t[p].id)] || L.push(t[p]);
+    return (
+      L.length
+        ? (u = ma(e, L, u, i.fallbackRow || "Más títulos del catálogo"))
+        : S || ma(e, t, u, i.defaultTitle || "Catálogo"),
+      u
+    );
+  }
+  function ba(e) {
+    if (
+      ((X.detail = e),
+      (X.detailReturn = { screen: X.screen, focus: X.focus }),
+      (X.detailRange = 0),
+      (X.detailSeason = 0),
+      (X.detailEpisode = null),
+      e.seasons && e.seasons.length)
+    )
+      for (var a = 0; a < e.seasons.length; a++)
+        if (e.seasons[a].id === e.id) {
+          X.detailSeason = a;
+          break;
+        }
+    (e.episodes && e.episodes.length && (X.detailEpisode = e.episodes[0]),
+      dn(e),
+      _n(),
+      xn(e),
+      Mn(e),
+      Ca(e),
+      lt("detail"),
+      Ce || lr());
+    var i = t("screen-player");
+    i && (i.classList.add("is-mini"), i.classList.add("is-active"));
+    var n = le ? le.querySelector(".focusable") : null;
+    (n && rt(n),
+      e._detailsLoaded
+        ? Jr(e, X.detailEpisode)
+        : (jr("Preparando la reproducción…"),
+          U(e, function (e) {
+            e &&
+              "detail" === X.screen &&
+              X.detail === e &&
+              (dn(e), Jr(e, X.detailEpisode));
+          })));
+  }
+  function Ca(n) {
+    ((oe = t("detail-left")),
+      (se = t("detail-player")),
+      (le = t("detail-buttons")),
+      (de = t("detail-bottom")),
+      a(oe),
+      a(le),
+      a(de));
+    var r,
+      o = e("div", "detail-titlewrap");
+    if (
+      (o.appendChild(e("div", "detail-title", n.title)),
+      o.appendChild(e("div", "detail-score", n.score)),
+      oe.appendChild(o),
+      n.country || n.releaseDate || n.tagline)
+    ) {
+      var s = [];
+      (n.country && s.push(n.country),
+        n.releaseDate && s.push(n.releaseDate),
+        n.tagline && s.push(n.tagline),
+        (r = s.join(" | ")));
+    } else {
+      var d = [];
+      (n.year && "—" !== n.year && d.push(n.year),
+        n.duration && "—" !== n.duration && d.push(n.duration),
+        d.push("HD"),
+        (r = d.join("  ·  ")));
+    }
+    if ((oe.appendChild(e("div", "detail-meta", r)), x(n))) {
+      var c = 0,
+        p = /S(\d+)/i.exec(n.alias || "") || /T(\d+)/i.exec(n.title || "");
+      if (
+        (p && (c = parseInt(p[1], 10) || 0),
+        !c && n.seasons && n.seasons.length)
+      ) {
+        var u = n.seasons[X.detailSeason] || n.seasons[0];
+        c = (u && u.number) || 1;
+      }
+      c || (c = 1);
+      var v =
+        n.updateCount || n.volumeCount || (n.episodes ? n.episodes.length : 0);
+      v && oe.appendChild(e("div", "detail-update", "T" + c + " - E" + v));
+    }
+    var f = e("div", "detail-genres");
+    f.appendChild(e("span", "label", "Género : "));
+    for (var h = 0; h < n.genres.length; h++) {
+      var m = e("div", "chip", n.genres[h]);
+      f.appendChild(m);
+    }
+    oe.appendChild(f);
+    var g = e("div", "detail-row");
+    g.appendChild(document.createTextNode("Director : "));
+    var y = e("span", "val", n.director);
+    (g.appendChild(y), oe.appendChild(g));
+    var b = e("div", "detail-row");
+    b.appendChild(document.createTextNode("Actors : "));
+    var C = e("span", "val", n.actors);
+    (b.appendChild(C), oe.appendChild(b));
+    var w = e("div", "detail-synopsis");
+    (w.appendChild(e("span", "label", "Sinopsis : ")),
+      w.appendChild(e("div", "text", n.synopsis)));
+    var S = e("div", "detail-more", "Más");
+    (w.appendChild(S),
+      oe.appendChild(w),
+      a(se),
+      se.classList.add("focusable"),
+      (se._activate = function () {
+        Kr(n, X.detailEpisode);
+      }),
+      (se._onMove = function () {
+        return !1;
+      }));
+    var T = [
+      {
+        icon: "icon_detail_fullscreen.png",
+        label: "Pantalla completa",
+        kind: "fullscreen",
+      },
+      {
+        icon: "icon_detail_subtitle_audio.png",
+        label: "Idioma",
+        kind: "language",
+      },
+      { icon: "icon_detail_favorite.png", label: "Favorito", kind: "favorite" },
+    ];
+    x(n) &&
+      T.push({
+        icon: "icon_detail_subscribe.png",
+        label: "Notificaciones",
+        kind: "subscribe",
+      });
+    for (var _ = 0; _ < T.length; _++) {
+      var k = e("div", "detail-btn focusable"),
+        L = e("img");
+      ((L.src = "assets/original/vod/" + T[_].icon),
+        (L.alt = ""),
+        k.appendChild(L),
+        k.appendChild(e("span", null, T[_].label)),
+        (k._kind = T[_].kind),
+        "favorite" === T[_].kind &&
+          X.favs[String(n.id)] &&
+          (k.classList.add("is-selected"),
+          (k.querySelector("span").textContent = "En favoritos")),
+        (k._activate = (function (e, t) {
+          return function () {
+            if ("fullscreen" === e) Kr(t, X.detailEpisode);
+            else if ("language" === e) er(t);
+            else if ("favorite" === e) {
+              var a = Z(t);
+              this.classList.toggle("is-selected", a);
+              var i = this.querySelector("span");
+              i && (i.textContent = a ? "En favoritos" : "Favorito");
+            } else if ("subscribe" === e) {
+              var n = this.querySelector("img"),
+                r = -1 === n.src.indexOf("subscribed");
+              n.src =
+                "assets/original/vod/icon_detail_" +
+                (r ? "subscribed" : "subscribe") +
+                ".png";
+            }
+          };
+        })(T[_].kind, n)),
+        le.appendChild(k));
+    }
+    var M = e("div", "detail-btn focusable"),
+      I = e("img");
+    ((I.src = "assets/original/vod/icon_detail_quality.png"),
+      (I.alt = ""),
+      M.appendChild(I));
+    var E = e(
+      "span",
+      null,
+      "smooth" === X.streamMode ? "Modo fluido: Sí" : "Modo fluido: No",
+    );
+    (M.appendChild(E),
+      (M._activate = function () {
+        (Tn(n, "smooth" !== X.streamMode),
+          (E.textContent =
+            "smooth" === X.streamMode ? "Modo fluido: Sí" : "Modo fluido: No"));
+      }),
+      le.appendChild(M),
+      (function (t) {
+        var a = x(t) && t.episodes ? t.episodes : [],
+          n = a.length > 0,
+          r = wa(a.length);
+        X.detailRange >= r.length && (X.detailRange = 0);
+        if (x(t)) {
+          var o = e("div", "detail-season focusable");
+          (i(o, 80, 42, 280, 53),
+            o.appendChild(
+              e(
+                "span",
+                "season-text",
+                (function (e) {
+                  var t = 0;
+                  if (e.seasons && e.seasons.length > 0) {
+                    var a = e.seasons[X.detailSeason] || e.seasons[0];
+                    t = a && a.number ? a.number : X.detailSeason + 1;
+                  }
+                  if (!t) {
+                    var i =
+                      /S(\d+)/i.exec(e.alias || "") ||
+                      /T(\d+)/i.exec(e.title || "");
+                    i && (t = parseInt(i[1], 10) || 0);
+                  }
+                  return "Temporada " + (t || 1);
+                })(t),
+              ),
+            ));
+          var s = e("img", "season-arrow");
+          ((s.src = "assets/original/vod/ic_down_icon.png"),
+            (s.alt = "▼"),
+            o.appendChild(s),
+            (o._activate = function () {
+              !t.seasons ||
+                t.seasons.length < 2 ||
+                (function (t, a) {
+                  if (xa) return void Ta();
+                  if (!a.seasons || a.seasons.length < 2) return;
+                  var n = t.querySelector(".season-arrow");
+                  n && n.classList.add("is-open");
+                  i(
+                    (xa = e("div", "season-popup")),
+                    80,
+                    100,
+                    280,
+                    Math.min(320, 54 * a.seasons.length),
+                  );
+                  for (var r = 0; r < a.seasons.length; r++)
+                    (function (t) {
+                      var i = a.seasons[t],
+                        n = e(
+                          "div",
+                          "season-popup-item focusable" +
+                            (t === X.detailSeason ? " is-selected" : ""),
+                        ),
+                        r = "Temporada " + (i.number || t + 1);
+                      n.appendChild(e("span", "season-item-text", r));
+                      var o = e("img", "season-item-check");
+                      ((o.src = "assets/original/vod/icon_nation_selected.png"),
+                        (o.alt = ""),
+                        n.appendChild(o),
+                        (n._activate = function () {
+                          if ((Ta(), X.detailSeason !== t)) {
+                            ((X.detailSeason = t),
+                              (X.detailRange = 0),
+                              (X.detailEpisode = null));
+                            var e = a.seasons[t];
+                            e &&
+                              e.id &&
+                              (jr("Cargando temporada…"),
+                              P("detail", { contentId: e.id }, function (t, i) {
+                                (!t &&
+                                  i &&
+                                  !1 !== i.returnValue &&
+                                  (i.item && H(a, i.item),
+                                  (a.episodes = i.episodes || []),
+                                  (a.seasonId = e.id),
+                                  (e._episodes = a.episodes),
+                                  (X.detailEpisode = a.episodes[0] || null)),
+                                  Ca(a),
+                                  X.detailEpisode && Jr(a, X.detailEpisode));
+                                var n = de
+                                  ? de.querySelector(".detail-season")
+                                  : null;
+                                n && rt(n);
+                              }));
+                          } else {
+                            var i = de
+                              ? de.querySelector(".detail-season")
+                              : null;
+                            i && rt(i);
+                          }
+                        }),
+                        xa.appendChild(n));
+                    })(r);
+                  de.appendChild(xa);
+                  var o = xa.children[X.detailSeason] || xa.children[0];
+                  o && rt(o);
+                })(o, t);
+            }),
+            de.appendChild(o));
+        }
+        if (n && a.length > 20) {
+          var d = e("div", "detail-ranges");
+          i(d, 398, 51, 1522, 46);
+          for (var c = 0; c < r.length; c++)
+            (function (a) {
+              var n = e(
+                "div",
+                "detail-range focusable" +
+                  (a === X.detailRange ? " is-selected" : ""),
+                r[a].start + 1 + "-" + r[a].end,
+              );
+              (i(n, 160 * a, 0, 150, 46),
+                (n._activate = function () {
+                  Sa(a, t);
+                }),
+                d.appendChild(n));
+            })(c);
+          de.appendChild(d);
+        }
+        if (n) {
+          var p = r[X.detailRange] || { start: 0, end: a.length },
+            u = e("div", "detail-episodes scrollable");
+          i(u, 80, 149, 1840, 65);
+          for (var v = p.start; v < p.end; v++)
+            (function (a, n) {
+              var r = e(
+                "div",
+                "detail-episode focusable" +
+                  (X.detailEpisode &&
+                  (X.detailEpisode.id === a.id || X.detailEpisode === a)
+                    ? " is-playing"
+                    : ""),
+              );
+              i(r, 160 * n, 0, 150, 65);
+              var o =
+                void 0 !== a.number && null !== a.number
+                  ? String(a.number)
+                  : String(v + 1);
+              (r.appendChild(e("span", "ep-num", o)),
+                (r._ep = a),
+                (r._activate = function () {
+                  $n(t, a);
+                }),
+                u.appendChild(r));
+            })(a[v], v - p.start);
+          de.appendChild(u);
+        }
+        var f = n ? 240 : 25,
+          h = n ? 290 : 91,
+          m = e("div", "detail-related", "Quizás te guste");
+        (i(m, 80, f, 400, 44), de.appendChild(m));
+        var g = e("div", "detail-grid scrollable");
+        i(g, 80, h, 1750, n ? 180 : 380);
+        var y = parseInt(t.id, 10);
+        if (isNaN(y)) {
+          y = 0;
+          for (var b = 0; b < l.length; b++)
+            if (l[b] === t) {
+              y = b;
+              break;
+            }
+        }
+        for (var C = (3 * y) % Math.max(1, l.length - 6), w = 0; w < 8; w++) {
+          var S = l[(C + w) % l.length];
+          if (S) {
+            var T = e("div", "cell");
+            (T.appendChild(xt(S, 0, 0, 210, 308, { gold: !0 })),
+              T.appendChild(e("div", "d-name", S.title)),
+              g.appendChild(T));
+          }
+        }
+        de.appendChild(g);
+      })(n));
+  }
+  function wa(e) {
+    for (var t = [], a = 0; a < e; a += 20)
+      t.push({ start: a, end: Math.min(e, a + 20) });
+    return t;
+  }
+  function Sa(e, t) {
+    ((X.detailRange = e), Ca(t));
+    var a = de.querySelector(".detail-range.is-selected");
+    a && rt(a);
+  }
+  var xa = null;
+  function Ta() {
+    xa && xa.parentNode && (xa.parentNode.removeChild(xa), (xa = null));
+    var e = de ? de.querySelector(".season-arrow") : null;
+    e && e.classList.remove("is-open");
+  }
+  function _a() {
+    ((ce = t("search-keyboard")),
+      (pe = t("search-hot")),
+      (ue = t("search-results")),
+      (ve = t("search-empty")),
+      (fe = t("search-hot-grid")),
+      (he = t("search-result-grid")),
+      (ge = t("search-nav")),
+      a(ce),
+      a(fe),
+      a(he),
+      ue && ue.classList.add("scrollable"),
+      ((me = e("div", "kb-edit focusable"))._activate = function () {}),
+      ce.appendChild(me));
+    for (
+      var i = e("div", "kb-actions"),
+        n = [
+          { cls: "switch", w: 100.5 },
+          { cls: "clear", w: 100.5 },
+          { cls: "del", w: 100.5 },
+          { cls: "go", w: 120 },
+        ],
+        r = 0;
+      r < n.length;
+      r++
+    ) {
+      var o = e("div", "kb-action focusable " + n[r].cls);
+      ((o.style.width = n[r].w + "px"),
+        "go" === n[r].cls
+          ? (o.textContent = "Busca")
+          : o.appendChild(e("div", "ico")),
+        (o._kind = n[r].cls),
+        (o._activate = (function (e) {
+          return function () {
+            "switch" === e
+              ? Ra()
+              : "clear" === e
+                ? Aa("")
+                : "del" === e
+                  ? Aa(X.searchQuery.slice(0, -1))
+                  : Pa();
+          };
+        })(n[r].cls)),
+        i.appendChild(o));
+    }
+    (ce.appendChild(i), (Be = []));
+    for (
+      var s = [
+          ["A", "Á", "B", "C", "D", "E", "É"],
+          ["F", "G", "H", "I", "Í", "J", "K"],
+          ["L", "M", "N", "Ñ", "O", "Ó", "P"],
+          ["Q", "R", "S", "T", "U", "Ú", "Ü"],
+          ["V", "W", "X", "Y", "Z", " "],
+        ],
+        l = 0;
+      l < s.length;
+      l++
+    ) {
+      var d = e("div", "kb-row");
+      d.style.top = 264 + 88.5 * l + "px";
+      for (var c = 0; c < s[l].length; c++) {
+        var p = e(
+          "div",
+          "kb-key focusable" + (" " === s[l][c] ? " space" : ""),
+          " " === s[l][c] ? "" : s[l][c],
+        );
+        ((p._char = s[l][c]),
+          (p._activate = (function (e) {
+            return function () {
+              Aa(X.searchQuery + e);
+            };
+          })(s[l][c])),
+          d.appendChild(p),
+          Be.push(p));
+      }
+      ce.appendChild(d);
+    }
+    var u = e("div", "kb-feedback focusable", "Feedback");
+    ((u._activate = function () {}),
+      ce.appendChild(u),
+      Ia(),
+      ue.classList.remove("is-active"),
+      ve.classList.remove("is-active"),
+      pe.classList.remove("is-hidden"),
+      Ea());
+  }
+  function ka(t, a) {
+    var n = e("div", "search-cell");
+    return (
+      i(n, (a % 5) * 246, 437 * Math.floor(a / 5), 246, 437),
+      n.appendChild(xt(t, 0, 0, 222, 329, { gold: !0 })),
+      n.appendChild(e("div", "s-name", t.title)),
+      n
+    );
+  }
+  function La() {
+    (ce || _a(), lt("search"), X.searchQuery || Ia(), rt(me));
+  }
+  function Ma() {
+    var e = ha("destacado"),
+      t = e && e.length ? e.slice(0, 10) : [];
+    return (
+      t.length ||
+        (t = (function () {
+          for (var e = M(), t = [], a = 0; a < e.length; a++)
+            -1 !==
+              String((e[a] && e[a].category) || "")
+                .toLowerCase()
+                .indexOf("busqueda") && t.push(T(e[a], a + 1));
+          return t;
+        })()),
+      t.length || (t = l.slice(0, 10)),
+      t
+    );
+  }
+  function Ia() {
+    if (fe && !X.searchQuery) {
+      a(fe);
+      for (var e = Ma(), t = 0; t < e.length; t++) fe.appendChild(ka(e[t], t));
+      wt();
+    }
+  }
+  function Ea() {
+    me &&
+      (X.searchQuery
+        ? ((me.textContent = X.searchQuery),
+          me.classList.remove("is-placeholder"))
+        : ((me.textContent = "Buscar películas, series, directores y actores."),
+          me.classList.add("is-placeholder")));
+  }
+  function Aa(e) {
+    ((X.searchQuery = e), Ea(), Pa());
+  }
+  function Da() {
+    (X.searchTimer && (clearTimeout(X.searchTimer), (X.searchTimer = null)),
+      (X.searchQuery = ""),
+      Ea(),
+      he && a(he),
+      (X.searchMatches = []),
+      (X.searchPage = 0),
+      ge && (ge.textContent = ""),
+      ue && ue.classList.remove("is-active"),
+      ve && ve.classList.remove("is-active"),
+      pe && pe.classList.remove("is-hidden"));
+  }
+  function Pa() {
+    var e = X.searchQuery || "",
+      t = o(e.trim());
+    if (t) {
+      for (var a = [], i = 0; i < l.length; i++) {
+        var n = o(l[i].title || ""),
+          r = l[i].alias ? o(l[i].alias) : "";
+        (-1 !== n.indexOf(t) || (r && -1 !== r.indexOf(t))) && a.push(l[i]);
+      }
+      if (
+        (qa(a),
+        X.searchTimer && clearTimeout(X.searchTimer),
+        "portal" === p.mode && t.length >= 2)
+      ) {
+        var s = ++X.searchSeq;
+        X.searchTimer = setTimeout(function () {
+          P("search", { value: e.trim() }, function (e, t) {
+            if (
+              s === X.searchSeq &&
+              !e &&
+              t &&
+              !1 !== t.returnValue &&
+              t.items &&
+              t.items.length
+            ) {
+              for (var i = a.slice(), n = {}, r = 0; r < i.length; r++)
+                n[String(i[r].id)] = !0;
+              for (var o = 0; o < t.items.length; o++) {
+                var l = T(t.items[o], i.length + 1);
+                n[String(l.id)] || ((n[String(l.id)] = !0), i.push(l));
+              }
+              qa(i);
+            }
+          });
+        }, 350);
+      }
+    } else Da();
+  }
+  var Oa = 10;
+  function qa(e) {
+    ((X.searchMatches = e || []), (X.searchPage = 0), Na(0, -1));
+  }
+  function Na(e, t) {
+    var i = X.searchMatches || [];
+    if (
+      (pe.classList.add("is-hidden"),
+      ue.classList.add("is-active"),
+      a(he),
+      0 === i.length)
+    )
+      return (
+        ve.classList.add("is-active"),
+        void (ge && (ge.textContent = ""))
+      );
+    ve.classList.remove("is-active");
+    var r = Math.ceil(i.length / Oa),
+      o = Math.max(0, Math.min(r - 1, e || 0));
+    X.searchPage = o;
+    var s = o * Oa,
+      l = Math.min(i.length, s + Oa);
+    ge &&
+      (ge.textContent =
+        "Resultados " +
+        (s + 1) +
+        "-" +
+        l +
+        " de " +
+        i.length +
+        (r > 1 ? "  ·  Página " + (o + 1) + "/" + r : ""));
+    for (var d = s; d < l; d++) {
+      var c = d - s,
+        p = ka(T(i[d], d + 1), c),
+        u = p.querySelector(".poster");
+      (u &&
+        (function (e, t) {
+          u._onMove = function (a) {
+            return "down" === a && e >= 5 && l < i.length
+              ? (Na(o + 1, t), !0)
+              : "up" === a && e < 5 && s > 0 && (Na(o - 1, 5 + t), !0);
+          };
+        })(c, c % 5),
+        he.appendChild(p));
+    }
+    if (((he.style.height = "874px"), t >= 0)) {
+      var v = he.querySelectorAll(".poster.focusable")[t];
+      (v || (v = ot(he)), v && rt(v));
+    } else if (
+      "search" === X.screen &&
+      (n(X.focus, ".search-hot") || n(X.focus, ".search-results"))
+    ) {
+      var f = ot(he);
+      f && rt(f);
+    }
+  }
+  function Ra() {
+    X.searchNumeric = !X.searchNumeric;
+    var t = ce.querySelector(".kb-action.switch .ico");
+    t &&
+      (t.style.backgroundImage =
+        "url(assets/original/search/" +
+        (X.searchNumeric ? "ic_vod_search_abc.png" : "ic_vod_search_123.png") +
+        ")");
+    var a = ce.querySelectorAll(".kb-row:not(.kb-row-num)");
+    if (X.searchNumeric) {
+      for (var i = 0; i < a.length; i++) a[i].classList.add("hidden");
+      if (!ce.querySelector(".kb-row-num"))
+        for (
+          var n = [
+              ["1", "2", "3", "4", "5", "6", "7"],
+              ["8", "9", "0", " "],
+            ],
+            r = 0;
+          r < n.length;
+          r++
+        ) {
+          var o = e("div", "kb-row kb-row-num");
+          o.style.top = 264 + 88.5 * r + "px";
+          for (var s = 0; s < n[r].length; s++) {
+            var l = e(
+              "div",
+              "kb-key focusable" + (" " === n[r][s] ? " space" : ""),
+              " " === n[r][s] ? "" : n[r][s],
+            );
+            ((l._activate = (function (e) {
+              return function () {
+                Aa(X.searchQuery + e);
+              };
+            })(n[r][s])),
+              o.appendChild(l));
+          }
+          ce.appendChild(o);
+        }
+      for (var d = ce.querySelectorAll(".kb-row-num"), c = 0; c < d.length; c++)
+        d[c].classList.remove("hidden");
+    } else {
+      for (var p = 0; p < a.length; p++) a[p].classList.remove("hidden");
+      Be.forEach(function (e) {
+        e.classList.remove("hidden");
+      });
+      for (var u = ce.querySelectorAll(".kb-row-num"), v = 0; v < u.length; v++)
+        u[v].classList.add("hidden");
+    }
+  }
+  function Va() {
+    ((ye = t("settings-menu")),
+      (be = t("settings-right")),
+      a(ye),
+      a(be),
+      (je = []));
+    for (var n = null, r = 0; r < j.length; r++) {
+      var o = j[r];
+      if (o.group && o.group !== n) {
+        var s = e("div", "settings-group", (n = o.group));
+        ye.appendChild(s);
+      }
+      var l = e("div", "settings-item focusable"),
+        d = e("div", "settings-icon");
+      ((d.innerHTML = W[o.id] || ""), l.appendChild(d));
+      var c = e("div", "settings-text");
+      (c.appendChild(e("div", "settings-label", o.label)),
+        o.desc && c.appendChild(e("div", "settings-desc", o.desc)),
+        l.appendChild(c),
+        (l._index = r),
+        (l._activate = (function (e) {
+          return function () {
+            Ua(e, !0);
+          };
+        })(r)),
+        (l._onMove = function (e) {
+          if ("right" === e) {
+            var t = ot(be.querySelector(".settings-panel.is-active"));
+            return (t && rt(t), !0);
+          }
+          return !1;
+        }),
+        ye.appendChild(l),
+        je.push(l));
+    }
+    for (var p in (((ze = {}).profile = za()),
+    (ze.history = ja()),
+    (ze.addons = Wa()),
+    (ze.share = (function () {
+      var t = e("div", "settings-panel share-panel");
+      (t.appendChild(e("div", "share-head", "Compartir XuperTV")),
+        t.appendChild(
+          e(
+            "div",
+            "share-sub",
+            "Instala XuperTV en cualquier otro televisor LG webOS de tu hogar o de tus amigos directamente desde el instalador IPK.",
+          ),
+        ));
+      var a = e("div", "share-free");
+      (a.appendChild(e("div", "share-free-badge", "100% GRATIS")),
+        a.appendChild(
+          e(
+            "div",
+            "share-free-text",
+            "Esta aplicación es y siempre será gratuita y sin fines de lucro. No compres suscripciones ni pagues a intermediarios.",
+          ),
+        ),
+        t.appendChild(a));
+      var i = e("div", "share-warning");
+      (i.appendChild(
+        e(
+          "div",
+          "share-warning-title",
+          "Protege a tu comunidad contra revendedores",
+        ),
+      ),
+        i.appendChild(
+          e(
+            "div",
+            "share-warning-text",
+            "Si alguien intentó cobrarte por esta app, repórtalo en nuestra comunidad. El código y las descargas son abiertas.",
+          ),
+        ),
+        t.appendChild(i));
+      var n = e("div", "share-qr-box"),
+        r = e("img", "share-qr");
+      ((r.src = "assets/original/settings/qr_telegram.png"),
+        (r.alt = "Telegram QR"),
+        n.appendChild(r));
+      var o = e("div", "share-qr-text");
+      return (
+        o.appendChild(
+          e("div", "share-qr-title", "Canal oficial de novedades y soporte"),
+        ),
+        o.appendChild(
+          e(
+            "div",
+            "share-qr-line",
+            "Únete a nuestro canal para descargar las versiones más recientes, reportar incidencias y conocer nuevas funciones.",
+          ),
+        ),
+        o.appendChild(e("div", "share-qr-handle", "@CristiancoDEV")),
+        o.appendChild(
+          e(
+            "div",
+            "share-qr-url",
+            "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS",
+          ),
+        ),
+        n.appendChild(o),
+        t.appendChild(n),
+        t
+      );
+    })()),
+    (ze.playback = (function () {
+      var t = Fa("Configuración global de reproducción");
+      (t.appendChild(e("div", "sp-hr")),
+        t.appendChild(
+          e(
+            "div",
+            "sp-global-note",
+            "Estas preferencias se aplican automáticamente a todas las películas y series nuevas.",
+          ),
+        ),
+        Ba(
+          t,
+          198,
+          "Reproductor",
+          ["Normal (directo)", "Modo fluido"],
+          "streamMode",
+          "smooth" === X.playback.streamMode ? 1 : 0,
+        ),
+        Ba(
+          t,
+          307,
+          "Formato de pantalla",
+          ["Pantalla completa", "Normal", "16:9", "4:3"],
+          "screen",
+          X.playback.screen,
+        ),
+        Ba(
+          t,
+          416,
+          "Audio preferido",
+          ["Español", "Portugués", "Inglés"],
+          "audio",
+          X.playback.audio,
+        ),
+        t.appendChild(i(e("div", "sp-hr"), 0, 535, 1498, 1)),
+        t.appendChild(e("div", "sp-subtitle-h", "Subtitulos")));
+      var a = e(
+        "div",
+        "sp-switch focusable " + (X.playback.subtitle ? "on" : "off"),
+      );
+      return (
+        (a._activate = function () {
+          ((X.playback.subtitle = !X.playback.subtitle),
+            (a.className =
+              "sp-switch focusable " + (X.playback.subtitle ? "on" : "off")),
+            Y(),
+            rt(a));
+        }),
+        t.appendChild(a),
+        Ba(
+          t,
+          680,
+          "Idioma",
+          ["Español", "Portugués", "Inglés"],
+          "subLang",
+          X.playback.subLang,
+        ),
+        Ba(
+          t,
+          793,
+          "Tamaño",
+          ["Normal", "Grande", "Pequeño"],
+          "size",
+          X.playback.size,
+        ),
+        (function (t, a) {
+          var i = e("div", "pb-row");
+          ((i.style.top = a + "px"),
+            i.appendChild(e("div", "pb-label", "Estilo")));
+          for (var n = ["#ffffff", "#f6e33f", "#ffffff"], r = 0; r < 3; r++) {
+            var o = e(
+              "div",
+              "pb-opt focusable" +
+                (r === X.playback.style ? " is-checked" : ""),
+            );
+            ((o.style.marginLeft = (0 === r ? 0 : 28) + "px"),
+              o.appendChild(e("div", "radio")));
+            var s = e("span", null, "Aa");
+            ((s.style.color = n[r]),
+              2 === r &&
+                ((s.style.background = "#000000"),
+                (s.style.display = "inline-block"),
+                (s.style.width = "94px"),
+                (s.style.height = "50px"),
+                (s.style.lineHeight = "50px"),
+                (s.style.fontSize = "28px")),
+              o.appendChild(s),
+              (o._group = "style"),
+              (o._index = r),
+              (o._activate = function () {
+                ((X.playback.style = this._index), nn(), Y());
+                for (
+                  var e = t.querySelectorAll(".pb-opt"), a = 0;
+                  a < e.length;
+                  a++
+                )
+                  "style" === e[a]._group &&
+                    e[a].classList.toggle(
+                      "is-checked",
+                      e[a]._index === this._index,
+                    );
+              }),
+              i.appendChild(o));
+          }
+          t.appendChild(i);
+        })(t, 906),
+        t
+      );
+    })()),
+    (ze.netdiag = (function () {
+      var t = Fa("Diagnóstico de red");
+      (t.appendChild(
+        e(
+          "div",
+          "dg-note",
+          "Comprueba si tu operador de internet está bloqueando los servidores de XuperTV. La app ya usa un DNS seguro (DNS-over-HTTPS) para evitarlo; esta prueba solo lo muestra.",
+        ),
+      ),
+        t.appendChild(i(e("div", "sp-hr"), 0, 216, 1478, 1)));
+      var n = e("div", "dg-btn focusable", "Analizar red");
+      i(n, 52, 242, 330, 66);
+      var r = e("div", "dg-btn dg-report-btn focusable", "Generar reporte");
+      i(r, 400, 242, 330, 66);
+      var o = e("div", "dg-summary", 'Pulsa "Analizar red" para empezar.');
+      i(o, 750, 242, 676, 66);
+      var s = e("div", "dg-head");
+      (i(s, 52, 336, 1380, 40),
+        s.appendChild(e("span", "dg-host", "Dominio")),
+        s.appendChild(e("span", "dg-local", "DNS del televisor")),
+        s.appendChild(e("span", "dg-state", "Estado")),
+        s.appendChild(e("span", "dg-ip", "Dirección real (DNS seguro)")));
+      var l = e("div", "dg-list");
+      i(l, 52, 378, 1380, 450);
+      var d = e("div", "dg-env", "");
+      (i(d, 52, 832, 1380, 32), ($a = d));
+      var c = e(
+        "div",
+        "dg-foot",
+        'Si el estado dice "Bloqueado", tu operador está interceptando el nombre del servidor, pero la app ya conecta por la dirección real. El reproductor Normal y el Modo Fluido usan este mismo DNS seguro. Si el vídeo sigue sin abrir con la conexión en verde, el bloqueo es por dirección: hace falta un túnel (VPN local).',
+      );
+      return (
+        i(c, 52, 872, 1380, 150),
+        (n._activate = function () {
+          Za(n, o, l);
+        }),
+        (r._activate = function () {
+          !(function (t, i) {
+            if (!Xa.report) {
+              (Xa.runId++, (Xa.running = !1));
+              var n = window.__xuperViewport || {};
+              Xa.report = {
+                version:
+                  (document.querySelector(".welcome-version") || {})
+                    .textContent || "desconocida",
+                verdict: "sin respuesta",
+                partial: !0,
+                pending: !0,
+                screen: {
+                  w: n.w || 0,
+                  h: n.h || 0,
+                  scale: n.scale || 0,
+                  panelW: n.panelW || 0,
+                  panelH: n.panelH || 0,
+                },
+                layers: {},
+                hosts: [],
+              };
+            }
+            a(i);
+            var r = e(
+              "div",
+              "dg-report",
+              (function (e) {
+                var t = [],
+                  a = e.screen || {},
+                  i = e.layers || {},
+                  n = e.hosts || [];
+                (t.push("REPORTE DE SOPORTE XUPERTV"),
+                  t.push("Versión: " + (e.version || "desconocida")),
+                  t.push(
+                    "Pantalla: " +
+                      (a.w && a.h ? a.w + "×" + a.h : "sin datos") +
+                      (a.panelW && a.panelH
+                        ? " | panel " + a.panelW + "×" + a.panelH
+                        : "") +
+                      (a.scale ? " | escala " + a.scale : ""),
+                  ),
+                  t.push(
+                    "Red: " +
+                      (e.verdict || "sin resultado") +
+                      (e.partial ? " (parcial)" : ""),
+                  ),
+                  e.pending &&
+                    t.push(
+                      "Diagnóstico: sin respuesta / detenido para generar este reporte",
+                    ));
+                e.serviceError && t.push("Servicio: " + Ka(e.serviceError));
+                (t.push("Portal: " + Ya(i.portal)),
+                  t.push("Sesión: " + Ya(i.session)),
+                  t.push("TV en vivo: " + Ya(i.live)),
+                  t.push("Películas/series: " + Ya(i.vod)),
+                  t.push(
+                    "Reproductor: " +
+                      (X.playerMode || "sin reproducción") +
+                      " | modo " +
+                      (X.streamMode || "normal") +
+                      (X.streamError ? " | error " + Ka(X.streamError) : ""),
+                  ));
+                for (var r = 0; r < n.length && r < 5; r++)
+                  t.push(
+                    "Host " +
+                      (r + 1) +
+                      ": " +
+                      Ka(n[r].host) +
+                      " — " +
+                      Ka(n[r].verdict || "sin datos"),
+                  );
+                return (
+                  t.push(""),
+                  t.push(
+                    "Privacidad: este reporte no incluye enlaces, tokens, cabeceras ni historial.",
+                  ),
+                  t.push(
+                    "Toma una foto de esta pantalla y envíala al soporte.",
+                  ),
+                  t.join("\n")
+                );
+              })(Xa.report),
+            );
+            (i.appendChild(r),
+              (t.className = "dg-summary ok"),
+              (t.textContent =
+                "Reporte listo. Toma una foto de esta pantalla y envíala al soporte."));
+          })(o, l);
+        }),
+        (t._ensureDiag = function () {
+          Xa.report ? Ja(o, l, Xa.report) : Za(n, o, l);
+        }),
+        t.appendChild(n),
+        t.appendChild(r),
+        t.appendChild(o),
+        t.appendChild(s),
+        t.appendChild(l),
+        t.appendChild(d),
+        t.appendChild(c),
+        t
+      );
+    })()),
+    (ze.parent = (function () {
+      var t = e("div", "settings-panel");
+      (t.appendChild(
+        e("div", "pl-title", "Configuraciones del Control Parental"),
+      ),
+        t.appendChild(
+          e(
+            "div",
+            "pl-tip",
+            "Ingrese la contraseña de cuatro dígitos e ingrese viendo el programa de bloqueo.",
+          ),
+        ),
+        t.appendChild(e("div", "pl-label", "Contraseña inicial:")));
+      for (var a = e("div", "pl-boxes"), i = 0; i < 4; i++) {
+        var n = e("div", "pl-box focusable");
+        ((n._activate = function () {}),
+          a.appendChild(n),
+          i < 3 && a.appendChild(e("div", "pl-sep")));
+      }
+      (t.appendChild(a), t.appendChild(e("div", "pl-note", "")));
+      var r = e("div", "pl-ok focusable", "OK");
+      return ((r._activate = function () {}), t.appendChild(r), t);
+    })()),
+    (ze.feedback = (function () {
+      var t = e("div", "settings-panel");
+      (t.appendChild(e("div", "fb-title", "Ayuda y Feedback")),
+        t.appendChild(e("div", "fb-hr")),
+        t.appendChild(
+          e(
+            "div",
+            "fb-contact",
+            "Si tiene alguna duda, puede ponerse en contacto con nosotros a través de los siguientes medios:",
+          ),
+        ),
+        t.appendChild(
+          e(
+            "div",
+            "fb-qr-note",
+            "Escanee el código QR para enviar sugerencias o comentarios.",
+          ),
+        ));
+      var a = e("div", "fb-qr");
+      t.appendChild(a);
+      var i = e("div", "fb-help focusable", "Ayuda");
+      return ((i._activate = function () {}), t.appendChild(i), t);
+    })()),
+    (ze.about = (function () {
+      var t = e("div", "settings-panel");
+      (t.appendChild(e("div", "sp-title plain", "Sobre nosotros")),
+        t.appendChild(i(e("div", "sp-hr soft"), 0, 165, 1498, 1)),
+        t.appendChild(
+          e(
+            "div",
+            "sp-about-body",
+            "Xuper TV se dedica a ofrecer a los usuarios una amplia variedad de recursos de alta calidad. Aquí encontrarás miles de películas, series, animes y canales en vivo, todo reunido en un solo lugar. Brindamos una experiencia estable, diversa y siempre actualizada, además de contenidos gratuitos para disfrutar.",
+          ),
+        ));
+      var a = e(
+        "div",
+        "sp-about-port",
+        "Port para LG webOS realizado por CristiancoDEV",
+      );
+      ((a.style.top = "380px"), t.appendChild(a));
+      var n = e("div", "sp-about-mail"),
+        r = e("img");
+      ((r.src = "assets/original/settings/vod_email_icon.png"),
+        (r.alt = ""),
+        n.appendChild(r),
+        n.appendChild(e("span", null, "escuchamos-tv@outlook.com")),
+        t.appendChild(n));
+      var o = e("div", "sp-about-update-box");
+      (o.appendChild(
+        e("div", "sp-about-update-title", "Actualizaciones de XuperTV"),
+      ),
+        o.appendChild(
+          e(
+            "div",
+            "sp-about-update-desc",
+            "Versión instalada: v2.2.48. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.",
+          ),
+        ));
+      var s = e("div", "sp-about-update-row"),
+        l = e(
+          "button",
+          "sp-about-update-btn focusable",
+          "Buscar actualizaciones",
+        ),
+        d = e("span", "sp-about-update-msg");
+      return (
+        (l._activate = function () {
+          ((l.textContent = "Comprobando..."),
+            (d.textContent = ""),
+            oa(!1, function (e, t) {
+              ((l.textContent = "Buscar actualizaciones"),
+                e
+                  ? ((d.textContent = "Error: " + ((e && e.message) || e)),
+                    (d.style.color = "#ef4444"))
+                  : t && t.updateAvailable
+                    ? ((d.textContent =
+                        "¡Nueva versión disponible: v" + t.latestVersion + "!"),
+                      (d.style.color = "#22c55e"))
+                    : ((d.textContent =
+                        "Tienes la versión más reciente (v2.2.48)."),
+                      (d.style.color = "#38bdf8")));
+            }));
+        }),
+        s.appendChild(l),
+        s.appendChild(d),
+        o.appendChild(s),
+        t.appendChild(o),
+        t
+      );
+    })()),
+    ze))
+      ze.hasOwnProperty(p) && be.appendChild(ze[p]);
+  }
+  function Ha() {
+    (ye || Va(), lt("settings"), Ua(0, !1), rt(je[0]));
+  }
+  function Ua(e, a) {
+    if ("string" == typeof e)
+      for (var i = 0; i < j.length; i++)
+        if (j[i].id === e) {
+          e = i;
+          break;
+        }
+    e = Number(e) || 0;
+    var n = (j[e] && j[e].id) || "profile",
+      r = t("screen-settings");
+    if (
+      (r && r.classList.toggle("is-history-view", "history" === n),
+      "profile" === n && ze.profile && be)
+    ) {
+      var o = za();
+      (be.replaceChild(o, ze.profile), (ze.profile = o));
+    } else if ("history" === n && ze.history && be) {
+      var s = ja();
+      (be.replaceChild(s, ze.history), (ze.history = s));
+    } else if ("addons" === n && ze.addons && be) {
+      var l = Wa();
+      (be.replaceChild(l, ze.addons), (ze.addons = l));
+    } else
+      "netdiag" === n &&
+        ze.netdiag &&
+        ze.netdiag._ensureDiag &&
+        ze.netdiag._ensureDiag();
+    for (var d = 0; d < je.length; d++)
+      je[d].classList.toggle("is-selected", d === e);
+    for (var c in ze)
+      ze.hasOwnProperty(c) && ze[c].classList.toggle("is-active", c === n);
+    a && rt(ot(ze[n]) || je[e]);
+  }
+  function Fa(t) {
+    var a = e("div", "settings-panel");
+    return (a.appendChild(e("div", "sp-title", t)), a);
+  }
+  function Ba(t, a, i, n, r, o) {
+    var s = e("div", "pb-row");
+    ((s.style.top = a + "px"), s.appendChild(e("div", "pb-label", i)));
+    for (var l = 0; l < n.length; l++) {
+      var d = e("div", "pb-opt focusable" + (l === o ? " is-checked" : ""));
+      ((d.style.marginLeft = (0 === l ? 0 : 28) + "px"),
+        d.appendChild(e("div", "radio")),
+        d.appendChild(e("span", null, n[l])),
+        (d._group = r),
+        (d._index = l),
+        (d._activate = function () {
+          ("streamMode" === this._group
+            ? ((X.playback.streamMode =
+                1 === this._index ? "smooth" : "normal"),
+              (Cn = {}),
+              X.playerItem && xn(X.playerItem))
+            : (X.playback[this._group] = this._index),
+            nn(),
+            Y());
+          for (var e = t.querySelectorAll(".pb-opt"), a = 0; a < e.length; a++)
+            e[a]._group === this._group &&
+              e[a].classList.toggle("is-checked", e[a]._index === this._index);
+        }),
+        s.appendChild(d));
+    }
+    t.appendChild(s);
+  }
+  function za() {
+    var t = e("div", "settings-panel account-panel"),
+      a = e("div", "account-avatar");
+    ((a.innerHTML = W.profile),
+      t.appendChild(a),
+      t.appendChild(e("div", "account-number", Q.id)),
+      t.appendChild(
+        e("div", "account-type", "Perfil local de este televisor"),
+      ));
+    var i = e("div", "account-card");
+    (i.appendChild(e("div", "account-card-title", "Tu cuenta está lista")),
+      i.appendChild(
+        e(
+          "div",
+          "account-card-text",
+          "Las preferencias, el historial y el capítulo que estabas viendo se guardan automáticamente en este TV.",
+        ),
+      ),
+      t.appendChild(i));
+    var n = e("div", "account-actions-row"),
+      r = e("div", "account-action-btn focusable", "📋 Ver mi lista");
+    ((r._activate = function () {
+      Ua("history", !0);
+    }),
+      (r._onMove = function (e) {
+        return "left" === e ? (rt(je[0]), !0) : "right" === e && (rt(o), !0);
+      }));
+    var o = e("div", "account-action-btn focusable", "➕ Agregar Addons");
+    ((o._activate = function () {
+      sa();
+    }),
+      (o._onMove = function (e) {
+        return "left" === e ? (rt(r), !0) : "right" === e && (rt(s), !0);
+      }));
+    var s = e("div", "account-action-btn focusable", "📲 Compartir APP");
+    ((s._activate = function () {
+      Ua("share", !0);
+    }),
+      (s._onMove = function (e) {
+        return "left" === e && (rt(o), !0);
+      }),
+      n.appendChild(r),
+      n.appendChild(o),
+      n.appendChild(s),
+      t.appendChild(n));
+    var l = e("div", "account-card account-card-small");
+    return (
+      l.appendChild(
+        e("div", "account-card-title", "Sin registro ni contraseña"),
+      ),
+      l.appendChild(
+        e(
+          "div",
+          "account-card-text",
+          "Este perfil no envía tus datos a ningún servidor externo. El historial, tus favoritos y los addons instalados se guardan de forma segura en la memoria de este TV.",
+        ),
+      ),
+      t.appendChild(l),
+      t
+    );
+  }
+  function ja() {
+    for (
+      var t = e("div", "settings-panel history-panel"),
+        a = e("div", "history-tabs"),
+        i = [
+          { id: "history", label: "Historia" },
+          { id: "favs", label: "Mi favoritos" },
+        ],
+        n = 0;
+      n < i.length;
+      n++
+    )
+      (function (t) {
+        var i = e(
+          "div",
+          "history-tab focusable" + (We === t.id ? " is-selected" : ""),
+          t.label,
+        );
+        ((i._activate = function () {
+          ((We = t.id), Ua("history", !0));
+        }),
+          a.appendChild(i));
+      })(i[n]);
+    (t.appendChild(a), t.appendChild(e("div", "history-rule")));
+    var r = [];
+    if ("history" === We) r = Q.history || [];
+    else if ("favs" === We)
+      for (var o = 0; o < l.length; o++)
+        X.favs &&
+          X.favs[l[o].id] &&
+          r.push({
+            id: l[o].id,
+            title: l[o].title,
+            poster: l[o].poster || l[o].cover,
+            series: x(l[o]),
+            position: 0,
+          });
+    var s = e("div", "history-total", "Total ");
+    (s.appendChild(e("span", null, String(r.length))), t.appendChild(s));
+    var d = e("div", "history-grid");
+    if (r.length)
+      for (var c = 0; c < r.length && c < 15; c++)
+        (function (t) {
+          var a = e("div", "history-card focusable"),
+            i = document.createElement("img");
+          ((i.className = "history-poster"),
+            (i.alt = ""),
+            (i.src =
+              t.poster || "assets/original/common/bg_placehoder_vertical.png"),
+            a.appendChild(i));
+          var n = t.series
+            ? "Ya miró hasta " +
+              (t.episodeNumber ? "epis. " + t.episodeNumber : "un episodio")
+            : "Ya miró hasta " + ai(t.position || 0);
+          (a.appendChild(e("div", "history-progress", n)),
+            a.appendChild(
+              e("div", "history-card-title", t.title || "Contenido"),
+            ),
+            (a._activate = function () {
+              cn(t);
+            }),
+            d.appendChild(a));
+        })(r[c]);
+    else
+      d.appendChild(
+        e("div", "history-grid-empty", "No hay títulos para mostrar todavía."),
+      );
+    return (t.appendChild(d), t);
+  }
+  function Wa() {
+    var t = e("div", "settings-panel");
+    (t.appendChild(e("div", "sp-title", "Addons y Listas M3U")),
+      t.appendChild(i(e("div", "sp-hr soft"), 0, 165, 1498, 1)),
+      t.appendChild(
+        e(
+          "div",
+          "sp-global-note",
+          "Extiende tu catálogo con miles de canales en vivo: Anime 24/7, Telenovelas, Cine continuo, Pluto TV y señales de TV abierta de Latinoamérica y España.",
+        ),
+      ));
+    var a = e("div", "account-card");
+    ((a.style.top = "245px"),
+      (a.style.height = "160px"),
+      a.appendChild(
+        e("div", "account-card-title", "Canales en Vivo e IPTV Personalizado"),
+      ),
+      a.appendChild(
+        e(
+          "div",
+          "account-card-text",
+          "Instala listas temáticas con un solo clic o añade tus propios enlaces M3U / M3U8 para disfrutar de televisión en vivo sin límites.",
+        ),
+      ),
+      t.appendChild(a));
+    var n = e(
+      "button",
+      "account-action-btn focusable",
+      "➕ Abrir Administrador de Addons",
+    );
+    ((n.style.position = "absolute"),
+      (n.style.left = "0"),
+      (n.style.top = "435px"),
+      (n.style.height = "68px"),
+      (n.style.lineHeight = "68px"),
+      (n.style.padding = "0 36px"),
+      (n.style.fontSize = "25px"),
+      (n._activate = function () {
+        sa();
+      }),
+      (n._onMove = function (e) {
+        if ("left" === e) {
+          for (var t = 2, a = 0; a < j.length; a++)
+            if ("addons" === j[a].id) {
+              t = a;
+              break;
+            }
+          if (je[t]) return (rt(je[t]), !0);
+        }
+        return !1;
+      }),
+      t.appendChild(n));
+    var r = e(
+      "div",
+      "sp-global-note",
+      '💡 Consejo: También puedes administrar tus listas directamente desde la sección En Vivo pulsando en la categoría "➕ Addons M3U".',
+    );
+    return ((r.style.top = "535px"), t.appendChild(r), t);
+  }
+  var Xa = { running: !1, report: null, error: null, runId: 0 },
+    $a = null;
+  function Ga(e) {
+    if (!e) return "Sin datos";
+    switch (e.verdict) {
+      case "ok":
+        return "Correcto";
+      case "dns-distinto":
+        return "DNS alterado";
+      case "dns-local-falla":
+        return "Bloqueado";
+      case "sin-tcp":
+        return "Sin conexión";
+      case "tls-falla":
+        return "HTTPS falla";
+      case "sin-tiempo":
+        return "Sin respuesta";
+      default:
+        return "Sin datos";
+    }
+  }
+  function Qa(e) {
+    return e
+      ? "ok" === e.verdict
+        ? "ok"
+        : "dns-distinto" === e.verdict ||
+            "dns-local-falla" === e.verdict ||
+            "sin-tiempo" === e.verdict ||
+            e.timeout
+          ? "warn"
+          : "bad"
+      : "";
+  }
+  function Ja(t, i, n) {
+    a(i);
+    var r = (function (e) {
+      switch (e) {
+        case "ok":
+          return {
+            cls: "ok",
+            text: "La conexión está bien: el catálogo y los servidores de vídeo responden.",
+          };
+        case "dns-distinto":
+          return {
+            cls: "warn",
+            text: "Tu operador devuelve direcciones distintas a las reales (bloqueo por DNS). La app ya las esquiva sola.",
+          };
+        case "dns-local-falla":
+          return {
+            cls: "warn",
+            text: "Tu operador bloquea el DNS del televisor (no devuelve estos dominios). La app ya lo esquiva con su DNS seguro.",
+          };
+        case "doh-sin-respuesta":
+          return {
+            cls: "bad",
+            text: "El DNS seguro no devolvió respuesta. Revisa la conexión del televisor.",
+          };
+        case "doh-bloqueado":
+          return {
+            cls: "bad",
+            text: "La red bloquea el DNS seguro (Cloudflare y Google por HTTPS).",
+          };
+        case "sin-salida":
+          return {
+            cls: "bad",
+            text: "Los servidores no aceptan la conexión desde esta red.",
+          };
+        case "algun-servidor":
+          return {
+            cls: "warn",
+            text: "Un servidor de vídeo no respondió (suele rotar). El resto del catálogo sí responde: vuelve a analizar.",
+          };
+        case "incompleto":
+          return {
+            cls: "warn",
+            text: "La prueba no terminó: la TV no recibió respuesta de ningún servidor a tiempo. Vuelve a analizar; si se repite, apaga y enciende la TV.",
+          };
+        case "servicio-sin-respuesta":
+          return {
+            cls: "bad",
+            text: "El servicio de fondo no respondió. El reporte indica si fue el servicio completo o solo el diagnóstico.",
+          };
+        default:
+          return { cls: "", text: "Sin resultado todavía." };
+      }
+    })(n.verdict);
+    ((t.textContent = r.text),
+      (t.className = "dg-summary" + (r.cls ? " " + r.cls : "")));
+    for (var o = n.hosts || [], s = 0; s < o.length; s++) {
+      var l = o[s],
+        d = e("div", "dg-row " + Qa(l)),
+        c =
+          l.doh && l.doh.ok && l.doh.ips.length
+            ? l.doh.ips
+            : l.system.ips || [],
+        p = l.system && l.system.ok ? l.system.ips.join(", ") : "sin respuesta";
+      (d.appendChild(e("span", "dg-host", l.host)),
+        d.appendChild(e("span", "dg-local", p)),
+        d.appendChild(e("span", "dg-state", Ga(l))),
+        d.appendChild(e("span", "dg-ip", c.join(", "))),
+        i.appendChild(d));
+    }
+    for (var u = n.providers || [], v = [], f = [], h = 0; h < u.length; h++)
+      u[h].reachable ? v.push(u[h].ip) : f.push(u[h].ip);
+    var m = u.length > 0,
+      g = e("div", "dg-row dns");
+    (g.appendChild(e("span", "dg-host", "DNS seguro (DoH)")),
+      g.appendChild(
+        e(
+          "span",
+          "dg-local",
+          m ? v.length + "/" + u.length + " disponibles" : "sin datos",
+        ),
+      ),
+      g.appendChild(
+        e(
+          "span",
+          "dg-state",
+          m ? (v.length ? "Correcto" : "Bloqueado") : "No evaluado",
+        ),
+      ),
+      g.appendChild(e("span", "dg-ip", v.join(", "))),
+      m
+        ? v.length
+          ? (g.className = "dg-row dns ok")
+          : (g.className = "dg-row dns bad")
+        : (g.className = "dg-row dns warn"),
+      i.appendChild(g));
+    var y = n.codec || {},
+      b = !!(y.h264 || y.hevc || y.hls),
+      C = e("div", "dg-row" + (b ? " ok" : " warn")),
+      w = [
+        "H.264: " + (y.h264 || "no informado"),
+        "HEVC: " + (y.hevc || "no informado"),
+        "HLS: " + (y.hls || "no informado"),
+      ].join("  ");
+    (C.appendChild(e("span", "dg-host", "Códec")),
+      C.appendChild(e("span", "dg-local", "")),
+      C.appendChild(e("span", "dg-state", b ? "Informado" : "No confirmado")),
+      C.appendChild(e("span", "dg-ip", w)),
+      i.appendChild(C));
+    for (
+      var S = n.layers || {},
+        x = [
+          { key: "portal", label: "Portal" },
+          { key: "session", label: "Sesión" },
+          { key: "live", label: "Live CDN" },
+          { key: "vod", label: "VOD CDN" },
+        ],
+        T = !1,
+        _ = !1,
+        k = 0;
+      k < x.length;
+      k++
+    ) {
+      var L = x[k],
+        M = S[L.key];
+      if (M) {
+        ("live" !== L.key || M.ok || M.timeout || (T = !0),
+          "vod" !== L.key || M.ok || M.timeout || (_ = !0));
+        var I = e(
+            "div",
+            "dg-row " + (M.ok ? "ok" : M.timeout ? "warn" : "bad"),
+          ),
+          E =
+            M.error || (M.status ? "HTTP " + M.status : M.ok ? "OK" : "Error");
+        "session" === L.key &&
+          (E = "userId " + (M.userId || "?") + "  token " + (M.token || "?"));
+        var A = M.ms ? " " + M.ms + " ms" : "";
+        (I.appendChild(e("span", "dg-host", L.label)),
+          I.appendChild(e("span", "dg-local", "")),
+          I.appendChild(
+            e(
+              "span",
+              "dg-state",
+              M.ok ? "OK" : M.timeout ? "Sin respuesta" : "Error",
+            ),
+          ),
+          I.appendChild(e("span", "dg-ip", E + A)),
+          i.appendChild(I));
+      }
+    }
+    "ok" === r.cls &&
+      (T || _) &&
+      ((r = {
+        cls: "bad",
+        text:
+          "El DNS responde bien, pero " +
+          (T && _
+            ? "los canales en vivo y las películas"
+            : T
+              ? "los canales en vivo"
+              : "las películas") +
+          " no se pueden abrir: tu operador bloquea las direcciones de vídeo (bloqueo por IP/SNI). Ese bloqueo no se arregla desde la app; hace falta una VPN en el router.",
+      }),
+      (t.textContent = r.text),
+      (t.className = "dg-summary " + r.cls));
+    if (
+      (n.partial &&
+        "bad" !== r.cls &&
+        (t.textContent +=
+          " (La prueba no terminó a tiempo: vuelve a analizar.)"),
+      $a)
+    ) {
+      var D = n.screen || {},
+        P = [];
+      (D.w && D.h && P.push("Pantalla " + D.w + "×" + D.h),
+        D.panelW && D.panelH && P.push("panel " + D.panelW + "×" + D.panelH),
+        D.scale && P.push("escala " + Math.round(100 * D.scale) / 100),
+        n.version && P.push("versión " + n.version));
+      var O = document.querySelector(".welcome-version"),
+        q = O ? String(O.textContent || "").replace(/[^\d.]/g, "") : "";
+      (n.version &&
+        q &&
+        n.version !== q &&
+        P.push(
+          "SERVICIO DESACTUALIZADO (app " + q + "): desenchufa la TV 30 s",
+        ),
+        ($a.textContent = P.join(" · ")));
+    }
+  }
+  function Ka(e) {
+    var t = String(null == e ? "" : e);
+    return (t = (t = (t = t.replace(
+      /https?:\/\/[^\s"']+/gi,
+      "[URL OCULTA]",
+    )).replace(
+      /(token|signature|authorization|cookie|key)=?[^\s,&]*/gi,
+      "$1=[OCULTO]",
+    ))
+      .replace(/[\r\n]+/g, " ")
+      .replace(/\s+/g, " ")).slice(0, 150);
+  }
+  function Ya(e) {
+    return e
+      ? e.ok
+        ? e.status
+          ? "OK (HTTP " + e.status + ")"
+          : "OK"
+        : e.timeout
+          ? "sin respuesta"
+          : "error" + (e.error ? ": " + Ka(e.error) : "")
+      : "sin datos";
+  }
+  function Za(t, i, n) {
+    var r = Xa.runId + 1;
+    function o(e) {
+      var a;
+      Xa.runId === r &&
+        Xa.running &&
+        ((Xa.running = !1),
+        Xa.runId++,
+        (Xa.report = {
+          version:
+            (document.querySelector(".welcome-version") || {}).textContent ||
+            "desconocida",
+          verdict: "servicio-sin-respuesta",
+          partial: !0,
+          serviceError: e,
+          screen:
+            ((a = window.__xuperViewport || {}),
+            {
+              w: a.w || 0,
+              h: a.h || 0,
+              scale: a.scale || 0,
+              panelW: a.panelW || 0,
+              panelH: a.panelH || 0,
+            }),
+          layers: {},
+          hosts: [],
+          providers: [],
+        }),
+        (t.textContent = "Analizar de nuevo"),
+        Ja(i, n, Xa.report));
+    }
+    ((Xa.runId = r),
+      (Xa.running = !0),
+      (Xa.error = null),
+      (t.textContent = "Analizando…"),
+      (i.className = "dg-summary"),
+      (i.textContent =
+        "Consultando el DNS del televisor, el DNS seguro y los servidores…"),
+      a(n),
+      n.appendChild(e("div", "dg-row", "Analizando…")));
+    var s = !1,
+      l = setTimeout(function () {
+        s ||
+          ((s = !0),
+          o("ping no respondió en 25 segundos (el servicio no arrancó)"));
+      }, 25e3);
+    P(
+      "ping",
+      {},
+      function (e, t) {
+        s ||
+          ((s = !0),
+          clearTimeout(l),
+          (!e && t) || o("ping falló: " + Ka(e || "sin respuesta")));
+      },
+      24e3,
+    );
+    var d = setTimeout(function () {
+        Xa.running &&
+          Xa.runId === r &&
+          (i.textContent =
+            "Analizando… tu red está respondiendo lento, espera un momento.");
+      }, 9e3),
+      c = setTimeout(function () {
+        Xa.running &&
+          Xa.runId === r &&
+          o(
+            "ping respondió, pero netdiag no devolvió resultado en 45 segundos",
+          );
+      }, 45e3);
+    P(
+      "netdiag",
+      (function () {
+        var e = window.__xuperViewport || {},
+          t = xe || document.querySelector("video");
+        function a(e) {
+          return (t && t.canPlayType(e)) || "";
+        }
+        return {
+          screenW: e.w || 0,
+          screenH: e.h || 0,
+          screenScale: e.scale || 0,
+          panelW: e.panelW || 0,
+          panelH: e.panelH || 0,
+          codecH264: a('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
+          codecHEVC: a('video/mp4; codecs="hvc1.1.6.L93.B0"'),
+          codecHLS: a("application/x-mpegURL"),
+          liveUrl: (A.live && A.live.url) || "",
+          liveHeaders: (A.live && A.live.headers) || {},
+          vodUrl: (A.vod && A.vod.url) || "",
+          vodHeaders: (A.vod && A.vod.headers) || {},
+        };
+      })(),
+      function (e, a) {
+        if (Xa.runId === r)
+          if (
+            (clearTimeout(d),
+            clearTimeout(c),
+            (Xa.running = !1),
+            (t.textContent = "Analizar de nuevo"),
+            t.parentNode &&
+              -1 !== t.parentNode.className.indexOf("is-active") &&
+              rt(t),
+            !e && a)
+          )
+            ((Xa.report = a), Ja(i, n, a));
+          else {
+            ((Xa.error = e || "sin respuesta"),
+              (i.className = "dg-summary bad"));
+            var o = String(e || "");
+            /denied|permission|not permitted|bloqueado el servicio/i.test(o)
+              ? (i.textContent = E)
+              : /exist|not found|no disponible/i.test(o)
+                ? (i.textContent =
+                    "El servicio de fondo no está instalado en la TV. Reinstala la app usando el instalador .bat")
+                : /timeout|tiempo|espera/i.test(o)
+                  ? (i.textContent =
+                      "Tiempo de espera agotado. La conexión es muy lenta o el DNS de tu operador no responde.")
+                  : (i.textContent =
+                      "No se pudo ejecutar la prueba (" +
+                      (o || "el servicio no respondió") +
+                      ").");
+          }
+      },
+      45e3,
+    );
+  }
+  var ei = 5e3,
+    ti = null;
+  function ai(e) {
+    e = Math.max(0, Math.floor(e || 0));
+    var t = Math.floor(e / 3600),
+      a = Math.floor((e % 3600) / 60),
+      i = e % 60;
+    return r(t) + ":" + r(a) + ":" + r(i);
+  }
+  function ii(e) {
+    if ("number" == typeof e && isFinite(e) && e > 0) return e;
+    if ("string" != typeof e) return 0;
+    var t = e.trim();
+    if (!t || "—" === t || "-" === t) return 0;
+    var a = t.match(/(\d+)\s*h(?:our|ora|s)?/i),
+      i = t.match(/(\d+)\s*m(?:in|uto|s)?/i),
+      n = t.match(/(\d+)\s*s(?:ec|eg)?/i);
+    if (a || i || n)
+      return (
+        3600 * (a ? parseInt(a[1], 10) : 0) +
+        60 * (i ? parseInt(i[1], 10) : 0) +
+        (n ? parseInt(n[1], 10) : 0)
+      );
+    if (-1 !== t.indexOf(":")) {
+      var r = t.split(":");
+      if (2 === r.length) {
+        var o = Number(r[0]),
+          s = Number(r[1]);
+        if (isFinite(o) && isFinite(s) && o >= 0 && s >= 0) return 60 * o + s;
+      } else if (3 === r.length) {
+        ((o = Number(r[0])), (s = Number(r[1])));
+        var l = Number(r[2]);
+        if (
+          isFinite(o) &&
+          isFinite(s) &&
+          isFinite(l) &&
+          o >= 0 &&
+          s >= 0 &&
+          l >= 0
+        )
+          return 3600 * o + 60 * s + l;
+      }
+    }
+    var d = Number(t);
+    return isFinite(d) && d > 0 ? d : 0;
+  }
+  var ni = null;
+  function ri() {
+    ni && (clearInterval(ni), (ni = null));
+  }
+  function oi(e, t) {
+    if (Ae && De && Oe) {
+      Ye && (e = Ze);
+      var a = ii(t);
+      if (
+        (!a &&
+          X.playerEpisode &&
+          X.playerEpisode.duration &&
+          (a = ii(X.playerEpisode.duration)),
+        !a &&
+          X.playerItem &&
+          X.playerItem.duration &&
+          (a = ii(X.playerItem.duration)),
+        !a &&
+          xe &&
+          isFinite(xe.duration) &&
+          xe.duration > 0 &&
+          (a = xe.duration),
+        !a && pn && pn.length)
+      ) {
+        var i = pn[pn.length - 1];
+        i && i.end > 0 && (a = Math.round(i.end + 60));
+      }
+      if (((e = Number(e) || 0), (Ae.textContent = ai(e)), !a || a <= 0))
+        e > (a = x(X.playerItem) ? 2700 : 6300) && (a = Math.round(1.15 * e));
+      De.textContent = ai(a);
+      var n = Math.min(100, Math.max(0, (e / a) * 100));
+      if (
+        ((Oe.style.width = n.toFixed(2) + "%"),
+        Ne && (Ne.style.left = n.toFixed(2) + "%"),
+        xe && xe.buffered && xe.buffered.length > 0)
+      )
+        try {
+          var r = xe.buffered.end(xe.buffered.length - 1);
+          br && (r += Cr);
+          var o = Math.min(100, Math.max(0, (r / a) * 100));
+          qe && (qe.style.width = o.toFixed(2) + "%");
+        } catch (e) {}
+    }
+  }
+  function si(e) {
+    (Re || (Re = t("player-osd-icon")),
+      Re &&
+        (ti && (clearTimeout(ti), (ti = null)),
+        "pause" === e
+          ? ((Re.style.backgroundImage =
+              "url(assets/original/common/icon_status_pause.png)"),
+            Re.classList.add("is-active"))
+          : "forward" === e
+            ? ((Re.style.backgroundImage =
+                "url(assets/original/common/icon_status_forward.png)"),
+              Re.classList.add("is-active"),
+              (ti = setTimeout(function () {
+                Re.classList.remove("is-active");
+              }, 900)))
+            : "backward" === e
+              ? ((Re.style.backgroundImage =
+                  "url(assets/original/common/icon_status_backward.png)"),
+                Re.classList.add("is-active"),
+                (ti = setTimeout(function () {
+                  Re.classList.remove("is-active");
+                }, 900)))
+              : Re.classList.remove("is-active")));
+  }
+  function li(e) {
+    if (xe) {
+      var t = xe.duration;
+      (isNaN(t) || t <= 0) && (t = 86400);
+      var a = xe.currentTime || 0,
+        i = Math.max(0, Math.min(t, a + e));
+      try {
+        xe.currentTime = i;
+      } catch (e) {}
+      (oi(i, xe.duration), pi(), si(e > 0 ? "forward" : "backward"));
+    }
+  }
+  function di() {
+    if (xe)
+      if (xe.paused) (Mr(), si("none"), pi());
+      else {
+        try {
+          xe.pause();
+        } catch (e) {}
+        (si("pause"), pi());
+      }
+  }
+  function ci() {
+    (X.infoTimer && clearTimeout(X.infoTimer),
+      (X.infoTimer = setTimeout(function () {
+        ((X.infoTimer = null), "player" !== X.screen || X.channelsOpen || ui());
+      }, ei)));
+  }
+  function pi() {
+    ((X.infobar = !0),
+      "vod" === X.playerMode
+        ? (Me && Me.classList.add("is-active"),
+          we && we.classList.remove("is-active"))
+        : (we && we.classList.add("is-active"),
+          Me && Me.classList.remove("is-active")),
+      ci());
+  }
+  function ui() {
+    (X.infoTimer && (clearTimeout(X.infoTimer), (X.infoTimer = null)),
+      (X.infobar = !1),
+      we && we.classList.remove("is-active"),
+      Me && Me.classList.remove("is-active"));
+  }
+  function vi() {
+    pi();
+  }
+  function fi() {
+    ui();
+  }
+  var hi = null,
+    mi = null,
+    gi = null,
+    yi = null,
+    bi = null,
+    Ci = null,
+    wi = null,
+    Si = null,
+    xi = null,
+    Ti = null,
+    _i = null,
+    ki = null,
+    Li = null,
+    Mi = null,
+    Ii = null,
+    Ei = null,
+    Ai = null,
+    Di = null,
+    Pi = null,
+    Oi = null,
+    qi = null,
+    Ni = null,
+    Ri = null,
+    Vi = null,
+    Hi = null,
+    Ui = null,
+    Fi = null,
+    Bi = null,
+    zi = !1,
+    ji = !1,
+    Wi = null,
+    Xi = 0,
+    $i = !1,
+    Gi = 0,
+    Qi = null,
+    Ji = !1,
+    Ki = !1,
+    Yi = 0,
+    Zi = "normal",
+    en = "white",
+    tn = "contain",
+    an = 0;
+  function nn() {
+    ((Zi =
+      ["normal", "big", "small"][Number(X.playback.size) || 0] || "normal"),
+      (en =
+        ["white", "yellow", "black"][Number(X.playback.style) || 0] || "white"),
+      Ki || (Ji = !!X.playback.subtitle),
+      Zn(
+        ["cover", "contain", "16-9", "4-3"][Number(X.playback.screen) || 0] ||
+          "contain",
+      ),
+      gn());
+  }
+  function rn() {
+    return ["es", "pt", "en"][Number(X.playback.subLang) || 0] || "es";
+  }
+  function on(e, t) {
+    var a = String(e || t || "").toLowerCase(),
+      i = t || "es";
+    return "es" === i
+      ? /^(es|spa|esp|lat|cast)|espa|latino|latin|castell/i.test(a)
+      : "pt" === i
+        ? /^(pt|por)|portu/.test(a)
+        : "en" === i && /^(en|eng|ing)|ingl/.test(a);
+  }
+  function sn(e, t, a) {
+    var i = X.playerItem;
+    if (i && i.id && !(e < 3)) {
+      var n = Date.now();
+      if (a || !(n - an < 15e3)) {
+        an = n;
+        for (
+          var r = X.playerEpisode,
+            o = String(i.id),
+            s = [
+              {
+                id: o,
+                title: i.title || i.name || "Contenido",
+                poster: i.poster || i.cover || "",
+                series: !!x(i),
+                episodeId: r && r.id ? String(r.id) : "",
+                episodeNumber: (r && (r.number || r.seriesNumber)) || "",
+                position: Math.floor(e),
+                duration: Math.floor(t || i.duration || 0),
+                updatedAt: n,
+              },
+            ],
+            l = Q.history || [],
+            d = 0;
+          d < l.length && s.length < 30;
+          d++
+        )
+          String(l[d].id) !== o && s.push(l[d]);
+        ((Q.history = s), K($, Q));
+      }
+    }
+  }
+  var ln = null;
+  function dn(e) {
+    var t = ln;
+    if (t && e && String(t.id) === String(e.id) && t.episodeId && e.episodes)
+      for (var a = 0; a < e.episodes.length; a++)
+        if (String(e.episodes[a].id) === t.episodeId)
+          return (
+            (X.detailEpisode = e.episodes[a]),
+            void (X.playerEpisode = e.episodes[a])
+          );
+  }
+  function cn(e) {
+    if (e) {
+      for (var t = 0; t < l.length; t++)
+        if (String(l[t].id) === String(e.id)) return ((ln = e), void ba(l[t]));
+      for (var a = o(e.title || ""), i = 0; i < l.length; i++) {
+        for (
+          var n = l[i], r = n._catalogSeasons || [], s = !1, d = 0;
+          d < r.length;
+          d++
+        )
+          if (String(r[d].id) === String(e.id)) {
+            s = !0;
+            break;
+          }
+        if (s || (a && o(n.title || "") === a)) return ((ln = e), void ba(n));
+      }
+      var c = T(
+        {
+          id: e.id,
+          title: e.title,
+          poster: e.poster,
+          type: e.series ? "teleplay" : "movie",
+          portal: !0,
+        },
+        0,
+      );
+      ((c._portal = !0), (ln = e), ba(c));
+    }
+  }
+  var pn = [],
+    un = {},
+    vn = {},
+    fn = null;
+  function hn(e) {
+    if (!e) return 0;
+    var t = e.replace(",", ".").split(":");
+    return 3 === t.length
+      ? 3600 * parseFloat(t[0]) + 60 * parseFloat(t[1]) + parseFloat(t[2])
+      : 0;
+  }
+  function mn(e) {
+    var t = ++Yi;
+    if (!e || !e.url) return ((pn = []), void (Bi && (Bi.innerHTML = "")));
+    try {
+      var a = new XMLHttpRequest();
+      (a.open("GET", e.url, !0),
+        (a.onload = function () {
+          t === Yi &&
+            a.status >= 200 &&
+            a.status < 300 &&
+            (pn = (function (e) {
+              var t = [];
+              if (!e) return t;
+              for (
+                var a = e
+                    .replace(/\r\n/g, "\n")
+                    .replace(/\r/g, "\n")
+                    .split("\n\n"),
+                  i = 0;
+                i < a.length;
+                i++
+              ) {
+                var n = a[i].trim().split("\n");
+                if (n.length >= 2) {
+                  var r = -1 !== n[0].indexOf("--\x3e") ? n[0] : n[1],
+                    o = -1 !== n[0].indexOf("--\x3e") ? n.slice(1) : n.slice(2);
+                  if (r && -1 !== r.indexOf("--\x3e")) {
+                    var s = r.split("--\x3e"),
+                      l = hn(s[0].trim()),
+                      d = hn(s[1].trim()),
+                      c = o
+                        .join("<br>")
+                        .replace(/<font[^>]*>/gi, "")
+                        .replace(/<\/font>/gi, "")
+                        .trim();
+                    c && t.push({ start: l, end: d, text: c });
+                  }
+                }
+              }
+              return t;
+            })(a.responseText));
+        }),
+        a.send());
+    } catch (e) {}
+  }
+  function gn() {
+    Bi &&
+      (Bi.classList.remove("size-small", "size-normal", "size-big"),
+      Bi.classList.add("size-" + Zi),
+      Bi.classList.remove("color-white", "color-yellow", "color-black"),
+      Bi.classList.add("color-" + en));
+  }
+  function yn(e) {
+    if (Bi)
+      if (Ji && pn && pn.length) {
+        for (var t = null, a = 0; a < pn.length; a++)
+          if (e >= pn[a].start && e <= pn[a].end) {
+            t = pn[a];
+            break;
+          }
+        if (t) {
+          var i = '<span class="player-subtitles-text">' + t.text + "</span>";
+          Bi.innerHTML !== i && (Bi.innerHTML = i);
+        } else "" !== Bi.innerHTML && (Bi.innerHTML = "");
+      } else "" !== Bi.innerHTML && (Bi.innerHTML = "");
+  }
+  function bn() {
+    return "detail" === X.screen
+      ? X.detail || null
+      : X.playerItem || X.detail || null;
+  }
+  var Cn = {},
+    wn = "";
+  function Sn(e) {
+    if (!e) return "";
+    if (x(e))
+      return (
+        "series:" +
+        (e.seriesContentId || e.seriesId || e.seasonId || e.id || "")
+      );
+    var t = kn(e);
+    return t && t.id ? t.id : e.id || "";
+  }
+  function xn(e) {
+    var t = Sn(e);
+    t && Cn.hasOwnProperty(t)
+      ? (X.streamMode = Cn[t] ? "smooth" : "normal")
+      : (X.streamMode =
+          "smooth" === X.playback.streamMode ? "smooth" : "normal");
+  }
+  function Tn(e, t) {
+    var a = Sn(e);
+    ((X.streamMode = t ? "smooth" : "normal"), a && (Cn[a] = !!t));
+  }
+  function _n() {
+    ((wn = ""),
+      (Xi = 0),
+      ($i = !1),
+      (Qi = null),
+      (Ji = !1),
+      (Ki = !1),
+      Yi++,
+      (X.trackIndex = 0),
+      (pn = []),
+      Bi && (Bi.innerHTML = ""));
+  }
+  function kn(e) {
+    return e && x(e)
+      ? "player" === X.screen && X.playerEpisode
+        ? X.playerEpisode
+        : X.detailEpisode
+          ? X.detailEpisode
+          : (e.episodes && e.episodes[0]) || null
+      : null;
+  }
+  function Ln(e) {
+    if (!e) return "";
+    var t = kn(e);
+    return t && t.id ? t.id : e.id || "";
+  }
+  function Mn(e, t) {
+    if (((t = t || function () {}), !e)) return t(null);
+    var a = Ln(e);
+    if (!a) return t(null);
+    if (un[a]) return (An(un[a]), t(un[a]));
+    if (vn[a]) vn[a].push(t);
+    else {
+      vn[a] = [t];
+      var i = kn(e),
+        n = { contentId: a },
+        r = e.seasonId || e.id;
+      (i && i.id && r && i.id !== r && (n.seriesContentId = r),
+        P("mediaInfo", n, function (e, t) {
+          var i = vn[a] || [];
+          delete vn[a];
+          var n = !e && t && !1 !== t.returnValue ? t : null;
+          n && ((un[a] = n), An(n));
+          for (var r = 0; r < i.length; r++)
+            try {
+              i[r](n);
+            } catch (e) {}
+        }));
+    }
+  }
+  function In(e) {
+    for (
+      var t = (e || "").split(/[,\/]/),
+        a = ["es", "pt", "en"][Number(X.playback.audio) || 0] || "es",
+        i = 0;
+      i < t.length;
+      i++
+    )
+      if (on(t[i].trim(), a)) return i;
+    return 0;
+  }
+  function En(e) {
+    for (var t = [], a = (e && e.subtitles) || [], i = 0; i < a.length; i++)
+      t.push({ lang: a[i].lang, url: a[i].url, format: a[i].format });
+    return (
+      t.sort(function (e, t) {
+        return (
+          (/^(es|spa|esp)$/i.test(e.lang || "") ? 0 : 1) -
+          (/^(es|spa|esp)$/i.test(t.lang || "") ? 0 : 1)
+        );
+      }),
+      t
+    );
+  }
+  function An(e) {
+    var t = En(e);
+    if (Ki) {
+      if (Ji) {
+        if (!t.length) return ((Ji = !1), (Qi = null), void mn(null));
+        var a = !1;
+        if (Qi)
+          for (var i = 0; i < t.length; i++)
+            if (t[i].url === Qi.url) {
+              ((Qi = t[i]), (a = !0));
+              break;
+            }
+        a || mn((Qi = t[0]));
+      }
+    } else {
+      if (!X.playback.subtitle) return ((Ji = !1), (Qi = null), void mn(null));
+      if (!t.length) return ((Ji = !1), (Qi = null), void mn(null));
+      ((Ji = !0), (Qi = t[0]));
+      for (var n = 0; n < t.length; n++)
+        if (on(t[n].lang, rn())) {
+          Qi = t[n];
+          break;
+        }
+      mn(Qi);
+    }
+  }
+  function Dn() {
+    (Wi && clearTimeout(Wi),
+      (Wi = setTimeout(function () {
+        On();
+      }, 8e3)));
+  }
+  function Pn() {
+    if ((hi || lr(), hi)) {
+      ((zi = !0),
+        (ji = !1),
+        ui(),
+        qn(),
+        hi.classList.add("is-active"),
+        Bi && Bi.classList.add("shift-up"),
+        Mn(X.playerItem, function () {
+          zi && qn();
+        }),
+        Dn());
+      var e = X.playerItem;
+      if (x(e) && yi) {
+        var t = yi.querySelector(".psv-ep-btn");
+        if (t) return void rt(t);
+      }
+      x(e) && _i ? rt(_i) : bi && rt(bi);
+    }
+  }
+  function On() {
+    (Wi && (clearTimeout(Wi), (Wi = null)),
+      (zi = !1),
+      hi && hi.classList.remove("is-active"),
+      Bi && Bi.classList.remove("shift-up"),
+      "player" !== X.screen || ji || rt(Ce));
+  }
+  function qn() {
+    var e = X.focus ? n(X.focus, ".psv-row") : null,
+      t = e ? e.id : "",
+      a = e && X.focus ? X.focus.textContent : "";
+    if (
+      (Rn(),
+      (function () {
+        if (!Si) return;
+        Si.classList.remove("is-hidden");
+      })(),
+      Kn(),
+      Yn(),
+      Nn(),
+      zi && t && hi)
+    )
+      for (var i = hi.querySelectorAll(".psv-row"), r = 0; r < i.length; r++)
+        if (i[r].id === t) {
+          for (
+            var o = i[r].querySelectorAll(".focusable"), s = null, l = 0;
+            l < o.length;
+            l++
+          )
+            if (o[l].textContent === a) {
+              s = o[l];
+              break;
+            }
+          var d = s || ot(i[r]);
+          d && rt(d, !0);
+          break;
+        }
+  }
+  function Nn() {
+    if (hi) {
+      for (var e = hi.querySelectorAll(".psv-row"), t = 0; t < e.length; t++)
+        e[t].classList.remove("is-row-focused");
+      var a = X.focus ? n(X.focus, ".psv-row") : null;
+      a && a.classList.add("is-row-focused");
+    }
+  }
+  function Rn() {
+    if (gi) {
+      var t = X.playerItem;
+      if (t && x(t)) {
+        if (((gi.style.display = "block"), yi)) {
+          a(yi);
+          var i = Vn(t),
+            n = i[X.playerSeasonIndex] || i[0],
+            r =
+              n &&
+              n.id === (t.seasonId || t.id) &&
+              t.episodes &&
+              t.episodes.length
+                ? t.episodes
+                : (n && n._episodes) || t.episodes || [];
+          if (r.length) {
+            for (var o = 0, s = 0; s < r.length; s++)
+              if (
+                X.playerEpisode &&
+                (r[s].id === X.playerEpisode.id ||
+                  r[s].number === X.playerEpisode.number)
+              ) {
+                o = s;
+                break;
+              }
+            var l = wa(r.length);
+            (void 0 === X.playerEpisodeRange ||
+              X.playerEpisodeRange >= l.length) &&
+              (X.playerEpisodeRange = Math.floor(o / 20));
+            for (
+              var d = l[X.playerEpisodeRange] || l[0],
+                c = e("div", "psv-episode-numbers scrollable"),
+                p = d.start;
+              p < d.end;
+              p++
+            )
+              (function (t, a) {
+                var i =
+                    a === o
+                      ? "▶"
+                      : String(
+                          void 0 !== t.number && null !== t.number
+                            ? t.number
+                            : a + 1,
+                        ),
+                  n = e(
+                    "button",
+                    "psv-ep-btn focusable" + (a === o ? " is-selected" : ""),
+                    i,
+                  );
+                ((n._activate = function () {
+                  Xn(t);
+                }),
+                  c.appendChild(n));
+              })(r[p], p);
+            yi.appendChild(c);
+            for (
+              var u = e("div", "psv-episode-ranges scrollable"), v = 0;
+              v < l.length;
+              v++
+            )
+              (function (t, a) {
+                var i = e(
+                  "button",
+                  "psv-range-btn focusable" +
+                    (t === X.playerEpisodeRange ? " is-selected" : ""),
+                  a.start + 1 + "-" + a.end,
+                );
+                ((i._activate = function () {
+                  ((X.playerEpisodeRange = t), Rn());
+                  var e = yi.querySelector(".psv-ep-btn");
+                  e && rt(e);
+                }),
+                  u.appendChild(i));
+              })(v, l[v]);
+            yi.appendChild(u);
+          } else
+            yi.appendChild(
+              e("div", "psv-selection-empty", "Temporadas y episodios"),
+            );
+        }
+      } else gi.style.display = "none";
+    }
+  }
+  function Vn(e) {
+    return e && e.seasons && e.seasons.length
+      ? e.seasons
+      : [{ id: e ? e.id : "", number: 1 }];
+  }
+  function Hn(e, t, a) {
+    return (
+      (a = a || function () {}),
+      e && t
+        ? t.id === (e.seasonId || e.id) && e.episodes && e.episodes.length
+          ? ((t._episodes = e.episodes), a(e.episodes))
+          : t._episodes
+            ? a(t._episodes)
+            : t._loading
+              ? ((t._wait = t._wait || []), void t._wait.push(a))
+              : ((t._loading = !0),
+                (t._wait = [a]),
+                void P("detail", { contentId: t.id }, function (e, a) {
+                  t._loading = !1;
+                  var i =
+                    !e && a && !1 !== a.returnValue && a.episodes
+                      ? a.episodes
+                      : [];
+                  i.length && (t._episodes = i);
+                  var n = t._wait || [];
+                  t._wait = [];
+                  for (var r = 0; r < n.length; r++)
+                    try {
+                      n[r](i);
+                    } catch (e) {}
+                }))
+        : a([])
+    );
+  }
+  function Un(e, t, a) {
+    var i = t && void 0 !== t.number && null !== t.number ? t.number : a + 1,
+      n = String((t && (t.title || t.name)) || "").trim(),
+      r = String((e && e.title) || "")
+        .trim()
+        .replace(/[\s\-–_]*[TtSs]\d+$/, "");
+    return (
+      r && 0 === n.indexOf(r) && (n = n.substring(r.length)),
+      ((n = n.replace(/^[\s\-–_:.]+/, "").trim()) &&
+        !/^(?:[TtSs]?\d+[\s\-–_.:]*)+$/.test(n)) ||
+        (n = "Episodio " + i),
+      n
+    );
+  }
+  function Fn(e) {
+    var t = String((e && e.duration) || "").trim(),
+      a = /^(\d+):(\d+)(?::(\d+))?$/.exec(t);
+    return a
+      ? a[3]
+        ? (parseInt(a[1], 10) || 0) + " h " + (parseInt(a[2], 10) || 0) + " min"
+        : (parseInt(a[1], 10) || 0) + " min"
+      : t;
+  }
+  function Bn() {
+    var t = X.playerItem;
+    if (t && x(t) && (zi && On(), ki || lr(), ki)) {
+      if (!((t.episodes && t.episodes.length) || t._detailsLoaded))
+        return (
+          jr("Cargando capítulos…"),
+          void U(t, function () {
+            "player" === X.screen &&
+              (!X.playerEpisode &&
+                t.episodes &&
+                t.episodes.length &&
+                ((X.playerEpisode = t.episodes[0]),
+                (X.detailEpisode = t.episodes[0])),
+              Bn());
+          })
+        );
+      (!X.playerEpisode &&
+        t.episodes &&
+        t.episodes.length &&
+        ((X.playerEpisode = t.episodes[0]),
+        (X.detailEpisode = t.episodes[0]),
+        (X.playerSeasonIndex = X.detailSeason || 0)),
+        (X.episodeBrowserOpen = !0),
+        (X.browserSeason = X.playerSeasonIndex || 0),
+        ki.classList.add("is-active"),
+        fi(),
+        (function () {
+          var t = X.playerItem;
+          if (!t || !ki) return;
+          var i = Vn(t);
+          X.browserSeason >= i.length && (X.browserSeason = 0);
+          X.browserSeason < 0 && (X.browserSeason = 0);
+          var n = i[X.browserSeason],
+            r = i[X.playerSeasonIndex] || i[0],
+            o = X.playerEpisode;
+          Li && (Li.textContent = t.title || "");
+          if (Mi)
+            if (o) {
+              var s = [];
+              (r && r.number && s.push("T" + r.number),
+                o.number && s.push("E" + o.number),
+                (Mi.textContent =
+                  "Reproduciendo " + s.join(" ") + " · " + Un(t, o)));
+            } else Mi.textContent = "Elige un episodio";
+          Di &&
+            (Di.textContent =
+              "Episodios · Temporada " +
+              ((n && n.number) || X.browserSeason + 1));
+          ((function (t, i) {
+            if (!Ii || !Ei) return;
+            (a(Ii), (Ei.style.display = "flex"));
+            for (var n = 0; n < i.length; n++)
+              (function (t) {
+                var a = e(
+                  "div",
+                  "pe-season focusable",
+                  "Temporada " + (i[t].number || t + 1),
+                );
+                (t === X.browserSeason && a.classList.add("is-selected"),
+                  (a._onFocus = function () {
+                    X.browserSeason !== t && Wn(t, !1);
+                  }),
+                  (a._activate = function () {
+                    Wn(t, !0);
+                  }),
+                  Ii.appendChild(a));
+              })(n);
+          })(0, i),
+            jn(t, n));
+        })());
+      var i =
+        (Ai ? Ai.querySelector(".pe-ep.is-current") : null) ||
+        (Ai ? ot(Ai) : null) ||
+        (Ei && "none" !== Ei.style.display ? ot(Ii) : null);
+      i && rt(i);
+    }
+  }
+  function zn(e) {
+    ki &&
+      X.episodeBrowserOpen &&
+      ((X.episodeBrowserOpen = !1),
+      ki.classList.remove("is-active"),
+      !e && "player" === X.screen && Ce && rt(Ce));
+  }
+  function jn(t, i) {
+    if (Ai && i) {
+      a(Ai);
+      var r =
+        i.id === (t.seasonId || t.id) && t.episodes && t.episodes.length
+          ? t.episodes
+          : i._episodes || [];
+      if (!r.length)
+        return (
+          Ai.appendChild(e("div", "pe-loading", "Cargando episodios…")),
+          void Hn(t, i, function (e) {
+            if (
+              X.episodeBrowserOpen &&
+              Vn(t)[X.browserSeason] === i &&
+              (jn(t, i), n(X.focus, "#pe-episodes"))
+            ) {
+              var a = Ai.querySelector(".pe-ep.is-current") || ot(Ai);
+              a && rt(a);
+            }
+          })
+        );
+      for (var o = Math.min(r.length, 24), s = 0; s < o; s++)
+        (function (a, i) {
+          var n = e("div", "pe-ep focusable"),
+            r = void 0 !== a.number && null !== a.number ? a.number : i + 1;
+          n.appendChild(e("div", "pe-num", String(r)));
+          var o = e("div", "pe-thumb"),
+            s = e("div", "pe-thumb-play", "▶");
+          (o.appendChild(s), n.appendChild(o));
+          var l = e("div", "pe-info");
+          l.appendChild(e("div", "pe-name", Un(t, a, i)));
+          var d = [],
+            c = Fn(a);
+          (c && d.push(c),
+            a.quality && d.push(String(a.quality).split(",")[0].toUpperCase()),
+            l.appendChild(e("div", "pe-meta", d.join("   ·   "))),
+            a.description && l.appendChild(e("div", "pe-desc", a.description)),
+            n.appendChild(l));
+          var p =
+            X.playerEpisode &&
+            (X.playerEpisode.id === a.id ||
+              (void 0 !== X.playerEpisode.number &&
+                X.playerEpisode.number === a.number));
+          (n.appendChild(e("div", "pe-badge", "▶ REPRODUCIENDO")),
+            p && n.classList.add("is-current"),
+            (n._activate = function () {
+              Xn(a);
+            }),
+            Ai.appendChild(n));
+        })(r[s], s);
+      r.length > o &&
+        Ai.appendChild(
+          e("div", "pe-loading", "Mostrando los primeros " + o + " capítulos"),
+        );
+    }
+  }
+  function Wn(e, t) {
+    var a = X.playerItem,
+      i = Vn(a);
+    if (
+      i[e] &&
+      ((X.browserSeason = e),
+      (function () {
+        if (Ii)
+          for (var e = Ii.children, t = 0; t < e.length; t++)
+            e[t].classList.toggle("is-selected", t === X.browserSeason);
+      })(),
+      Di &&
+        (Di.textContent = "Episodios · Temporada " + (i[e].number || e + 1)),
+      jn(a, i[e]),
+      t)
+    ) {
+      var n = Ai ? Ai.querySelector(".pe-ep.is-current") || ot(Ai) : null;
+      n && rt(n);
+    }
+  }
+  function Xn(e) {
+    var t = X.playerItem;
+    if (t && e) {
+      var a = Vn(t),
+        i = a[X.playerSeasonIndex];
+      i &&
+        i.id === (t.seasonId || t.id) &&
+        t.episodes &&
+        t.episodes.length &&
+        (i._episodes = t.episodes);
+      var n =
+          void 0 !== X.playerSeasonIndex && null !== X.playerSeasonIndex
+            ? X.playerSeasonIndex
+            : X.browserSeason || 0,
+        r = a[n];
+      (r &&
+        (X.detailSeason !== n &&
+          ((X.detailSeason = n), (X.detailNeedsRebuild = !0)),
+        r.id && (t.seasonId = r.id),
+        r._episodes && (t.episodes = r._episodes)),
+        zn(),
+        zi && On(),
+        $n(t, e));
+    }
+  }
+  function $n(e, t) {
+    if (e && t) {
+      ((X.playerItem = e),
+        (X.playerEpisode = t),
+        (X.detailEpisode = t),
+        (X.playerSeasonIndex = X.detailSeason || 0),
+        Ce && we && ao(),
+        Jn(e),
+        X.episodeSwitchTimer && clearTimeout(X.episodeSwitchTimer),
+        (X.episodeSwitchSeq = (X.episodeSwitchSeq || 0) + 1));
+      var a = X.episodeSwitchSeq;
+      (zr(),
+        jr("Cambiando capítulo…"),
+        (X.episodeSwitchTimer = setTimeout(function () {
+          ((X.episodeSwitchTimer = null),
+            a === X.episodeSwitchSeq && "player" === X.screen && Jr(e, t));
+        }, 600)));
+    }
+  }
+  function Gn() {
+    (ke || (ke = t("next-episode-loading")),
+      ke &&
+        (ke.classList.remove("is-active"), (ke.style.backgroundImage = "")));
+  }
+  function Qn() {
+    var e = X.playerItem;
+    if (e && x(e) && "player" === X.screen) {
+      for (
+        var a = (function (e) {
+            var t = Vn(e),
+              a = t[X.playerSeasonIndex] || t[0];
+            return a
+              ? a.id === (e.seasonId || e.id) && e.episodes && e.episodes.length
+                ? e.episodes
+                : a._episodes || []
+              : [];
+          })(e),
+          i = X.playerEpisode,
+          n = -1,
+          r = 0;
+        r < a.length;
+        r++
+      )
+        if (i && (a[r].id === i.id || a[r].number === i.number)) {
+          n = r;
+          break;
+        }
+      if (!(n < 0))
+        if (
+          ((function (e) {
+            if ((ke || (ke = t("next-episode-loading")), ke)) {
+              var a = (e && (e.backdrop || e.landscape || e.poster)) || "";
+              ((ke.style.backgroundImage = a
+                ? 'url("' + String(a).replace(/"/g, "%22") + '")'
+                : ""),
+                ke.classList.add("is-active"));
+            }
+          })(e),
+          n + 1 < a.length)
+        )
+          $n(e, a[n + 1]);
+        else {
+          var o = Vn(e),
+            s = (X.playerSeasonIndex || 0) + 1,
+            l = o[s];
+          if (l) {
+            var d = i;
+            Hn(e, l, function (t) {
+              X.playerItem === e &&
+                X.playerEpisode === d &&
+                "player" === X.screen &&
+                (t && t.length
+                  ? ((X.detailSeason = s),
+                    (X.playerSeasonIndex = s),
+                    (e.seasonId = l.id || e.seasonId),
+                    (e.episodes = t),
+                    (l._episodes = t),
+                    $n(e, t[0]))
+                  : Gn());
+            });
+          } else Gn();
+        }
+    }
+  }
+  function Jn(e) {
+    if (de)
+      for (
+        var t = de.querySelectorAll(".detail-episode"), a = 0;
+        a < t.length;
+        a++
+      ) {
+        var i = !(
+          !t[a]._ep ||
+          !X.detailEpisode ||
+          t[a]._ep.id !== X.detailEpisode.id
+        );
+        t[a].classList.toggle("is-playing", i);
+      }
+  }
+  function Kn() {
+    var e = "relay" === X.streamMode || "smooth" === X.streamMode;
+    if (Ci) {
+      Ci.classList.toggle("is-selected", e);
+      var t = Ci.querySelector(".psv-check");
+      t && (t.style.display = e ? "block" : "none");
+    }
+    if (wi) {
+      wi.classList.toggle("is-selected", !e);
+      var a = wi.querySelector(".psv-check");
+      a && (a.style.display = e ? "none" : "block");
+    }
+  }
+  function Yn() {
+    if (Ti)
+      for (var e = Ti.querySelectorAll(".psv-btn"), t = 0; t < e.length; t++) {
+        var a = e[t].getAttribute("data-aspect") === tn;
+        e[t].classList.toggle("is-selected", a);
+        var i = e[t].querySelector(".psv-check");
+        i && (i.style.display = a ? "block" : "none");
+      }
+  }
+  function Zn(e) {
+    ((tn = e || "contain"),
+      xe &&
+        (xe.classList.remove(
+          "aspect-cover",
+          "aspect-contain",
+          "aspect-16-9",
+          "aspect-4-3",
+        ),
+        xe.classList.add("aspect-" + tn)),
+      Yn());
+  }
+  function er(e) {
+    if ((mi || lr(), mi)) {
+      (Wi && (clearTimeout(Wi), (Wi = null)), (ji = !0), (fn = X.focus));
+      var t = e || bn();
+      ("detail" === X.screen && (t = X.detail || t),
+        ar(),
+        ir(),
+        gn(),
+        mi.classList.add("is-active"),
+        Mn(t, function () {
+          ji && (ar(), ir());
+        }));
+      var a = (Pi && Pi.querySelector(".focusable")) || Oi || Fi;
+      a && rt(a);
+    }
+  }
+  function tr() {
+    ((ji = !1),
+      mi && mi.classList.remove("is-active"),
+      zi
+        ? (bi && rt(bi), Dn())
+        : fn && at(fn)
+          ? rt(fn)
+          : "player" === X.screen && rt(Ce),
+      (fn = null));
+  }
+  function ar() {
+    if (Pi) {
+      a(Pi);
+      var t = un[Ln(bn())];
+      t && !$i && (Xi = In(t.audio));
+      var i = (function (e) {
+        for (
+          var t = [], a = ((e && e.audio) || "").split(/[,\/]/), i = 0;
+          i < a.length;
+          i++
+        ) {
+          var n = a[i].trim();
+          n && t.push({ index: i, code: n, label: nr(n) });
+        }
+        return t;
+      })(t);
+      i.length || (i = [{ index: Xi || 0, label: "Español" }]);
+      for (var n = 0; n < i.length; n++)
+        (function (t) {
+          var a = e("button", "dps-btn focusable");
+          ((a.textContent = t.label),
+            Xi === t.index && a.classList.add("is-selected"),
+            (a._activate = function () {
+              (or(t.index), ar(), Dn());
+            }),
+            Pi.appendChild(a));
+        })(i[n]);
+    }
+  }
+  function ir() {
+    var t = En(un[Ln(bn())]);
+    if (Oi) {
+      var i = Oi.parentNode;
+      (i && i.classList.toggle("is-hidden", !t.length),
+        Oi.classList.toggle("is-on", Ji));
+      var n = Oi.querySelector(".dps-switch-text");
+      n && (n.textContent = Ji ? "ON" : "OFF");
+    }
+    if (
+      (qi && qi.classList.toggle("is-visible", Ji && t.length > 0),
+      Ni && Ni.classList.toggle("is-visible", Ji && t.length > 0),
+      Ri && Ri.classList.toggle("is-visible", Ji && t.length > 0),
+      Ji)
+    ) {
+      if (Vi) {
+        a(Vi);
+        for (var r = 0; r < t.length; r++)
+          (function (t) {
+            var a = e("button", "dps-btn focusable");
+            ((a.textContent = nr(t.lang || "Sub")),
+              Qi && Qi.url === t.url && a.classList.add("is-selected"),
+              (a._activate = function () {
+                ((Qi = t), (Ji = !0), (Ki = !0), mn(t), ir(), Dn());
+              }),
+              Vi.appendChild(a));
+          })(t[r]);
+      }
+      if (Hi)
+        for (
+          var o = Hi.querySelectorAll(".dps-btn"), s = 0;
+          s < o.length;
+          s++
+        ) {
+          var l = o[s].getAttribute("data-size");
+          o[s].classList.toggle("is-selected", l === Zi);
+        }
+      if (Ui)
+        for (
+          var d = Ui.querySelectorAll(".dps-btn"), c = 0;
+          c < d.length;
+          c++
+        ) {
+          var p = d[c].getAttribute("data-style");
+          d[c].classList.toggle("is-selected", p === en);
+        }
+    }
+  }
+  function nr(e) {
+    var t = (e || "").toLowerCase().trim().split(/[-_]/)[0];
+    return /^(spa|esp|es|castellano|latino|lat|latam)$/.test(t)
+      ? "Español"
+      : /^(eng|ing|en)$/.test(t)
+        ? "Inglés"
+        : /^(jpn|jap|ja)$/.test(t)
+          ? "Japonés"
+          : /^(kor|cor|ko)$/.test(t)
+            ? "Coreano"
+            : /^(por|pt)$/.test(t)
+              ? "Portugués"
+              : /^(fra|fre|fr|franc)$/.test(t)
+                ? "Francés"
+                : /^(ita|it)$/.test(t)
+                  ? "Italiano"
+                  : /^(deu|ger|de)$/.test(t)
+                    ? "Alemán"
+                    : /^(chi|zho|zh)$/.test(t)
+                      ? "Chino"
+                      : t
+                        ? t.charAt(0).toUpperCase() + t.slice(1)
+                        : "Pista";
+  }
+  function rr(e) {
+    if (!xe) return !1;
+    var t;
+    try {
+      t = xe.audioTracks;
+    } catch (e) {
+      return !1;
+    }
+    if (!t || !t.length || !(e >= 0 && e < t.length)) return !1;
+    try {
+      for (var a = 0; a < t.length; a++) t[a].enabled = a === e;
+      return !0;
+    } catch (e) {
+      return !1;
+    }
+  }
+  function or(e) {
+    if ("player" !== X.screen || !xe) return ((Xi = e), void ($i = !0));
+    if ("relay" === X.streamMode || "smooth" === X.streamMode)
+      if (((Xi = e), ($i = !0), br)) {
+        var t = Cr + (xe.currentTime || 0);
+        Gr(br + "?start=" + Math.floor(t) + "&a=" + e);
+      } else sr();
+    else
+      rr(e)
+        ? ((Xi = e), ($i = !0), (Gi = Date.now() + 5e3), jr("Idioma cambiado"))
+        : jr(
+            "Esta TV no permite cambiar audio en Normal. Usa Modo Fluido para esa pista.",
+          );
+  }
+  function sr() {
+    if (xe) {
+      var e = br ? Cr + (xe.currentTime || 0) : xe.currentTime || 0,
+        t = X.playerItem;
+      (zr(),
+        jr("Cambiando reproductor…"),
+        Qr(t, function (t) {
+          if (t) {
+            if (-1 !== t.indexOf(":8787/s/")) {
+              var a = t + "?start=" + Math.floor(e);
+              (Xi && (a += "&a=" + Xi), Gr(a));
+            } else if ((Gr(t), e > 0))
+              try {
+                xe.currentTime = e;
+              } catch (e) {}
+          } else X.streamError || jr("Sin fuente de reproducción");
+        }));
+    }
+  }
+  function lr() {
+    if (
+      ((Ce = t("player-stage")),
+      (we = t("player-infobar")),
+      (Me = t("player-vod-infobar")),
+      (Se = t("player-channels")),
+      ($e = t("player-categories")),
+      (Ge = t("pcat-grid")),
+      (Qe = t("pcat-sub")),
+      (xe = t("player-video")),
+      (_e = t("player-status")),
+      (ke = t("next-episode-loading")),
+      (Le = t("player-mode-hint")),
+      (Re = t("player-osd-icon")),
+      (Te = Ce ? Ce.querySelector(".player-frame") : null),
+      (Ie = t("vod-infobar-poster")),
+      (Ee = t("vod-infobar-title")),
+      (Ae = t("vod-time-current")),
+      (De = t("vod-time-total")),
+      (Pe = t("vod-seekbar")),
+      (Oe = t("vod-seek-progress")),
+      (qe = t("vod-seek-buffered")),
+      (Ne = t("vod-seek-thumb")),
+      Pe &&
+        (Pe.classList.add("focusable"),
+        (Pe._activate = function () {
+          Ur(!0);
+        }),
+        (Pe._onMove = function (e) {
+          return "left" === e
+            ? (Br(-1), !0)
+            : "right" === e
+              ? (Br(1), !0)
+              : ("down" === e || "up" === e) && (Ur(!1), !0);
+        })),
+      (hi = t("player-playsetting-view")),
+      (gi = t("psv-sec-selection")),
+      (yi = t("psv-episodes-row")),
+      (_i = t("psv-btn-episodes")),
+      (bi = t("psv-btn-config")),
+      (Ci = t("psv-btn-p1")),
+      (wi = t("psv-btn-p2")),
+      (Si = t("psv-sec-audio")),
+      t("psv-sec-quality"),
+      t("psv-quality-row"),
+      t("psv-sec-aspect"),
+      t("psv-sec-player"),
+      (xi = t("psv-btn-feedback")),
+      (Ti = t("psv-aspect-row")),
+      (ki = t("player-episodes")),
+      (Li = t("pe-title")),
+      (Mi = t("pe-sub")),
+      (Ii = t("pe-seasons")),
+      (Ei = t("pe-seasons-col")),
+      (Ai = t("pe-episodes")),
+      (Di = t("pe-season-label")),
+      _i &&
+        (_i._activate = function () {
+          Bn();
+        }),
+      xi &&
+        (xi._activate = function () {
+          Dn();
+        }),
+      bi &&
+        (bi._activate = function () {
+          er();
+        }),
+      Ci &&
+        (Ci._activate = function () {
+          (Tn(bn(), !0), Kn(), Dn(), sr());
+        }),
+      wi &&
+        (wi._activate = function () {
+          (Tn(bn(), !1), Kn(), Dn(), sr());
+        }),
+      Ti)
+    )
+      for (var i = Ti.querySelectorAll(".psv-btn"), n = 0; n < i.length; n++)
+        (function (e) {
+          e._activate = function () {
+            Zn(e.getAttribute("data-aspect"));
+          };
+        })(i[n]);
+    if (
+      ((mi = t("dialog-playsettings")),
+      (Pi = t("dps-audio-options")),
+      (Oi = t("dps-sub-switch")),
+      (qi = t("dps-row-lang")),
+      (Ni = t("dps-row-size")),
+      (Ri = t("dps-row-style")),
+      (Vi = t("dps-lang-options")),
+      (Hi = t("dps-size-options")),
+      (Ui = t("dps-style-options")),
+      (Fi = t("dps-btn-exit")),
+      (Bi = t("player-subtitles")),
+      Oi &&
+        (Oi._activate = function () {
+          if (((Ki = !0), (Ji = !Ji))) {
+            var e = En(un[Ln(bn())]);
+            (!Qi && e.length && (Qi = e[0]), Qi && mn(Qi));
+          } else mn(null);
+          (ir(), Dn());
+        }),
+      Hi)
+    )
+      for (var r = Hi.querySelectorAll(".dps-btn"), o = 0; o < r.length; o++)
+        (function (e) {
+          e._activate = function () {
+            ((Zi = e.getAttribute("data-size") || "normal"), gn(), ir());
+          };
+        })(r[o]);
+    if (Ui)
+      for (var s = Ui.querySelectorAll(".dps-btn"), l = 0; l < s.length; l++)
+        (function (e) {
+          e._activate = function () {
+            ((en = e.getAttribute("data-style") || "white"), gn(), ir());
+          };
+        })(s[l]);
+    (Fi &&
+      (Fi._activate = function () {
+        tr();
+      }),
+      gn(),
+      nn(),
+      setInterval(function () {
+        xe &&
+          !X.streamError &&
+          _e &&
+          _e.classList.contains("is-active") &&
+          (xe.paused ||
+            xe.readyState < 2 ||
+            (xe.currentTime || 0) <= 0 ||
+            jr(""));
+      }, 2e3),
+      a(we),
+      a(Se),
+      Ce.classList.add("focusable"),
+      (Ce._onMove = function (e) {
+        return "vod" === X.playerMode
+          ? "left" === e
+            ? (li(-10), !0)
+            : "right" === e
+              ? (li(10), !0)
+              : "down" === e
+                ? (Pn(), !0)
+                : "up" === e && (Fr(), !0)
+          : "left" === e
+            ? (no(), !0)
+            : "right" === e
+              ? (ro(), !0)
+              : "up" === e
+                ? (Kt(X.channel - 1), !0)
+                : "down" === e && (Kt(X.channel + 1), !0);
+      }),
+      (Ce._activate = function () {
+        "vod" !== X.playerMode ? (X.infobar ? ui() : pi()) : di();
+      }),
+      we.appendChild(e("div", "pi-logo")),
+      we.appendChild(e("div", "pi-index")));
+    var d = e("div", "pi-namerow"),
+      c = e("div", "pi-name");
+    d.appendChild(c);
+    var p = e("div", "pi-uhd");
+    ((p.style.left = "20px"),
+      d.appendChild(p),
+      we.appendChild(d),
+      we.appendChild(e("div", "pi-date")),
+      we.appendChild(e("div", "pi-range")),
+      we.appendChild(e("div", "pi-now")),
+      we.appendChild(e("div", "pi-next")));
+    var u = e("div", "pi-seek");
+    (u.appendChild(e("div", "bar")),
+      we.appendChild(u),
+      we.appendChild(e("div", "pi-menu", "info")),
+      we.appendChild(e("div", "pi-quality", "HD")),
+      we.appendChild(e("div", "pi-scale", "Normal")),
+      we.appendChild(e("div", "pi-func", "Selecion de función")));
+    for (
+      var v = e("div", "pi-actions"),
+        f = [
+          { label: "Pip", right: 446, w: 67, hidden: !0 },
+          { label: "HD", right: 389, w: 67 },
+          { label: "Anterior", right: 333, w: 67 },
+          { label: "Formato", right: 249, w: 120 },
+          { label: "Favorito", right: 219, w: 67 },
+          { label: "Reproductor 1", right: 151, w: 90 },
+          { label: "Bloquear", right: 107, w: 67 },
+          { label: "Feedback", right: 50, w: 67 },
+        ],
+        h = 0;
+      h < f.length;
+      h++
+    ) {
+      var m = f[h];
+      if (!m.hidden) {
+        var g = e("div", "pi-act focusable", m.label);
+        ((g.style.width = 1.5 * m.w + "px"),
+          (g.style.left = 1920 - 1.5 * m.right - 1.5 * m.w + "px"),
+          (g._kind = m.label),
+          (g._activate = (function (e) {
+            return function () {
+              if ("Anterior" === e) Kt(X.channel - 1);
+              else if ("Formato" === e) {
+                var t = we.querySelector(".pi-scale");
+                ((t.textContent =
+                  "Normal" === t.textContent
+                    ? "16:9"
+                    : "16:9" === t.textContent
+                      ? "4:3"
+                      : "Normal"),
+                  io());
+              } else if ("Favorito" === e) {
+                var a = F[X.channel];
+                a.fav = !a.fav;
+              }
+            };
+          })(m.label)),
+          v.appendChild(g));
+      }
+    }
+    we.appendChild(v);
+    var y = e("div", "pc-header");
+    (y.appendChild(e("div", "pc-title", "Canales de TV")), Se.appendChild(y));
+    var b = e("div", "pc-categories scrollable");
+    ((b.id = "pc-categories"),
+      Se.appendChild(b),
+      Se.appendChild(e("div", "pc-div")));
+    var C = e("div", "pc-list scrollable");
+    (Se.appendChild(C), dr(), hr());
+    var w = e("div", "pc-menu");
+    (w.appendChild(e("div", "ic")),
+      w.appendChild(e("div", "l1", "Presione [OK] para reproducir")),
+      w.appendChild(e("div", "l2", "(Arriba: Categorías · OK: Filtrar)")),
+      Se.appendChild(w));
+  }
+  function dr() {
+    if (Se) {
+      var t = Se.querySelector(".pc-categories");
+      if (t) {
+        for (
+          var i =
+              Lt && Lt.length
+                ? Lt
+                : [
+                    { id: 76182, name: "Todos" },
+                    { id: 76206, name: "Deportes" },
+                    { id: 76205, name: "Cine y Series" },
+                    { id: 76188, name: "Colombia" },
+                    { id: 76191, name: "España" },
+                    { id: 76197, name: "México" },
+                    { id: "addons", name: "➕ Addons M3U", isAddon: !0 },
+                  ],
+            n = "",
+            r = 0;
+          r < i.length;
+          r++
+        )
+          n += i[r].id + "|";
+        var o = X.focus && X.focus._cat ? X.focus._cat : null;
+        if (n !== Je) {
+          a(t);
+          for (var s = [], l = 0; l < i.length; l++) {
+            var d = i[l],
+              c = e("button", "pc-cat-pill focusable", d.name);
+            ((c._cat = d),
+              (c._idx = l),
+              (c._activate = (function (e) {
+                return function () {
+                  Xt(e);
+                };
+              })(d)),
+              (c._onMove = (function (e) {
+                return function (a) {
+                  if ("left" === a)
+                    return (
+                      e > 0 && s[e - 1] && (rt(s[e - 1]), vr(t, s[e - 1])),
+                      !0
+                    );
+                  if ("right" === a)
+                    return (
+                      e < s.length - 1 && s[e + 1]
+                        ? (rt(s[e + 1]), vr(t, s[e + 1]))
+                        : rt(Ce),
+                      !0
+                    );
+                  if ("up" === a) return (pr(), !0);
+                  if ("down" === a) {
+                    var i = Se.querySelector(".pc-row-addon-promo");
+                    if (i) return (rt(i), !0);
+                    if (F.length) return (fr(X.channel), !0);
+                  }
+                  return !1;
+                };
+              })(l)),
+              t.appendChild(c),
+              s.push(c));
+          }
+          ((t._pills = s), (Je = n));
+        }
+        for (var p = Mt || i[0], u = t._pills || [], v = 0; v < u.length; v++) {
+          var f = u[v];
+          f._cat && p && f._cat.id === p.id
+            ? f.classList.add("is-selected")
+            : f.classList.remove("is-selected");
+        }
+        if (o) {
+          for (var h = null, m = 0; m < u.length; m++)
+            if (u[m]._cat && u[m]._cat.id === o.id) {
+              h = u[m];
+              break;
+            }
+          h && (X.focus !== h && rt(h), vr(t, h));
+        }
+      }
+    }
+  }
+  function cr() {
+    if (Se) {
+      var e = Se.querySelector(".pc-categories"),
+        t = e ? e.querySelector(".pc-cat-pill.is-selected") : null;
+      e && t && vr(e, t);
+    }
+  }
+  function pr() {
+    if (
+      ($e ||
+        (($e = t("player-categories")),
+        (Ge = t("pcat-grid")),
+        (Qe = t("pcat-sub"))),
+      $e && Ge)
+    ) {
+      ((X.categoryPickerOpen = !0),
+        $e.classList.add("is-active"),
+        ui(),
+        (function () {
+          if (!Ge) return;
+          var t = Lt && Lt.length ? Lt : [];
+          (a(Ge),
+            Qe &&
+              (Qe.textContent = t.length
+                ? t.length + " categorías · elige una para filtrar los canales"
+                : "Cargando categorías…"));
+          for (var i = 0; i < t.length; i++)
+            (function (t) {
+              var a = e("div", "pcat-tile focusable");
+              (a.appendChild(e("div", "pcat-name", t.name)),
+                Mt && Mt.id === t.id && a.classList.add("is-selected"),
+                (a._cat = t),
+                (a._activate = function () {
+                  (Xt(t), ur(!0));
+                  var e = Se
+                    ? Se.querySelector(".pc-cat-pill.is-selected")
+                    : null;
+                  e ? (rt(e), cr()) : ro();
+                }),
+                Ge.appendChild(a));
+            })(t[i]);
+        })());
+      var i = Ge.querySelector(".pcat-tile.is-selected") || ot(Ge);
+      i && rt(i);
+    }
+  }
+  function ur(e) {
+    if (
+      $e &&
+      X.categoryPickerOpen &&
+      ((X.categoryPickerOpen = !1), $e.classList.remove("is-active"), !e)
+    ) {
+      var t = Se ? Se.querySelector(".pc-cat-pill.is-selected") : null;
+      t ? (rt(t), cr()) : "player" === X.screen && Ce && rt(Ce);
+    }
+  }
+  function vr(e, t) {
+    if (e && t) {
+      var a = t.offsetLeft,
+        i = t.offsetWidth,
+        n = e.scrollLeft,
+        r = e.clientWidth;
+      a < n
+        ? (e.scrollLeft = a - 20)
+        : a + i > n + r && (e.scrollLeft = a + i - r + 20);
+    }
+  }
+  function fr(e) {
+    F.length &&
+      ((e = Math.max(0, Math.min(F.length - 1, Number(e) || 0))),
+      Xe[e] || hr(e),
+      Xe[e] && rt(Xe[e]));
+  }
+  function hr(t) {
+    if (Se) {
+      var i = Se.querySelector(".pc-list");
+      if (i) {
+        if ((a(i), (Xe = {}), Mt && Mt.isAddon)) {
+          var n = e("div", "pc-row-addon-promo focusable");
+          n.appendChild(e("div", "promo-icon", "⚙️"));
+          var o = e("div", "promo-info");
+          (o.appendChild(
+            e("div", "promo-text", "➕ Administrar Addons y Listas M3U"),
+          ),
+            o.appendChild(
+              e(
+                "div",
+                "promo-sub",
+                "Instala listas recomendadas o agrega tu enlace",
+              ),
+            ),
+            n.appendChild(o),
+            (n._activate = function () {
+              sa();
+            }),
+            (n._onMove = function (e) {
+              if ("up" === e) {
+                var t =
+                  Se.querySelector(".pc-cat-pill.is-selected") ||
+                  Se.querySelector(".pc-cat-pill");
+                return (t && rt(t), !0);
+              }
+              return "down" === e
+                ? (F.length && fr(0), !0)
+                : "right" === e && (rt(Ce), !0);
+            }),
+            i.appendChild(n));
+        }
+        if (!F.length) {
+          var s = e(
+            "div",
+            "pc-empty-channels",
+            "No hay canales disponibles en esta categoría",
+          );
+          return (
+            (s.style.padding = "30px"),
+            (s.style.color = "#888"),
+            (s.style.fontSize = "20px"),
+            void i.appendChild(s)
+          );
+        }
+        ((t = Number(t)),
+          isFinite(t) || (t = X.channel),
+          (t = Math.max(0, Math.min(F.length - 1, t || 0))));
+        for (
+          var l = Math.max(0, t - Math.floor(Ke / 2)),
+            d = Math.min(F.length, l + Ke),
+            c = (l = Math.max(0, d - Ke));
+          c < d;
+          c++
+        ) {
+          var p = e("div", "pc-row focusable");
+          p._channel = c;
+          var u = e("div", "ic");
+          F[c].logo &&
+            ((u.style.backgroundImage = "url(" + F[c].logo + ")"),
+            (u.style.backgroundSize = "contain"),
+            (u.style.backgroundRepeat = "no-repeat"),
+            (u.style.backgroundPosition = "center"));
+          var v = e("div", "num", r(F[c].index || c + 1)),
+            f = e("div", "nm", F[c].name),
+            h = e("div", "epg", F[c].now || "En vivo");
+          (p.appendChild(u),
+            p.appendChild(v),
+            p.appendChild(f),
+            p.appendChild(h),
+            c === X.channel && p.classList.add("is-current"),
+            (p._activate = (function (e) {
+              return function () {
+                (Kt(e, !0), ro(), rt(Ce));
+              };
+            })(c)),
+            (p._onMove = (function (e) {
+              return function (t) {
+                if ("right" === t) return (rt(Ce), !0);
+                if ("up" === t) {
+                  if (e > 0) fr(e - 1);
+                  else if (0 === e) {
+                    var a = Se.querySelector(".pc-row-addon-promo");
+                    if (a) rt(a);
+                    else {
+                      var i =
+                        Se.querySelector(".pc-cat-pill.is-selected") ||
+                        Se.querySelector(".pc-cat-pill");
+                      i && rt(i);
+                    }
+                  }
+                  return !0;
+                }
+                return "down" === t && (e < F.length - 1 && fr(e + 1), !0);
+              };
+            })(c)),
+            i.appendChild(p),
+            (Xe[c] = p));
+        }
+      }
+    }
+  }
+  var mr = "",
+    gr = "",
+    yr = 0,
+    br = "",
+    Cr = 0,
+    wr = !1,
+    Sr = null,
+    xr = !1,
+    Tr = null;
+  function _r() {
+    var e = (function () {
+      if (null !== Tr) return Tr;
+      var e = "";
+      try {
+        window.webOS &&
+          window.webOS.systemInfo &&
+          window.webOS.systemInfo.version &&
+          (e = String(window.webOS.systemInfo.version));
+      } catch (t) {
+        e = "";
+      }
+      if (!e && window.PalmSystem && window.PalmSystem.deviceInfo)
+        try {
+          var t = window.PalmSystem.deviceInfo;
+          ("string" == typeof t && (t = JSON.parse(t)),
+            t &&
+              (t.platformVersion
+                ? (e = String(t.platformVersion))
+                : t.version
+                  ? (e = String(t.version))
+                  : void 0 !== t.platformVersionMajor &&
+                      null !== t.platformVersionMajor
+                    ? (e =
+                        String(t.platformVersionMajor) +
+                        "." +
+                        String(t.platformVersionMinor || 0))
+                    : t.sdkVersion && (e = String(t.sdkVersion))));
+        } catch (t) {
+          e = "";
+        }
+      if (!e && navigator && navigator.userAgent) {
+        var a = /(?:webOS|Web0S)[ \/]([0-9]+(?:\.[0-9]+)?)/i.exec(
+          navigator.userAgent,
+        );
+        a && a[1] && (e = a[1]);
+      }
+      !e &&
+        navigator &&
+        navigator.userAgent &&
+        (/Chrome\/38\./i.test(navigator.userAgent)
+          ? (e = "3.0")
+          : /Chrome\/53\./i.test(navigator.userAgent)
+            ? (e = "3.5")
+            : /Chrome\/68\./i.test(navigator.userAgent) && (e = "4.0"));
+      var i = parseFloat(e);
+      return (Tr = isNaN(i) ? 0 : i);
+    })();
+    return e > 0 && e < 4 ? "ts" : "mp4";
+  }
+  function kr(e) {
+    return (
+      "string" == typeof e &&
+      (-1 !== e.indexOf(":8787/s/") || -1 !== e.indexOf(":8787/t/"))
+    );
+  }
+  function Lr() {
+    Sr && (clearTimeout(Sr), (Sr = null));
+  }
+  function Mr() {
+    if (xe) {
+      if (wr && br && "vod" === X.playerMode) {
+        var e = br,
+          t = Math.max(0, Math.floor(Cr + (xe.currentTime || 0)));
+        wr = !1;
+        var a = e + "?start=" + t;
+        return (Xi && (a += "&a=" + Xi), jr("Reanudando vídeo…"), void Gr(a));
+      }
+      try {
+        var i = xe.play();
+        i && i.catch && i.catch(function () {});
+      } catch (e) {}
+    }
+  }
+  var Ir = 0,
+    Er = null,
+    Ar = null;
+  function Dr() {
+    Ar && (clearTimeout(Ar), (Ar = null));
+  }
+  function Pr(e) {
+    if (!Ar && !X.streamError) {
+      var t = (xe && xe.currentTime) || 0;
+      Ar = setTimeout(function () {
+        ((Ar = null),
+          X.streamError ||
+            !xe ||
+            xe.paused ||
+            xe.readyState >= 3 ||
+            (xe.currentTime || 0) > t + 0.35 ||
+            jr(e));
+      }, 700);
+    }
+  }
+  var Or = !1,
+    qr = null;
+  function Nr() {
+    ((Or = !1), qr && (clearTimeout(qr), (qr = null)));
+  }
+  function Rr() {
+    if (((Er = null), xe && Ir)) {
+      if (br) {
+        if (Or) return void (Ir = 0);
+        Or = !0;
+        var e = Cr + (xe.currentTime || 0),
+          t = Math.max(0, e + Ir);
+        Ir = 0;
+        var a = (X.playerItem && X.playerItem.duration) || xe.duration || 0;
+        (a > 0 && t > a - 2 && (t = Math.max(0, a - 2)), (Cr = Math.floor(t)));
+        var i = br + "?start=" + Cr;
+        return ((qr = setTimeout(Nr, 12e3)), void Gr(i));
+      }
+      var n = (xe.currentTime || 0) + Ir;
+      Ir = 0;
+      var r = xe.duration || 0;
+      (n < 0 && (n = 0), r > 0 && n > r - 1 && (n = r - 1));
+      try {
+        xe.currentTime = n;
+      } catch (e) {}
+    } else Ir = 0;
+  }
+  function li(e) {
+    xe &&
+      ((Ir += e),
+      Er && clearTimeout(Er),
+      (Er = setTimeout(Rr, 800)),
+      si(e > 0 ? "fwd" : "rew"),
+      setTimeout(function () {
+        si("none");
+      }, 600));
+  }
+  function Vr() {
+    return xe ? (br ? Cr + (xe.currentTime || 0) : xe.currentTime || 0) : 0;
+  }
+  function Hr() {
+    var e = xe && isFinite(xe.duration) && xe.duration > 0 ? xe.duration : 0;
+    return (
+      !e &&
+        X.playerEpisode &&
+        X.playerEpisode.duration &&
+        (e = ii(X.playerEpisode.duration)),
+      !e &&
+        X.playerItem &&
+        X.playerItem.duration &&
+        (e = ii(X.playerItem.duration)),
+      e || 0
+    );
+  }
+  function Ur(e) {
+    if (Ye) {
+      var t = Ze,
+        a = Vr();
+      ((Ye = !1),
+        Pe && Pe.classList.remove("is-scrubbing"),
+        e && Math.abs(t - a) >= 1 && li(t - a),
+        oi(Vr(), Hr()),
+        rt(Ce),
+        ci());
+    }
+  }
+  function Fr() {
+    var e = Hr();
+    Pe && e
+      ? ((Ze = Math.max(0, Math.min(e - 1, Vr()))),
+        (Ye = !0),
+        Pe.classList.add("is-scrubbing"),
+        pi(),
+        X.infoTimer && (clearTimeout(X.infoTimer), (X.infoTimer = null)),
+        oi(Ze, e),
+        rt(Pe))
+      : pi();
+  }
+  function Br(e) {
+    var t = Hr();
+    if (Ye && t) {
+      var a = Math.max(60, Math.min(300, Math.round(0.05 * t)));
+      oi((Ze = Math.max(0, Math.min(t - 1, Ze + e * a))), t);
+    }
+  }
+  function zr() {
+    (Lr(), "vod" === X.playerMode && xe) &&
+      sn(
+        br ? Cr + (xe.currentTime || 0) : xe.currentTime || 0,
+        xe && isFinite(xe.duration) && xe.duration > 0
+          ? xe.duration
+          : ii(
+              (X.playerEpisode && X.playerEpisode.duration) ||
+                (X.playerItem && X.playerItem.duration) ||
+                0,
+            ),
+        !0,
+      );
+    ((X.streamError = ""),
+      Dr(),
+      jr(""),
+      si("none"),
+      ri(),
+      Er && (clearTimeout(Er), (Er = null), (Ir = 0)),
+      Nr(),
+      (wr = !1),
+      (br = ""),
+      (Cr = 0),
+      yr++);
+    var e = mr;
+    if (!e && gr && -1 !== gr.indexOf("127.0.0.1")) {
+      var a = /^(http:\/\/127\.0\.0\.1:\d+)/.exec(gr);
+      a && (e = a[1]);
+    }
+    if (e)
+      try {
+        var i = new XMLHttpRequest();
+        (i.open("GET", e + "/media/abort", !0), i.send());
+      } catch (e) {}
+    try {
+      P("abortMedia", {}, function () {});
+    } catch (e) {}
+    if (((gr = ""), (mr = ""), xe)) {
+      ((xe.onerror = null),
+        (xe.onwaiting = null),
+        (xe.onstalled = null),
+        (xe.onloadeddata = null),
+        (xe.oncanplay = null),
+        (xe.onloadedmetadata = null),
+        (xe.ondurationchange = null),
+        (xe.onplaying = null),
+        (xe.onended = null),
+        (xe.ontimeupdate = null),
+        (xe.onpause = null),
+        (xe.onplay = null));
+      try {
+        xe.pause();
+      } catch (e) {}
+      try {
+        xe.currentTime = 0;
+      } catch (e) {}
+      xe.removeAttribute("src");
+      try {
+        xe.src = "";
+      } catch (e) {}
+      for (; xe.firstChild;) xe.removeChild(xe.firstChild);
+      (xe.classList.remove("is-active"),
+        Te && (Te.style.display = "block"),
+        (function () {
+          Wr && (clearTimeout(Wr), (Wr = null));
+          Le || (Le = t("player-mode-hint"));
+          Le && (Le.classList.remove("is-active"), (Le.textContent = ""));
+        })());
+    }
+  }
+  function jr(e) {
+    (_e || (_e = t("player-status")),
+      _e &&
+        (e
+          ? ((_e.textContent = e), _e.classList.add("is-active"))
+          : ((_e.textContent = ""), _e.classList.remove("is-active"))));
+  }
+  var Wr = null,
+    Xr = "";
+  function $r() {
+    if (
+      "vod" === X.playerMode &&
+      ("smooth" === X.streamMode || "relay" === X.streamMode) &&
+      "player" === X.screen &&
+      (Le || (Le = t("player-mode-hint")), Le)
+    ) {
+      var a =
+        String((X.playerItem && X.playerItem.id) || "") +
+        "|" +
+        String((X.playerEpisode && X.playerEpisode.id) || "");
+      ("|" !== a && a === Xr) ||
+        ((Xr = a),
+        (Le.textContent = ""),
+        Le.appendChild(e("span", "pmh-title", "Modo Fluido activado")),
+        Le.appendChild(
+          e(
+            "span",
+            "pmh-sub",
+            "Úsalo cuando las películas van trabadas o se cortan. Si tu TV las reproduce bien en Normal, déjalo en Normal para ver mejor imagen.",
+          ),
+        ),
+        Le.classList.add("is-active"),
+        Wr && clearTimeout(Wr),
+        (Wr = setTimeout(function () {
+          ((Wr = null), Le && Le.classList.remove("is-active"));
+        }, 9e3)));
+    }
+  }
+  function Gr(e, t) {
+    if (xe && e) {
+      var a = !!(t = t || {}).nativeHls;
+      (zr(), (wr = !1), (gr = e));
+      var i = /^(http:\/\/127\.0\.0\.1:\d+)/.exec(e);
+      if ((i && (mr = i[1]), kr(e))) {
+        br = e.split("?")[0];
+        var n = /[?&]start=(\d+)/.exec(e);
+        ((Cr = n ? parseInt(n[1], 10) : 0),
+          (function (e) {
+            (Lr(),
+              kr(e) &&
+                !xr &&
+                (Sr = setTimeout(function () {
+                  ((Sr = null),
+                    !xe ||
+                      xe.readyState >= 2 ||
+                      (console.warn(
+                        "[relay] Watchdog: Modo Fluido no arrancó en 15 s, volviendo a Modo Normal...",
+                      ),
+                      (xr = !0),
+                      (X.streamMode = "normal"),
+                      K(STREAM_MODE_KEY, "normal"),
+                      jr("Modo Fluido no respondió, usando Modo Normal…"),
+                      sr()));
+                }, 15e3)));
+          })(e));
+      } else ((br = ""), (Cr = 0), Lr());
+      (jr("Conectando con el vídeo…"), (X.streamError = ""));
+      try {
+        xe.preload = "auto";
+      } catch (e) {}
+      var r = (X.playerItem && X.playerItem.streamMime) || "",
+        o =
+          -1 !== e.indexOf(".m3u8") ||
+          -1 !== r.indexOf("mpegurl") ||
+          !(!X.playerItem || !X.playerItem.isHls),
+        s = o
+          ? "application/vnd.apple.mpegurl"
+          : -1 !== e.indexOf(".mp4") || -1 !== r.indexOf("mp4")
+            ? "video/mp4"
+            : "video/mp2t";
+      ((xe.onerror = function () {
+        (Gn(), Nr());
+        var t = xe.error && xe.error.code;
+        if (4 === t && "live" === X.playerMode && o && !a) {
+          var i = Zr;
+          return (
+            jr("Reintentando señal con compatibilidad webOS…"),
+            void setTimeout(function () {
+              "live" === X.playerMode && Zr === i && Gr(e, { nativeHls: !0 });
+            }, 0)
+          );
+        }
+        if (
+          4 === t &&
+          "vod" === X.playerMode &&
+          "normal" === X.streamMode &&
+          Gi &&
+          Date.now() < Gi
+        )
+          return (
+            (Gi = 0),
+            (X.streamError =
+              "No fue posible cambiar el idioma en reproducción Normal"),
+            void jr(X.streamError)
+          );
+        if (
+          4 === t &&
+          "vod" === X.playerMode &&
+          "normal" === X.streamMode &&
+          X.playerItem
+        ) {
+          var n = X.playerItem,
+            r = Ln(n) || Sn(n);
+          if (wn !== r)
+            return (
+              (wn = r),
+              (X.streamMode = "smooth"),
+              jr("Reintentando película en modo compatible…"),
+              void setTimeout(function () {
+                "vod" === X.playerMode &&
+                  X.playerItem === n &&
+                  "smooth" === X.streamMode &&
+                  sr();
+              }, 0)
+            );
+        }
+        ((X.streamError =
+          "No se pudo abrir el stream (código " + (t || "error") + ")"),
+          xe.classList.remove("is-active"),
+          Te && (Te.style.display = "block"),
+          jr(X.streamError));
+      }),
+        (xe.onloadeddata = function () {
+          (v(), $r());
+        }),
+        (xe.oncanplay = function () {
+          (Nr(), v());
+        }),
+        (xe.onloadedmetadata = function () {
+          if ((v(), "vod" === X.playerMode && "normal" === X.streamMode)) {
+            var e = X.playerItem && X.playerItem.streamAudioInfo,
+              t = $i ? Xi : In(e);
+            rr(t) && (Xi = t);
+          }
+          if ("vod" === X.playerMode) {
+            var a = br ? Cr : xe.currentTime || 0,
+              i =
+                xe && isFinite(xe.duration) && xe.duration > 0
+                  ? xe.duration
+                  : 0,
+              n =
+                X.playerEpisode && X.playerEpisode.duration
+                  ? ii(X.playerEpisode.duration)
+                  : 0,
+              r =
+                X.playerItem && X.playerItem.duration
+                  ? ii(X.playerItem.duration)
+                  : 0;
+            oi(a, i || n || r || 0);
+          }
+        }),
+        (xe.ondurationchange = function () {
+          if ("vod" === X.playerMode) {
+            var e = br ? Cr + (xe.currentTime || 0) : xe.currentTime || 0,
+              t =
+                xe && isFinite(xe.duration) && xe.duration > 0
+                  ? xe.duration
+                  : 0,
+              a =
+                X.playerEpisode && X.playerEpisode.duration
+                  ? ii(X.playerEpisode.duration)
+                  : 0,
+              i =
+                X.playerItem && X.playerItem.duration
+                  ? ii(X.playerItem.duration)
+                  : 0;
+            oi(e, t || a || i || 0);
+          }
+        }),
+        (xe.onplaying = function () {
+          (Lr(), Gn(), v());
+        }),
+        (xe.onended = function () {
+          "vod" === X.playerMode && Qn();
+        }),
+        (xe.ontimeupdate = function () {
+          if (
+            (!X.streamError &&
+              (xe.currentTime > 0 || xe.readyState >= 2) &&
+              v(),
+            "vod" === X.playerMode)
+          ) {
+            var e = br ? Cr + (xe.currentTime || 0) : xe.currentTime || 0,
+              t =
+                xe && isFinite(xe.duration) && xe.duration > 0
+                  ? xe.duration
+                  : 0,
+              a =
+                X.playerEpisode && X.playerEpisode.duration
+                  ? ii(X.playerEpisode.duration)
+                  : 0,
+              i =
+                X.playerItem && X.playerItem.duration
+                  ? ii(X.playerItem.duration)
+                  : 0,
+              n = t || a || i || 0;
+            (oi(e, n), yn(e), sn(e, n));
+          }
+        }),
+        (xe.onpause = function () {
+          (ri(), "vod" === X.playerMode) &&
+            (sn(
+              br ? Cr + (xe.currentTime || 0) : xe.currentTime || 0,
+              xe && isFinite(xe.duration) && xe.duration > 0
+                ? xe.duration
+                : ii(
+                    (X.playerEpisode && X.playerEpisode.duration) ||
+                      (X.playerItem && X.playerItem.duration) ||
+                      0,
+                  ),
+              !0,
+            ),
+            si("pause"),
+            br && (wr = !0));
+        }),
+        (xe.onplay = function () {
+          "vod" === X.playerMode &&
+            (si("none"),
+            ri(),
+            (ni = setInterval(function () {
+              if (
+                "player" === X.screen &&
+                "vod" === X.playerMode &&
+                xe &&
+                !xe.paused
+              ) {
+                var e = br ? Cr + (xe.currentTime || 0) : xe.currentTime || 0,
+                  t =
+                    xe && isFinite(xe.duration) && xe.duration > 0
+                      ? xe.duration
+                      : 0,
+                  a =
+                    X.playerEpisode && X.playerEpisode.duration
+                      ? ii(X.playerEpisode.duration)
+                      : 0,
+                  i =
+                    X.playerItem && X.playerItem.duration
+                      ? ii(X.playerItem.duration)
+                      : 0,
+                  n = t || a || i || 0;
+                (oi(e, n), yn(e), sn(e, n));
+              }
+            }, 500)));
+        }),
+        (xe.onwaiting = function () {
+          Pr("Cargando vídeo…");
+        }),
+        (xe.onstalled = function () {
+          Pr("Conectando…");
+        }));
+      for (
+        var l = {
+            mediaTransportType: o ? "HLS" : "URI",
+            option: { transmission: { playTime: { start: 0 } } },
+          },
+          d = encodeURI(JSON.stringify(l)),
+          c = a ? s : s + ";mediaOption=" + d;
+        xe.firstChild;
+      )
+        xe.removeChild(xe.firstChild);
+      if ((xe.removeAttribute("src"), a))
+        try {
+          xe.mediaOption = null;
+        } catch (e) {}
+      else
+        try {
+          xe.mediaOption = l;
+        } catch (e) {}
+      var p = document.createElement("source");
+      if ((p.setAttribute("src", e), p.setAttribute("type", c), o))
+        try {
+          xe.load();
+        } catch (e) {}
+      if ((xe.appendChild(p), !o))
+        try {
+          xe.src = e;
+        } catch (e) {}
+      try {
+        xe.currentTime = 0;
+      } catch (e) {}
+      (xe.classList.add("is-active"), Te && (Te.style.display = "none"));
+      try {
+        xe.load();
+        var u = xe.play();
+        u &&
+          u.catch &&
+          u.catch(function () {
+            xe.error ||
+              ((X.streamError = "Pulsa OK para iniciar la reproducción"),
+              jr(X.streamError));
+          });
+      } catch (e) {
+        ((X.streamError = "Pulsa OK para iniciar la reproducción"),
+          jr(X.streamError));
+      }
+    }
+    function v() {
+      (Dr(), jr(""));
+    }
+  }
+  function Qr(e, t) {
+    var a = yr;
+    function i() {
+      var i = { contentId: e.id };
+      if (
+        ((i.playbackMode = X.streamMode),
+        (i.forceRelay = "smooth" === X.streamMode || "relay" === X.streamMode),
+        i.forceRelay)
+      ) {
+        var n = _r();
+        i.container = n;
+      }
+      i.trackIndex = X.trackIndex || 0;
+      var r = X.playerEpisode,
+        o = (r && r.id) || (e && e.id) || "",
+        s = un[o] || un[Ln(e)],
+        l =
+          (s && s.audio) || (r && r.streamAudioInfo) || e.streamAudioInfo || "";
+      if (
+        ((Xi = $i ? Math.max(0, Number(Xi) || 0) : In(l)),
+        (i.audioTrack = Xi || 0),
+        x(e))
+      ) {
+        var d = X.playerEpisode,
+          c = e.seasonId || e.id;
+        if (d && d.id) ((i.contentId = d.id), (i.seriesContentId = c));
+        else {
+          if (!e.episodes || !e.episodes.length) return t("");
+          ((X.playerEpisode = e.episodes[0]),
+            (i.contentId = e.episodes[0].id),
+            (i.seriesContentId = c));
+        }
+      }
+      P(i.forceRelay ? "resolveSmooth" : "resolve", i, function (i, n) {
+        if (a === yr) {
+          if (i || !n || !1 === n.returnValue)
+            return (
+              (X.streamError =
+                "No se pudo resolver el título" + (i ? ": " + i : "")),
+              jr(X.streamError),
+              t("")
+            );
+          (D("vod", n),
+            (e.streamMime = n.mime || ""),
+            (e.streamCodec = n.codec || ""),
+            n.duration > 0
+              ? ((e.duration = n.duration),
+                X.playerEpisode && (X.playerEpisode.duration = n.duration))
+              : (e.duration = e.duration || 0),
+            (e.subtitles = n.subtitles || []),
+            (e.streamAudioInfo = n.audio || e.streamAudioInfo || ""),
+            X.playerEpisode &&
+              (X.playerEpisode.streamAudioInfo = n.audio || ""),
+            (e.isHls = !!n.isHls),
+            !$i && n.audio && (Xi = In(n.audio)));
+          var r = {
+            audio: n.audio || e.streamAudioInfo,
+            subtitles: e.subtitles,
+            tracks: n.availableTracks || [],
+            selected: n.selectedTrack || {},
+            duration: n.duration || 0,
+          };
+          ((un[Ln(e)] = r), An(r));
+          try {
+            window.__xuperStreamInfo = {
+              selectedTrack: n.selectedTrack || {},
+              availableTracks: n.availableTracks || [],
+            };
+          } catch (e) {}
+          t(n.proxyPath || n.url || "");
+        }
+      });
+    }
+    if (
+      x(e) &&
+      !X.playerEpisode &&
+      (!e.episodes || !e.episodes.length) &&
+      !e._detailsLoaded
+    )
+      return (
+        jr("Cargando capítulos…"),
+        void U(e, function () {
+          a === yr && i();
+        })
+      );
+    i();
+  }
+  function Jr(e, t) {
+    if (xe) {
+      (t &&
+        ((X.playerEpisode = t), (X.playerSeasonIndex = X.detailSeason || 0)),
+        e && (X.playerItem = e));
+      var a = e || X.playerItem;
+      if ((a && xn(a), zr(), a)) {
+        (($i = !1), (Xi = 0));
+        var i = t || X.playerEpisode,
+          n = (i && i.id) || (a && a.id) || "",
+          r = n ? un[n] : null,
+          o = (r && r.audio) || (i && i.streamAudioInfo) || "";
+        if (a._portal && !$i && !o) {
+          var s = !1,
+            l = yr,
+            d = function () {
+              if (!s && l === yr) {
+                s = !0;
+                var e = (t && (t.number || t.seriesNumber)) || "";
+                (jr(e ? "Cargando capítulo " + e + "…" : "Cargando capítulo…"),
+                  Qr(a, function (e) {
+                    e
+                      ? Gr(e)
+                      : X.streamError || jr("Sin fuente de reproducción");
+                  }));
+              }
+            };
+          return (
+            setTimeout(d, 2500),
+            void Mn(a, function (e) {
+              d();
+            })
+          );
+        }
+        if (a._portal) {
+          var c = (t && (t.number || t.seriesNumber)) || "";
+          return (
+            jr(c ? "Cargando capítulo " + c + "…" : "Cargando capítulo…"),
+            void Qr(a, function (e) {
+              e ? Gr(e) : X.streamError || jr("Sin fuente de reproducción");
+            })
+          );
+        }
+        a.streamUrl && Gr(a.streamUrl);
+      }
+    }
+  }
+  function Kr(e, a) {
+    Ce || lr();
+    var i =
+        !a ||
+        !X.playerEpisode ||
+        X.playerEpisode === a ||
+        X.playerEpisode.id === a.id,
+      n = "detail" === X.screen && xe && !!xe.src && X.playerItem === e && i;
+    ((X.playerMode = "vod"),
+      e && X.playerItem !== e && _n(),
+      e && (X.playerItem = e),
+      a && (X.playerEpisode = a),
+      e && xn(e),
+      (X.playerReturn = { screen: "detail", focus: X.focus }));
+    var r = t("screen-player"),
+      o = t("screen-detail");
+    (r && (r.classList.remove("is-mini"), r.classList.add("is-active")),
+      o && o.classList.remove("is-active"),
+      (X.screen = "player"),
+      Ce.classList.add("is-vod"),
+      ao(),
+      rt(Ce),
+      vi(),
+      n
+        ? X.streamError || (Dr(), jr(""), $r())
+        : Jr(X.playerItem, X.playerEpisode));
+  }
+  function Yr(e, t, a) {
+    "vod" !== e || "detail" !== X.screen
+      ? (Ce || lr(),
+        "live" === e && jt(),
+        (X.playerMode = e),
+        t && X.playerItem !== t && _n(),
+        (X.playerItem = t || null),
+        (X.playerEpisode = a || null),
+        "vod" === e && t && xn(t),
+        (X.playerReturn = { screen: X.screen, focus: X.focus }),
+        (X.channelsOpen = !1),
+        we.classList.remove("is-active"),
+        Se.classList.remove("is-active"),
+        Ce.classList.toggle("is-vod", "vod" === e),
+        ao(),
+        lt("player"),
+        rt(Ce),
+        ao(),
+        "vod" === e
+          ? (vi(), Jr(X.playerItem, X.playerEpisode))
+          : (pi(), to(F[X.channel])))
+      : Kr(t, a);
+  }
+  var Zr = 0,
+    eo = null;
+  function to(e, t) {
+    if (
+      (eo && (clearTimeout(eo), (eo = null)),
+      e || (e = F[X.channel]),
+      e && (e.channelCode || e.streamUrl))
+    ) {
+      var a = function () {
+        var t = ++Zr;
+        (jr("Cargando señal " + (e.name || "") + "…"),
+          P(
+            "resolveLive",
+            e.streamUrl
+              ? { streamUrl: e.streamUrl }
+              : { channelCode: e.channelCode },
+            function (e, a) {
+              if (t === Zr) {
+                if (e || !a || !1 === a.returnValue)
+                  return (
+                    (X.streamError =
+                      "No se pudo conectar con la señal" + (e ? ": " + e : "")),
+                    void jr(X.streamError)
+                  );
+                D("live", a);
+                var i = a.proxyPath || a.url;
+                if (!i)
+                  return (
+                    (X.streamError = "Señal no disponible"),
+                    void jr(X.streamError)
+                  );
+                (jr(""), pi(), Gr(i));
+              }
+            },
+          ));
+      };
+      t ? a() : (eo = setTimeout(a, 180));
+    }
+  }
+  function ao() {
+    var e = "live" === X.playerMode,
+      t = F[X.channel] || {},
+      a = we.querySelector(".pi-index"),
+      i = we.querySelector(".pi-name"),
+      n = we.querySelector(".pi-date"),
+      o = we.querySelector(".pi-range"),
+      s = we.querySelector(".pi-now"),
+      d = we.querySelector(".pi-next"),
+      c = we.querySelector(".pi-uhd"),
+      p = we.querySelector(".pi-logo");
+    if (e)
+      (Me && Me.classList.remove("is-active"),
+        we && (we.style.display = ""),
+        (a.style.display = "block"),
+        (a.textContent = r(t.index || X.channel + 1)),
+        (i.textContent = t.name || ""),
+        (function () {
+          var e = we.querySelector(".pi-namerow");
+          if (!e) return;
+          we.querySelector(".pi-index");
+          var t = e.querySelector(".pi-name"),
+            a = e.querySelector(".pi-uhd"),
+            i = 165;
+          ((e.style.position = "absolute"),
+            (e.style.left = 367.5 + i + "px"),
+            (e.style.top = "13.5px"),
+            (e.style.width = "480px"),
+            (e.style.height = "58px"),
+            (e.style.display = "block"),
+            (t.style.position = "absolute"),
+            (t.style.left = "0px"),
+            (t.style.top = "8px"),
+            (t.style.width = "480px"),
+            (t.style.height = "50px"),
+            (t.style.lineHeight = "50px"),
+            a &&
+              ((a.style.left = t.offsetWidth + 30 + "px"),
+              (a.style.top = "18.5px")));
+        })(),
+        (n.textContent = "Hoy"),
+        (o.textContent = t.time || ""),
+        (s.style.display = "block"),
+        (s.textContent = t.now || "En vivo"),
+        (d.style.display = t.next ? "block" : "none"),
+        t.next && (d.textContent = "Siguiente: " + t.next),
+        (c.style.display = t.uhd ? "block" : "none"),
+        (p.style.display = "block"),
+        p &&
+          (t.logo
+            ? (p.style.backgroundImage = "url(" + t.logo + ")")
+            : (p.style.backgroundImage = "")));
+    else {
+      we && (we.classList.remove("is-active"), (we.style.display = "none"));
+      var u = X.playerItem || l[0];
+      if (Ee)
+        if (x(u) && X.playerEpisode) {
+          var v = X.playerEpisode.title || X.playerEpisode.name,
+            f = X.playerEpisode.number || X.playerEpisode.seriesNumber,
+            h = v || (f ? "Capítulo " + f : "");
+          Ee.textContent = h ? u.title + " - " + h : u.title;
+        } else Ee.textContent = u.title;
+      (Ie &&
+        (Ie.src =
+          u.poster ||
+          u.cover ||
+          "assets/original/common/bg_placehoder_vertical.png"),
+        oi(xe ? xe.currentTime : 0, xe ? xe.duration : 0));
+    }
+    for (var m in Xe)
+      Xe.hasOwnProperty(m) &&
+        Xe[m].classList.toggle("is-current", Xe[m]._channel === X.channel);
+    io();
+  }
+  function io() {
+    var e = we.querySelector(".pi-quality"),
+      t = we.querySelector(".pi-scale"),
+      a = we.querySelector(".pi-func");
+    e &&
+      t &&
+      a &&
+      ((e.style.left = "517.5px"),
+      (t.style.left = e.offsetLeft + e.offsetWidth + 30 + "px"),
+      (a.style.left = t.offsetLeft + t.offsetWidth + 30 + "px"));
+  }
+  function no() {
+    if ("live" === X.playerMode) {
+      ((X.channelsOpen = !0),
+        Se.classList.add("is-active"),
+        dr(),
+        hr(X.channel),
+        cr());
+      var e = Xe[X.channel];
+      if (e) {
+        rt(e);
+        var t = e.parentNode,
+          a = 111 * X.channel;
+        (a < t.scrollTop || a + 109.5 > t.scrollTop + t.clientHeight) &&
+          (t.scrollTop = Math.max(0, a - 120));
+      }
+    }
+  }
+  function ro() {
+    ((X.channelsOpen = !1),
+      Se.classList.remove("is-active"),
+      "player" === X.screen && rt(Ce));
+  }
+  function oo() {
+    var e = t("app");
+    if (e) {
+      var a = (function () {
+          var e =
+              window.innerWidth ||
+              (document.documentElement &&
+                document.documentElement.clientWidth) ||
+              0,
+            t =
+              window.innerHeight ||
+              (document.documentElement &&
+                document.documentElement.clientHeight) ||
+              0;
+          (e && t) || ((e = 1920), (t = 1080));
+          var a = Math.floor((screen && screen.width) || 0),
+            i = Math.floor((screen && screen.height) || 0),
+            n = e / t,
+            r = a && i ? a / i : 0;
+          return (
+            a >= 2560 &&
+              a >= 1.25 * e &&
+              i >= 1.25 * t &&
+              Math.abs(n - r) < 0.03 &&
+              ((e = a), (t = i)),
+            { w: e, h: t, panel: a > 0 && i > 0 ? { w: a, h: i } : null }
+          );
+        })(),
+        i = a.w,
+        n = a.h,
+        r = Math.min(i / 1920, n / 1080);
+      ((!isFinite(r) || r <= 0) && (r = 1), (r = Math.round(1e4 * r) / 1e4));
+      var o = Math.max(0, Math.round((i - 1920 * r) / 2)),
+        s = Math.max(0, Math.round((n - 1080 * r) / 2));
+      ((e.style.left = o + "px"),
+        (e.style.top = s + "px"),
+        (e.style.webkitTransform = "scale(" + r + ")"),
+        (e.style.transform = "scale(" + r + ")"),
+        (window.__xuperViewport = {
+          w: i,
+          h: n,
+          scale: r,
+          panelW: a.panel ? a.panel.w : 0,
+          panelH: a.panel ? a.panel.h : 0,
+        }));
+    }
+  }
+  function so() {
+    (oo(),
+      window.addEventListener("resize", oo, !1),
+      window.addEventListener("orientationchange", oo, !1),
+      document.addEventListener("visibilitychange", oo, !1),
+      setTimeout(oo, 250),
+      setTimeout(oo, 1200),
+      setTimeout(oo, 3e3),
+      document.addEventListener("keydown", ut, !1),
+      document.addEventListener(
+        "keyup",
+        function (e) {
+          (461 !== (e.keyCode || e.which) &&
+            "Back" !== e.key &&
+            "GoBack" !== e.key) ||
+            ut(e);
+        },
+        !1,
+      ),
+      window.addEventListener(
+        "popstate",
+        function () {
+          ct();
+        },
+        !1,
+      ),
+      document.addEventListener("click", function (e) {
+        var t = n(e.target, ".focusable");
+        t && (rt(t, !0), t._activate && t._activate());
+      }));
+    try {
+      _a();
+    } catch (e) {
+      console.error("buildSearch error:", e);
+    }
+    try {
+      window.webOS &&
+        "function" == typeof window.webOS.deviceInfo &&
+        window.webOS.deviceInfo(function (e) {
+          if (e && (e.version || e.versionMajor || e.sdkVersion)) {
+            var t = parseFloat(
+              String(e.version || e.versionMajor || e.sdkVersion || ""),
+            );
+            !isNaN(t) && t > 0 && (Tr = t);
+          }
+        });
+    } catch (e) {}
+    try {
+      !(function () {
+        if (I()) {
+          var e = p.serviceId || "com.webosflux.xuptertv.fidelity.service";
+          try {
+            window.webOS.service.request("luna://" + e, {
+              method: "keepAlive",
+              parameters: { subscribe: !0 },
+              resubscribe: !0,
+              onSuccess: function () {},
+              onFailure: function () {},
+            });
+          } catch (e) {}
+          setInterval(function () {
+            try {
+              window.webOS.service.request("luna://" + e, {
+                method: "heartbeat",
+                parameters: {},
+                onSuccess: function () {},
+                onFailure: function () {},
+              });
+            } catch (e) {}
+          }, 15e3);
+        }
+      })();
+    } catch (e) {}
+    try {
+      P("prewarm", {}, function () {});
+    } catch (e) {}
+    var e, a;
+    ((e = t("welcome-loading-img")),
+      (a = 1),
+      et && (clearInterval(et), (et = null)),
+      tt && (clearTimeout(tt), (tt = null)),
+      (tt = setTimeout(function () {
+        vt();
+      }, 4500)),
+      (et = setInterval(function () {
+        ++a > 16
+          ? vt()
+          : e &&
+            (e.src =
+              "assets/original/welcome/img_welcome_loading" + a + ".png");
+      }, 250)));
+    try {
+      V();
+    } catch (e) {
+      console.error("loadVodCatalog error:", e);
+    }
+    try {
+      Gt();
+    } catch (e) {
+      console.error("loadLiveChannels error:", e);
+    }
+    (setTimeout(function () {
+      try {
+        oa(!0);
+      } catch (e) {}
+    }, 6e3),
+      (window.__xuper = {
+        version: "4.34.4",
+        state: X,
+        vod: l,
+        channels: F,
+        api: v,
+        portal: f,
+        service: P,
+        refreshPortal: q,
+        reloadVod: V,
+        skipWelcome: vt,
+        show: function (e) {
+          "home" === e
+            ? vt()
+            : "detail" === e
+              ? ba(l[0])
+              : "search" === e
+                ? La()
+                : "settings" === e
+                  ? Ha()
+                  : "player" === e
+                    ? Yr("live")
+                    : lt(e);
+        },
+        selectTab: function (e) {
+          (vt(), bt(e, !0));
+        },
+        openDetail: function (e) {
+          ba(l[e] || l[0]);
+        },
+        openSearch: La,
+        openSettings: Ha,
+        openPlayer: function (e, t) {
+          Yr(e || "live", l[t] || null);
+        },
+        focus: function (e) {
+          var t = "string" == typeof e ? document.querySelector(e) : e;
+          t && rt(t);
+        },
+        key: function (e) {
+          ut({ keyCode: e, preventDefault: function () {} });
+        },
+        search: function (e) {
+          (La(), Aa(e));
+        },
+        settingsPanel: function (e) {
+          (Ha(), Ua(e, !0));
+        },
+      }),
+      (function () {
+        var e = String(location.search || "").replace(/^\?/, "");
+        if (!e) return;
+        for (var t = {}, a = e.split("&"), i = 0; i < a.length; i++)
+          if (a[i]) {
+            var n = a[i].split("=");
+            t[decodeURIComponent(n[0])] = decodeURIComponent(
+              n.slice(1).join("=") || "",
+            );
+          }
+        if (void 0 !== t.ch) {
+          var r = parseInt(t.ch, 10) || 0;
+          X.channel = Math.max(0, Math.min(F.length - 1, r));
+        }
+        var o = t.screen || "home";
+        if ("welcome" === o) return;
+        (vt(),
+          void 0 !== t.tab
+            ? bt(parseInt(t.tab, 10) || 0, !0)
+            : (bt(0, !1), rt(ne)));
+        "detail" === o
+          ? ba(l[parseInt(t.vod, 10) || 0])
+          : "search" === o
+            ? (La(), t.q && Aa(t.q))
+            : "settings" === o
+              ? (Ha(), void 0 !== t.panel && Ua(parseInt(t.panel, 10) || 0, !0))
+              : "player" === o &&
+                (Yr(
+                  "vod" === t.mode ? "vod" : "live",
+                  l[parseInt(t.vod, 10) || 0],
+                ),
+                "1" === t.channels && no());
+        if (t.focus) {
+          var s = document.querySelector(t.focus);
+          s && rt(s);
+        }
+      })());
+  }
+  function lo() {
+    (zr(), Da());
+  }
+  (window.addEventListener("beforeunload", lo),
+    window.addEventListener("unload", lo),
+    document.addEventListener("visibilitychange", function () {
+      document.hidden && lo();
+    }),
+    (window.onerror = function (e, t, a, i, n) {
+      try {
+        (console.error(
+          "[XuperTV error] " + e + " at " + t + ":" + a + (i ? ":" + i : ""),
+        ),
+          X && "welcome" === X.screen && vt());
+      } catch (e) {}
+      return !1;
+    }),
+    "loading" === document.readyState
+      ? document.addEventListener("DOMContentLoaded", so)
+      : so());
+})();

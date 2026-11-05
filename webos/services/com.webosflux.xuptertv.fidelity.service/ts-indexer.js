@@ -1,73 +1,142 @@
-'use strict';
-
-/* Small MPEG-TS indexer for virtual HLS. It never changes media bytes: it
- * finds HEVC random-access NALs and emits only packet-aligned byte ranges. */
+"use strict";
 var PACKET = 188;
-
-function ptsAt(b, p) {
-  return ((b[p] & 14) * 536870912) + (b[p + 1] * 4194304) + ((b[p + 2] & 254) * 16384) + (b[p + 3] * 128) + ((b[p + 4] & 254) / 2);
+function ptsAt(t, r) {
+  return (
+    536870912 * (14 & t[r]) +
+    4194304 * t[r + 1] +
+    16384 * (254 & t[r + 2]) +
+    128 * t[r + 3] +
+    (254 & t[r + 4]) / 2
+  );
 }
-
-function create(length, readRange) {
-  var x = { length: length, offset: 0, pmt: -1, video: -1, pat: 0, pts: 0,
-    current: null, segments: [], complete: false, running: false, waiters: [] };
-  function notify() { var w = x.waiters.splice(0); for (var i = 0; i < w.length; i++) { w[i](); } }
-  function payload(b, p) {
-    var afc = (b[p + 3] >> 4) & 3, at = p + 4;
-    if (afc === 2 || afc === 0) { return -1; }
-    if (afc === 3) { at += 1 + b[at]; }
-    return at < p + PACKET ? at : -1;
+function create(t, r) {
+  var n = {
+    length: t,
+    offset: 0,
+    pmt: -1,
+    video: -1,
+    pat: 0,
+    pts: 0,
+    current: null,
+    segments: [],
+    complete: !1,
+    running: !1,
+    waiters: [],
+  };
+  function e() {
+    for (var t = n.waiters.splice(0), r = 0; r < t.length; r++) t[r]();
   }
-  function tableStart(b, at, pusi) { return pusi ? at + 1 + b[at] : at; }
-  function parsePat(b, at, pusi) {
-    at = tableStart(b, at, pusi); if (at < 0 || b[at] !== 0) { return; }
-    var end = at + 3 + (((b[at + 1] & 15) << 8) | b[at + 2]) - 4;
-    for (var p = at + 8; p + 3 < end; p += 4) { if (b[p] || b[p + 1]) { x.pmt = ((b[p + 2] & 31) << 8) | b[p + 3]; return; } }
+  function u(t, r) {
+    var n = (t[r + 3] >> 4) & 3,
+      e = r + 4;
+    return 2 === n || 0 === n
+      ? -1
+      : (3 === n && (e += 1 + t[e]), e < r + PACKET ? e : -1);
   }
-  function parsePmt(b, at, pusi) {
-    at = tableStart(b, at, pusi); if (at < 0 || b[at] !== 2) { return; }
-    var end = at + 3 + (((b[at + 1] & 15) << 8) | b[at + 2]) - 4;
-    var p = at + 12 + (((b[at + 10] & 15) << 8) | b[at + 11]);
-    while (p + 4 < end) { var typ = b[p], pid = ((b[p + 1] & 31) << 8) | b[p + 2], n = ((b[p + 3] & 15) << 8) | b[p + 4]; if (typ === 0x24) { x.video = pid; return; } p += 5 + n; }
+  function i(t, r, n) {
+    return n ? r + 1 + t[r] : r;
   }
-  function isAccess(b, at, end) {
-    for (var i = at; i + 5 < end; i++) {
-      var z = b[i] === 0 && b[i + 1] === 0 && ((b[i + 2] === 1) || (b[i + 2] === 0 && b[i + 3] === 1));
-      if (z) { var n = i + (b[i + 2] === 1 ? 3 : 4), type = (b[n] >> 1) & 63; if (type === 19 || type === 20 || type === 21) { return true; } }
-    }
-    return false;
+  function s(t, r, e) {
+    if (!((r = i(t, r, e)) < 0 || 0 !== t[r]))
+      for (
+        var u = r + 3 + (((15 & t[r + 1]) << 8) | t[r + 2]) - 4, s = r + 8;
+        s + 3 < u;
+        s += 4
+      )
+        if (t[s] || t[s + 1])
+          return void (n.pmt = ((31 & t[s + 2]) << 8) | t[s + 3]);
   }
-  function access(pos) {
-    if (!x.pts) { return; }
-    var start = x.pat || pos;
-    if (!x.current) { x.current = { start: start, pts: x.pts }; return; }
-    var dur = (x.pts - x.current.pts) / 90000;
-    if (dur < 5 || start <= x.current.start) { return; }
-    x.segments.push({ start: x.current.start, end: start - 1, duration: dur });
-    x.current = { start: start, pts: x.pts };
-    notify();
-  }
-  function parse(b, base) {
-    for (var p = 0; p + PACKET <= b.length; p += PACKET) {
-      if (b[p] !== 0x47) { continue; }
-      var pusi = !!(b[p + 1] & 64), pid = ((b[p + 1] & 31) << 8) | b[p + 2], at = payload(b, p);
-      if (at < 0) { continue; }
-      if (pid === 0) { x.pat = base + p; parsePat(b, at, pusi); continue; }
-      if (pid === x.pmt) { parsePmt(b, at, pusi); continue; }
-      if (pid !== x.video) { continue; }
-      if (pusi && at + 13 < p + PACKET && b[at] === 0 && b[at + 1] === 0 && b[at + 2] === 1) {
-        if (b[at + 7] & 128) { x.pts = ptsAt(b, at + 9); }
+  function o(t, r, e) {
+    if (!((r = i(t, r, e)) < 0 || 2 !== t[r]))
+      for (
+        var u = r + 3 + (((15 & t[r + 1]) << 8) | t[r + 2]) - 4,
+          s = r + 12 + (((15 & t[r + 10]) << 8) | t[r + 11]);
+        s + 4 < u;
+      ) {
+        var o = t[s],
+          f = ((31 & t[s + 1]) << 8) | t[s + 2],
+          a = ((15 & t[s + 3]) << 8) | t[s + 4];
+        if (36 === o) return void (n.video = f);
+        s += 5 + a;
       }
-      if (isAccess(b, at, p + PACKET)) { access(base + p); }
+  }
+  function f(t, r, n) {
+    for (var e = r; e + 5 < n; e++) {
+      if (
+        0 === t[e] &&
+        0 === t[e + 1] &&
+        (1 === t[e + 2] || (0 === t[e + 2] && 1 === t[e + 3]))
+      ) {
+        var u = (t[e + (1 === t[e + 2] ? 3 : 4)] >> 1) & 63;
+        if (19 === u || 20 === u || 21 === u) return !0;
+      }
+    }
+    return !1;
+  }
+  function a(t) {
+    if (n.pts) {
+      var r = n.pat || t;
+      if (n.current) {
+        var u = (n.pts - n.current.pts) / 9e4;
+        u < 5 ||
+          r <= n.current.start ||
+          (n.segments.push({ start: n.current.start, end: r - 1, duration: u }),
+          (n.current = { start: r, pts: n.pts }),
+          e());
+      } else n.current = { start: r, pts: n.pts };
     }
   }
-  function next() {
-    if (x.offset >= x.length) { x.complete = true; if (x.current) { x.segments.push({ start: x.current.start, end: x.length - 1, duration: 10 }); } notify(); return; }
-    var size = Math.floor((2 * 1024 * 1024) / PACKET) * PACKET, start = x.offset, end = Math.min(x.length - 1, start + size - 1);
-    readRange(start, end, function (err, body) { if (err) { x.complete = true; notify(); return; } parse(body, start); x.offset = end + 1; setTimeout(next, 0); });
+  function c() {
+    if (n.offset >= n.length)
+      return (
+        (n.complete = !0),
+        n.current &&
+          n.segments.push({
+            start: n.current.start,
+            end: n.length - 1,
+            duration: 10,
+          }),
+        void e()
+      );
+    var t = Math.floor(2097152 / PACKET) * PACKET,
+      i = n.offset,
+      p = Math.min(n.length - 1, i + t - 1);
+    r(i, p, function (t, r) {
+      if (t) return ((n.complete = !0), void e());
+      (!(function (t, r) {
+        for (var e = 0; e + PACKET <= t.length; e += PACKET)
+          if (71 === t[e]) {
+            var i = !!(64 & t[e + 1]),
+              c = ((31 & t[e + 1]) << 8) | t[e + 2],
+              p = u(t, e);
+            p < 0 ||
+              (0 !== c
+                ? c !== n.pmt
+                  ? c === n.video &&
+                    (i &&
+                      p + 13 < e + PACKET &&
+                      0 === t[p] &&
+                      0 === t[p + 1] &&
+                      1 === t[p + 2] &&
+                      128 & t[p + 7] &&
+                      (n.pts = ptsAt(t, p + 9)),
+                    f(t, p, e + PACKET) && a(r + e))
+                  : o(t, p, i)
+                : ((n.pat = r + e), s(t, p, i)));
+          }
+      })(r, i),
+        (n.offset = p + 1),
+        setTimeout(c, 0));
+    });
   }
-  x.start = function () { if (!x.running) { x.running = true; next(); } };
-  x.when = function (fn) { x.waiters.push(fn); };
-  return x;
+  return (
+    (n.start = function () {
+      n.running || ((n.running = !0), c());
+    }),
+    (n.when = function (t) {
+      n.waiters.push(t);
+    }),
+    n
+  );
 }
 module.exports = { create: create };
