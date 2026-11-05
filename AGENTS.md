@@ -99,23 +99,33 @@ Antes de entregar cualquier cambio que afecte la app, comprobar:
 5. Que `proxy.js` mantenga la resolución previa `resolveHostIp`, el SNI real y el camuflaje de respaldo `cachefly.net`.
 6. Que `dnsx.js` conserve el pool multirresolutor DoH en paralelo.
 7. Que el binario `ffmpeg` conserve modo `0755` dentro de la IPK construida.
-8. Que `services.json` **no** declare `commands` (ver sección 4).
+8. Que `services.json` declare `commands` exclusivamente con `"public": false` (y jamás `"public": true`, ver sección 4).
 9. Que el autotest de `ffmpeg` siga diferido con `setTimeout` en `ffmpeg-relay.js`.
 10. Que `magis.js` conserve el rescate por semillas (`portal100024`) con pool, expiración y marcas de semilla muerta.
 11. Que ningún servicio declare una `function` dentro de un bloque (ver sección 5): webOS 3.x no carga el servicio.
+12. Que `version.json` y los tags/releases de GitHub se publiquen obligatoriamente con el IPK (ver sección 6).
 
 Si una tarea visual requiere tocar alguna de estas rutas o módulos protegidos,
 detenerse y pedir autorización explícita al usuario antes de hacerlo.
 
 ---
 
-## 4. Registro del servicio Luna (causa de "el servicio no arrancó")
+## 4. Registro del servicio Luna (causa de "el servicio no arrancó" y "Unknown method")
 
-El bloque `"commands": [...]` dentro de `webos/services/com.webosflux.xuptertv.fidelity.service/services.json`
-activa ACLs estrictas en `ls-hubd` y provoca `Denied method call for category /`
-o que el servicio no responda al `ping` en varias versiones de webOS (3.x y 6.x).
-Ya se eliminó dos veces en el historial (`e30aa9e`, `4bb57f9`); **no volver a añadirlo**.
-Los métodos se registran en `index.js` con `service.register(...)` y Luna los expone sin esa lista.
+En webOS, `services.json` define los métodos expuestos por el servicio.
+- **Regla crítica de seguridad y bus:** Los métodos deben declararse con `"public": false`
+  (comandos privados de la aplicación compañera dentro del mismo paquete).
+- **Jamás declarar `"public": true`:** Si se declara `"public": true` sin permisos
+  de plataforma ni roles ACG del sistema, `ls-hubd` en webOS 4+, 5+ y 6+ bloquea
+  las llamadas con `Denied method call for category /` (causa histórica en `e30aa9e` y `4bb57f9`).
+- **Por qué son obligatorios los `commands` con `"public": false` en webOS 3.x:**
+  En webOS 1.x, 2.x y 3.x, `ls-hubd` genera su tabla estática de métodos a partir
+  de `commands` en `services.json`. Si este bloque se elimina por completo, `ls-hubd`
+  desconoce los métodos antes de levantar el proceso y rechaza de inmediato con
+  `Unknown method "ping" for category "/"` (el fallo reportado en webOS 3.4.3).
+  Al declararlos con `"public": false`, la aplicación del mismo paquete
+  (`com.webosflux.xuptertv.fidelity`) tiene acceso total garantizado tanto en webOS 3
+  como en webOS 4/5/6/22+.
 
 Además, el autotest de `ffmpeg` no debe ejecutarse durante la carga del módulo:
 en TVs de 1 GB (webOS 3.x) el arranque en frío más la copia de 31 MB a `/tmp`
@@ -172,3 +182,14 @@ el televisor, el servicio **igual responde a `ping`** e informa `loadErrors`
 muestra esa información en Diagnóstico → fila "Servicio XuperTV". El resto de
 métodos afectados responde con el error exacto en lugar de quedarse sin
 contestar, que es lo que produce "ping no respondió en 25 segundos".
+
+---
+
+## 6. Publicación obligatoria de tags y releases en GitHub (Regla permanente)
+
+Para que los usuarios puedan actualizar la app vía OTA desde sus televisores o descargar la última versión de GitHub:
+- Al incrementar la versión o compilar un release, es **OBLIGATORIO** actualizar `version.json` (versión, `ipkUrl`, sha256 del IPK generado, changelog y fecha), `currentVer` en `webos/fidelity/js/app.js`, y `appinfo.json`.
+- Crear el tag de Git localmente y subirlo al repositorio remoto (`git tag -a vX.X.XX -m "..." && git push origin vX.X.XX`).
+- Crear la Release en GitHub con el archivo `.ipk` compilado adjunto (`gh release create vX.X.XX dist/com.webosflux.xuptertv.fidelity_X.X.XX_all.ipk --title "..." --notes "..."`).
+- **Excepción única:** SOLO se omitirá la subida del tag y la creación del release si el usuario indica explícitamente: **"no la subas"** o **"no subas el tag"**.
+

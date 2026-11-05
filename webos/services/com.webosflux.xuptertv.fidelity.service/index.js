@@ -13,49 +13,18 @@ var pkg = require('./package.json');
 var fs = require('fs');
 var urlmod = require('url');
 
-/* Every module is loaded defensively.  webOS 3 runs Node 0.12 / V8 3.28 and if
-   one single statement of one module is not understood the whole service dies
-   before registering anything, which the viewer sees as "el servicio no
-   arrancó".  Capturing the failure here keeps `ping` alive and reports the
-   exact reason (module + message) to the app's Diagnóstico screen. */
-var loadErrors = {};
-function loadModule(name) {
-  try {
-    return require(name);
-  } catch (eLoad) {
-    loadErrors[name] = (eLoad && eLoad.message) || String(eLoad);
-    try { console.error('[xuper-service] no se pudo cargar ' + name + ': ' + loadErrors[name]); } catch (eLog) { /* ignore */ }
-    return null;
-  }
-}
-var magis = loadModule('./magis');
-var proxy = loadModule('./proxy');
-var relay = loadModule('./ffmpeg-relay');
-var dnsx = loadModule('./dnsx');
-var netdiag = loadModule('./netdiag');
-var upstream = loadModule('./upstream');
-var updater = loadModule('./updater');
-
-/* Restore a proxy saved from Ajustes.  /tmp survives service restarts until the
-   TV reboots, which is enough to keep the setting between app launches. */
-try {
-  var savedProxy = JSON.parse(fs.readFileSync('/tmp/xuper-proxy.json', 'utf8'));
-  if (savedProxy && savedProxy.url && upstream) { upstream.configure(savedProxy.url); }
-} catch (eProxyFile) { /* no saved proxy */ }
-
-try {
-  var httpsMod = require('https');
-  var httpMod = require('http');
-  if (httpsMod.globalAgent) { httpsMod.globalAgent.maxSockets = 32; }
-  if (httpMod.globalAgent) { httpMod.globalAgent.maxSockets = 32; }
-} catch (eAgent) { /* ignore */ }
-
+/* Initialize the Luna service bus IMMEDIATELY on boot.
+   webOS 3 (Node 0.12) requires services to answer ping within Luna deadlines.
+   Creating the service and registering ping before requiring heavy modules
+   guarantees that ls-hubd sees the service alive in 0 ms. */
 var service = new Service(pkg.name);
-if (updater && updater.init) { updater.init(service); }
 
 /* Prevent unexpected network errors or aborts from terminating the service */
 process.on('uncaughtException', function (err) {
   console.error('[xuper-service] uncaughtException:', (err && err.stack) || err);
+});
+service.on('error', function (err) {
+  console.error('[xuper-service] service bus error:', (err && err.stack) || err);
 });
 
 /* Intercept process.exit so idle timers in webos-service do not kill the proxy */
@@ -65,15 +34,26 @@ try {
   };
 } catch (eExit) { /* ignore */ }
 
-/* Prolong idleTimeout to 24h and create a persistent activity */
+/* Prolong idleTimeout to 24h and create a persistent activity so webOS never kills the service */
 if (service.activityManager) {
   try {
     service.activityManager.idleTimeout = 86400;
-    service.activityManager.create('keepAlive', function (act) {
+    service.activityManager.exitOnTimeout = false;
+    service.activityManager.create('keepAlive', function () {
       console.log('[xuper-service] persistent activity created');
     });
   } catch (eAct) {
     console.log('[xuper-service] activityManager init note: ' + (eAct && eAct.message));
+  }
+}
+
+/* Safe value helper for telemetry properties */
+function safeValue(fn, fallback) {
+  try {
+    var value = fn();
+    return value === undefined ? fallback : value;
+  } catch (eSafe) {
+    return fallback;
   }
 }
 
@@ -92,14 +72,26 @@ function respond(message, err, payload) {
   message.respond(out);
 }
 
-function safeValue(fn, fallback) {
-  try {
-    var value = fn();
-    return value === undefined ? fallback : value;
-  } catch (eSafe) {
-    return fallback;
-  }
+/* webOS 1/2/3 and 3.5 run their services on Node 0.12; webOS 4 and newer ship
+ * Node 8+.  The relay container must match the TV pipeline: the native players
+ * of the old sets do not demux the fragmented MP4 the relay would emit and
+ * leave a black screen (authorized 2026-11-04 with "modificar fluido").  The
+ * app already sends `container`, but an older build or a bridge that drops the
+ * field must not silently downgrade those TVs to fMP4. */
+function legacyPlayerNode() {
+  var m = /^v(\d+)\./.exec(String(process.version || ''));
+  return !!(m && parseInt(m[1], 10) < 4);
 }
+
+/* Module loader and placeholder state */
+var loadErrors = {};
+var magis = null;
+var proxy = null;
+var relay = null;
+var dnsx = null;
+var netdiag = null;
+var upstream = null;
+var updater = null;
 
 /* Any method that depends on a module that failed to load answers with the
    reason instead of never answering (a Luna call with no respond() leaves the
@@ -110,6 +102,7 @@ function needModule(message, module, name) {
   return false;
 }
 
+/* Register ping FIRST so Luna can always confirm the service is alive */
 service.register('ping', function (message) {
   message.respond({
     returnValue: true,
@@ -120,29 +113,15 @@ service.register('ping', function (message) {
     platform: process.platform + '/' + process.arch,
     uptime: safeValue(function () { return Math.round(process.uptime()); }, 0),
     loadErrors: loadErrors,
-    portalHosts: safeValue(function () { return magis.constants.ROOT_CODES ? 'magis' : 'none'; }, 'none'),
-    proxyPort: safeValue(function () { return proxy.port(); }, 0),
-    relayAvailable: safeValue(function () { return relay.available(); }, false),
-    ffmpegPath: safeValue(function () { return relay.path(); }, ''),
-    relayState: safeValue(function () { return relay.state ? relay.state() : null; }, null),
-    upstreamProxy: safeValue(function () { return upstream.describe(); }, null),
-    relayPort: safeValue(function () { return relay.port(); }, 0),
-    seeds: safeValue(function () { return magis.seedStatus ? magis.seedStatus() : null; }, null)
+    portalHosts: safeValue(function () { return magis && magis.constants && magis.constants.ROOT_CODES ? 'magis' : 'none'; }, 'none'),
+    proxyPort: safeValue(function () { return proxy ? proxy.port() : 0; }, 0),
+    relayAvailable: safeValue(function () { return relay ? relay.available() : false; }, false),
+    ffmpegPath: safeValue(function () { return relay ? relay.path() : ''; }, ''),
+    relayState: safeValue(function () { return (relay && relay.state) ? relay.state() : null; }, null),
+    upstreamProxy: safeValue(function () { return upstream ? upstream.describe() : null; }, null),
+    relayPort: safeValue(function () { return relay ? relay.port() : 0; }, 0),
+    seeds: safeValue(function () { return (magis && magis.seedStatus) ? magis.seedStatus() : null; }, null)
   });
-});
-
-/* setProxy({url}) -> stores the viewer's HTTP proxy (empty clears it). */
-service.register('setProxy', function (message) {
-  if (!needModule(message, upstream, './upstream')) { return; }
-  var payload = message.payload || {};
-  var url = String(payload.url == null ? '' : payload.url).replace(/^\s+|\s+$/g, '');
-  if (url && !upstream.parse(url)) {
-    return fail(message, new Error('Dirección de proxy inválida. Usa http://usuario:clave@host:puerto'));
-  }
-  upstream.configure(url);
-  try { fs.writeFileSync('/tmp/xuper-proxy.json', JSON.stringify({ url: url })); } catch (eWrite) { /* optional */ }
-  console.log('[xuper-service] upstream proxy ' + (url ? 'enabled: ' + upstream.describe().host + ':' + upstream.describe().port : 'cleared'));
-  message.respond({ returnValue: true, proxy: upstream.describe() });
 });
 
 /* keepAlive subscription keeps the Luna bus connection alive so the service never terminates */
@@ -158,9 +137,57 @@ service.register('heartbeat', function (message) {
   message.respond({
     returnValue: true,
     alive: true,
-    proxyPort: safeValue(function () { return proxy.port(); }, 0),
+    proxyPort: safeValue(function () { return proxy ? proxy.port() : 0; }, 0),
     timestamp: Date.now()
   });
+});
+
+/* Now load modules defensively */
+function loadModule(name) {
+  try {
+    return require(name);
+  } catch (eLoad) {
+    loadErrors[name] = (eLoad && eLoad.message) || String(eLoad);
+    try { console.error('[xuper-service] no se pudo cargar ' + name + ': ' + loadErrors[name]); } catch (eLog) { /* ignore */ }
+    return null;
+  }
+}
+magis = loadModule('./magis');
+proxy = loadModule('./proxy');
+relay = loadModule('./ffmpeg-relay');
+dnsx = loadModule('./dnsx');
+netdiag = loadModule('./netdiag');
+upstream = loadModule('./upstream');
+updater = loadModule('./updater');
+
+/* Restore a proxy saved from Ajustes.  /tmp survives service restarts until the
+   TV reboots, which is enough to keep the setting between app launches. */
+try {
+  var savedProxy = JSON.parse(fs.readFileSync('/tmp/xuper-proxy.json', 'utf8'));
+  if (savedProxy && savedProxy.url && upstream) { upstream.configure(savedProxy.url); }
+} catch (eProxyFile) { /* no saved proxy */ }
+
+try {
+  var httpsMod = require('https');
+  var httpMod = require('http');
+  if (httpsMod.globalAgent) { httpsMod.globalAgent.maxSockets = 32; }
+  if (httpMod.globalAgent) { httpMod.globalAgent.maxSockets = 32; }
+} catch (eAgent) { /* ignore */ }
+
+if (updater && updater.init) { updater.init(service); }
+
+/* setProxy({url}) -> stores the viewer's HTTP proxy (empty clears it). */
+service.register('setProxy', function (message) {
+  if (!needModule(message, upstream, './upstream')) { return; }
+  var payload = message.payload || {};
+  var url = String(payload.url == null ? '' : payload.url).replace(/^\s+|\s+$/g, '');
+  if (url && !upstream.parse(url)) {
+    return fail(message, new Error('Dirección de proxy inválida. Usa http://usuario:clave@host:puerto'));
+  }
+  upstream.configure(url);
+  try { fs.writeFileSync('/tmp/xuper-proxy.json', JSON.stringify({ url: url })); } catch (eWrite) { /* optional */ }
+  console.log('[xuper-service] upstream proxy ' + (url ? 'enabled: ' + upstream.describe().host + ':' + upstream.describe().port : 'cleared'));
+  message.respond({ returnValue: true, proxy: upstream.describe() });
 });
 
 /* home({root}) -> { items:[...] } for one portal root */
@@ -237,7 +264,8 @@ function resolveStream(message, forceRelay) {
           var smoothIp = (dnsRes && dnsRes.ips && dnsRes.ips[0]) || '';
           var proxyToken = proxy.add(stream.url, stream.headers, stream.duration, smoothIp, stream.backupUrls);
           var localUrl = proxy.baseUrl() + '/media/' + proxyToken + '/stream.ts';
-          var relayContainer = payload.container === 'ts' ? 'ts' : 'mp4';
+          var relayContainer = legacyPlayerNode() ? 'ts' :
+            (payload.container === 'ts' ? 'ts' : 'mp4');
           var relayUrl = relay.register(stream, { hevc: isHevc, audio: smoothAudio, proxyUrl: localUrl, container: relayContainer });
           console.log('[xuper-service] routing stream via ffmpeg relay (' + relayContainer + ', proxy local + fallback directo): ' + relayUrl);
           stream.proxyPath = relayUrl;
@@ -524,6 +552,23 @@ service.register('applyUpdate', function (message) {
   updater.applyUpdate(ipkUrl, onStatus, function (err, result) {
     if (err) { return fail(message, err); }
     respond(message, null, { success: true, finished: true });
+  });
+});
+
+/* featuredBanner -> returns featured content (legacy / webOS 3 alias) */
+service.register('featuredBanner', function (message) {
+  if (!needModule(message, magis, './magis')) { return; }
+  magis.home('featured', function (err, result) {
+    respond(message, err, result);
+  });
+});
+
+/* imgBase -> returns the local image proxy base URL */
+service.register('imgBase', function (message) {
+  if (!needModule(message, proxy, './proxy')) { return; }
+  proxy.start(function (err) {
+    if (err) { return fail(message, err); }
+    respond(message, null, { base: proxy.baseUrl() });
   });
 });
 

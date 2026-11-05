@@ -1,4 +1,4 @@
-﻿/*
+/*
  * DNS-over-HTTPS resolver for the webOS service.
  *
  * WHY
@@ -208,10 +208,12 @@ function queryDoh(host, done) {
   var finished = false;
   var errors = [];
   var requests = [];
+  var hedgeTimer = null;
 
   function finish(err, ips, provider) {
     if (finished) { return; }
     finished = true;
+    if (hedgeTimer) { clearTimeout(hedgeTimer); hedgeTimer = null; }
     for (var i = 0; i < requests.length; i++) {
       try { requests[i].abort(); } catch (eAbort) { /* ignore */ }
     }
@@ -223,7 +225,7 @@ function queryDoh(host, done) {
     done(null, ips, provider);
   }
 
-  PROVIDERS.forEach(function (provider) {
+  var startProvider = function (provider) {
     var req = dohQuery(host, provider, function (err, ips) {
       pending--;
       if (err) {
@@ -234,7 +236,27 @@ function queryDoh(host, done) {
       finish(null, ips, provider);
     });
     requests.push(req);
-  });
+  };
+
+  /* Race the primary tier (Cloudflare + Google) first; if none settles within
+     600 ms, expand in parallel to the full multi-cloud pool (AdGuard, AliDNS,
+     DNS.SB, NextDNS) so older dual-core TVs (webOS 3.4.3) do not saturate
+     their socket pool or freeze the event loop with 16 simultaneous handshakes. */
+  var primaryCount = 6;
+  var pi;
+  for (pi = 0; pi < primaryCount && pi < PROVIDERS.length; pi++) {
+    startProvider(PROVIDERS[pi]);
+  }
+
+  if (PROVIDERS.length > primaryCount) {
+    hedgeTimer = setTimeout(function () {
+      hedgeTimer = null;
+      if (finished) { return; }
+      for (var si = primaryCount; si < PROVIDERS.length; si++) {
+        startProvider(PROVIDERS[si]);
+      }
+    }, 600);
+  }
 }
 
 /* resolve(host, cb) -> cb(err, { host, ips, source, at }) */

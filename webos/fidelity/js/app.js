@@ -535,16 +535,17 @@ function portalServiceCall(method, params, done, customTimeout) {
      skip the Luna branch entirely. */
   if (hasLuna() && window.PalmServiceBridge) {
     try {
-      window.webOS.service.request('luna://' + serviceId, {
+      return window.webOS.service.request('luna://' + serviceId, {
         method: method,
         parameters: params || {},
         timeout: customTimeout || parseInt(vodApi.timeoutMs, 10) || 20000,
         onSuccess: function (payload) { finish(null, payload); },
         onFailure: function (error) {
-          finish((error && error.errorText) || 'Error del servicio XuperTV', null);
+          var errStr = (error && (error.errorText || error.message || (error.errorCode ? ('Código ' + error.errorCode) : ''))) ||
+            (typeof error === 'string' ? error : 'Error del servicio XuperTV');
+          finish(errStr, null);
         }
       });
-      return true;
     } catch (e) {
       if (!vodApi.devServiceUrl) {
         finish('Error comunicando con el servicio: ' + (e.message || e), null);
@@ -656,23 +657,52 @@ function portalServiceCall(method, params, done, customTimeout) {
     portalState.error = null;
     var fresh = {};
     var index = 0;
+    var gotAny = false;
     function next() {
       if (index >= PORTAL_ROOTS.length) {
         portalState.refreshing = false;
         portalState.lastSync = Date.now();
         applyPortalRefresh(fresh);
+        if (gotAny && portalState.retryTimer) {
+          clearTimeout(portalState.retryTimer);
+          portalState.retryTimer = null;
+        }
+        /* If the portal did not answer a single row the TV cannot log in or
+           request movie addresses: say it in plain words and try again on its
+           own instead of leaving a silent empty port (the "portal no responde
+           desde tu red" report, usually at night when the carrier throttles). */
+        if (!gotAny && !portalState.retryTimer) {
+          portalState.error = portalState.error || 'El portal de XuperTV no respondió desde tu red';
+          showToast('El portal de XuperTV no respondió. Reintentando en 20 segundos…');
+          portalState.retryTimer = setTimeout(function () {
+            portalState.retryTimer = null;
+            refreshPortalCatalog();
+          }, 20000);
+        }
         return;
       }
       var root = PORTAL_ROOTS[index++];
-      portalServiceCall('home', { root: root }, function (error, payload) {
-        if (!error && payload && payload.returnValue !== false && payload.items && payload.items.length) {
-          fresh[root] = payload.items;
-          portalState.roots++;
-        } else if (error) {
-          portalState.error = error;
-        }
-        next();
-      });
+      var fetchRoot = function (attempt) {
+        portalServiceCall('home', { root: root }, function (error, payload) {
+          var loaded = !error && payload && payload.returnValue !== false && payload.items && payload.items.length;
+          if (loaded) {
+            fresh[root] = payload.items;
+            portalState.roots++;
+            gotAny = true;
+            return next();
+          }
+          /* Between 21:00 and midnight some carriers throttle the portal and a
+             single timeout used to drop a whole home row.  Retry the same root
+             once before giving up; the next root still follows. */
+          if (attempt < 2) {
+            setTimeout(function () { fetchRoot(attempt + 1); }, 900 * attempt);
+            return;
+          }
+          if (error) { portalState.error = error; }
+          next();
+        });
+      };
+      fetchRoot(1);
     }
     next();
   }
@@ -1010,7 +1040,7 @@ function portalServiceCall(method, params, done, customTimeout) {
       searchResultGrid, searchInput, searchNav, searchKeys = [];
   var settingsMenu, settingsRight, settingsPanels = {}, settingsItems = [];
   var historyViewTab = 'history';
-  var playerStage, playerInfo, playerChannels, playerVideo, playerFrame, playerStatus, nextEpisodeLoading, playerChannelRows = {};
+  var playerStage, playerInfo, playerChannels, playerVideo, playerFrame, playerStatus, nextEpisodeLoading, playerModeHint, playerChannelRows = {};
   /* Live category picker (all portal columns in one grid). */
   var categoryPicker = null, pcatGrid = null, pcatSub = null;
   /* Key of the category list currently painted in the rail, so switching a
@@ -1585,7 +1615,7 @@ function portalServiceCall(method, params, done, customTimeout) {
             if (e.preventDefault) { e.preventDefault(); }
             return;
           }
-          if (k === 37) {
+          if (k === 37 || k === 39) {
             openChannelPanel();
             if (e.preventDefault) { e.preventDefault(); }
             return;
@@ -1815,6 +1845,12 @@ function portalServiceCall(method, params, done, customTimeout) {
     }
   }
 
+  var NOTIFY_ICONS = {
+    search: '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" fill="currentColor"/></svg>',
+    filter: '<svg viewBox="0 0 24 24"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z" fill="currentColor"/></svg>',
+    personal: '<svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" fill="currentColor"/></svg>'
+  };
+
   function buildNotify() {
     clear(notifyEl);
     /* Keep the compact controls used in the home screen: search, filter and
@@ -1829,6 +1865,9 @@ function portalServiceCall(method, params, done, customTimeout) {
       var d = defs[i];
       var item = el('div', 'notify-item focusable ' + d.cls + (d.small ? ' is-small' : ''));
       var nn = el('div', 'n-normal');
+      if (NOTIFY_ICONS[d.cls]) {
+        nn.innerHTML = NOTIFY_ICONS[d.cls];
+      }
       nn.style.backgroundImage = 'url(' + d.icon + ')';
       item.appendChild(nn);
       if (d.cls === 'personal') {
@@ -1836,7 +1875,7 @@ function portalServiceCall(method, params, done, customTimeout) {
       } else if (d.cls === 'search') {
         item._activate = function () { openSearch(); };
       } else {
-        item._activate = function () { /* destination not reconstructed */ };
+        item._activate = function () { openCategoryPicker(); };
       }
       notifyEl.appendChild(item);
     }
@@ -2036,6 +2075,18 @@ function portalServiceCall(method, params, done, customTimeout) {
     info.appendChild(full);
     liveMain.appendChild(info);
 
+    var fast = el('div', 'live-fast');
+    var btnAll = el('div', 'fast-btn f-all focusable');
+    btnAll._activate = function () { openCategoryPicker(); };
+    var btnFav = el('div', 'fast-btn f-fav focusable');
+    btnFav._activate = function () { renderLiveRows(true); };
+    var btnSrch = el('div', 'fast-btn f-srch focusable');
+    btnSrch._activate = function () { openSearch(); };
+    fast.appendChild(btnAll);
+    fast.appendChild(btnFav);
+    fast.appendChild(btnSrch);
+    page.appendChild(fast);
+
     var up = el('div', 'live-arrow-up');
     var down = el('div', 'live-arrow-down');
     page.appendChild(up);
@@ -2053,7 +2104,7 @@ function portalServiceCall(method, params, done, customTimeout) {
         return true;
       }
       if (dir === 'down') {
-        if (state.channel < CHANNELS.length - 1) { setChannel(state.channel + 1); }
+        setFocus(btnAll);
         return true;
       }
       if (dir === 'right') {
@@ -2070,6 +2121,30 @@ function portalServiceCall(method, params, done, customTimeout) {
     };
     liveFocus._activate = function () { openPlayer('live'); };
     page.appendChild(liveFocus);
+
+    btnAll._onMove = function (dir) {
+      if (dir === 'up') { setFocus(liveFocus); return true; }
+      if (dir === 'right') { setFocus(btnFav); return true; }
+      if (dir === 'left') { if (tabEls[0]) { setFocus(tabEls[0]); } return true; }
+      return false;
+    };
+    btnFav._onMove = function (dir) {
+      if (dir === 'up') { setFocus(liveFocus); return true; }
+      if (dir === 'left') { setFocus(btnAll); return true; }
+      if (dir === 'right') { setFocus(btnSrch); return true; }
+      return false;
+    };
+    btnSrch._onMove = function (dir) {
+      if (dir === 'up') { setFocus(liveFocus); return true; }
+      if (dir === 'left') { setFocus(btnFav); return true; }
+      if (dir === 'right') {
+        var row2 = liveRows.filter(function (r) { return r._channel === state.channel; })[0];
+        if (row2) { setFocus(row2); }
+        else if (liveRows.length) { setFocus(liveRows[0]); }
+        return true;
+      }
+      return false;
+    };
   }
 
   /* --- Live TV Categories & Addons (M3U / IPTV) --- */
@@ -2341,16 +2416,18 @@ function portalServiceCall(method, params, done, customTimeout) {
             }
           }
           liveChannelsLoaded = true;
-          renderLiveRows(false);
-          renderPlayerChannels();
-          if (state.channel >= CHANNELS.length) { state.channel = 0; }
-          if (CHANNELS[state.channel] && liveInfoText) {
-            liveInfoText.textContent = CHANNELS[state.channel].name;
-          }
-          if (state.screen === 'player' && state.playerMode === 'live') {
-            updatePlayer();
-          } else {
-            scheduleLivePreview(CHANNELS[state.channel]);
+          if (pageNum === 1) {
+            renderLiveRows(false);
+            renderPlayerChannels();
+            if (state.channel >= CHANNELS.length) { state.channel = 0; }
+            if (CHANNELS[state.channel] && liveInfoText) {
+              liveInfoText.textContent = CHANNELS[state.channel].name;
+            }
+            if (state.screen === 'player' && state.playerMode === 'live') {
+              updatePlayer();
+            } else {
+              scheduleLivePreview(CHANNELS[state.channel]);
+            }
           }
         }
 
@@ -2364,11 +2441,15 @@ function portalServiceCall(method, params, done, customTimeout) {
           pageNum++;
           /* Yield to webOS between pages so navigating the first block stays
              responsive while the rest of the catalogue arrives. */
-          setTimeout(fetchNextPage, 25);
+          setTimeout(fetchNextPage, 35);
           return;
         }
 
         liveChannelsLoading = false;
+        if (pageNum > 1) {
+          renderLiveRows(false);
+          renderPlayerChannels();
+        }
         if (err && !liveChannelsLoaded) {
           setTimeout(function () {
             if (requestSeq === liveChannelRequestSeq) { loadLiveChannels(requestedColumnId); }
@@ -2381,6 +2462,8 @@ function portalServiceCall(method, params, done, customTimeout) {
 
   function renderLiveRows(favOnly) {
     if (!liveList) { return; }
+    var focusedChan = (state.focus && state.focus._channel !== undefined && closest(state.focus, '.live-list'))
+      ? state.focus._channel : null;
     clear(liveList);
     liveRows = [];
     if (!CHANNELS.length) {
@@ -2436,6 +2519,10 @@ function portalServiceCall(method, params, done, customTimeout) {
     if (CHANNELS[state.channel] && liveInfoText) {
       liveInfoText.textContent = CHANNELS[state.channel].name;
     }
+    if (focusedChan !== null && liveRows.length) {
+      var match = liveRows.filter(function (r) { return r._channel === focusedChan; })[0];
+      if (match) { setFocus(match, true); }
+    }
     scrollLiveList();
   }
 
@@ -2458,20 +2545,23 @@ function portalServiceCall(method, params, done, customTimeout) {
     if (index < 0) { index = 0; }
     if (index > CHANNELS.length - 1) { index = CHANNELS.length - 1; }
     state.channel = index;
-    for (var i = 0; i < liveRows.length; i++) {
-      liveRows[i].classList.toggle('is-current', liveRows[i]._channel === index);
-    }
-    if (CHANNELS[index] && liveInfoText) {
-      liveInfoText.textContent = CHANNELS[index].name;
-    }
-    scrollLiveList();
-    if (state.screen === 'player') {
+
+    if (state.screen === 'home') {
+      for (var i = 0; i < liveRows.length; i++) {
+        liveRows[i].classList.toggle('is-current', liveRows[i]._channel === index);
+      }
+      if (CHANNELS[index] && liveInfoText) {
+        liveInfoText.textContent = CHANNELS[index].name;
+      }
+      scrollLiveList();
+      if (state.tab === 0) {
+        scheduleLivePreview(CHANNELS[index]);
+      }
+    } else if (state.screen === 'player') {
       updatePlayerChannel();
       if (state.playerMode === 'live') {
         startLiveChannel(CHANNELS[index], !!immediate);
       }
-    } else if (state.screen === 'home' && state.tab === 0) {
-      scheduleLivePreview(CHANNELS[index]);
     }
   }
 
@@ -2597,7 +2687,15 @@ function portalServiceCall(method, params, done, customTimeout) {
           },
           onFailure: function (err) {
             updateInProgress = false;
-            var errMsg = (err && err.errorText) || 'Error durante la instalación';
+            var rawErr = (err && err.errorText) || 'Error durante la instalación';
+            var errMsg = rawErr;
+            /* Same stale-service case as checkUpdate: an old process has no
+               applyUpdate method.  Explain the only working fix instead of
+               printing "Denied method call applyUpdate for category /". */
+            if (/denied|permission|not permitted|method.*not|no existe/i.test(String(rawErr))) {
+              errMsg = 'El instalador de la TV está desactualizado. Desenchufa la TV 30 segundos, ' +
+                'vuelve a abrir XuperTV y busca la actualización de nuevo.';
+            }
             if (statusText) { statusText.textContent = 'Error: ' + errMsg; }
             if (subText) { subText.textContent = 'Comprueba tu red o intenta más tarde.'; }
             if (footer) {
@@ -2628,26 +2726,125 @@ function portalServiceCall(method, params, done, customTimeout) {
     }
   }
 
+  /* OTA manifest list.  The Node service normally answers `checkUpdate`, but
+     after an IPK update the old service process can stay alive on webOS 3.x/4
+     and Luna answers "Denied method call checkUpdate for category /" because
+     the running process predates that method.  The app can still read the same
+     public manifest through XHR (jsDelivr/GitHub send CORS headers), so the
+     update check keeps working and the viewer never sees the raw Luna error. */
+  var UPDATE_MANIFEST_URLS = [
+    'https://cdn.jsdelivr.net/gh/cristianco7/XUPER-HYDRA-PORT-WEBOS@main/version.json',
+    'https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/feature/catalog-webos-compat/version.json',
+    'https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/main/version.json'
+  ];
+
+  function versionParts(value) {
+    var clean = String(value || '').replace(/^[^\d]*/, '');
+    var bits = clean.split('.');
+    var out = [];
+    for (var i = 0; i < bits.length; i++) { out.push(parseInt(bits[i], 10) || 0); }
+    return out;
+  }
+
+  function compareRemoteVersion(a, b) {
+    var pa = versionParts(a);
+    var pb = versionParts(b);
+    var len = Math.max(pa.length, pb.length);
+    for (var i = 0; i < len; i++) {
+      var va = pa[i] || 0;
+      var vb = pb[i] || 0;
+      if (va !== vb) { return va > vb ? 1 : -1; }
+    }
+    return 0;
+  }
+
+  function fetchUpdateManifest(index, onDone) {
+    if (index >= UPDATE_MANIFEST_URLS.length) {
+      return onDone('No se pudo consultar el servidor de actualizaciones');
+    }
+    var xhr = new XMLHttpRequest();
+    var finished = false;
+    var guard = setTimeout(function () {
+      if (finished) { return; }
+      finished = true;
+      try { xhr.abort(); } catch (eAbort) { /* ignore */ }
+      fetchUpdateManifest(index + 1, onDone);
+    }, 12000);
+    function fail() {
+      if (finished) { return; }
+      finished = true;
+      clearTimeout(guard);
+      fetchUpdateManifest(index + 1, onDone);
+    }
+    try {
+      xhr.open('GET', UPDATE_MANIFEST_URLS[index] + '?t=' + Date.now(), true);
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState !== 4) { return; }
+        if (xhr.status < 200 || xhr.status >= 300) { fail(); return; }
+        var data;
+        try { data = JSON.parse(xhr.responseText); } catch (eJson) { fail(); return; }
+        if (!data || !data.version) { fail(); return; }
+        if (finished) { return; }
+        finished = true;
+        clearTimeout(guard);
+        onDone(null, data);
+      };
+      xhr.onerror = fail;
+      xhr.ontimeout = fail;
+      xhr.send(null);
+    } catch (eReq) {
+      fail();
+    }
+  }
+
+  function checkUpdateOverHttp(currentVer, onDone) {
+    fetchUpdateManifest(0, function (err, manifest) {
+      if (err) { return onDone(err); }
+      var remoteVer = manifest.version || '0.0.0';
+      onDone(null, {
+        updateAvailable: compareRemoteVersion(remoteVer, currentVer) > 0,
+        currentVersion: currentVer,
+        latestVersion: remoteVer,
+        ipkUrl: manifest.ipkUrl || '',
+        changelog: manifest.changelog || '',
+        releaseDate: manifest.releaseDate || '',
+        viaFallback: true
+      });
+    });
+  }
+
+  function staleUpdateService(error) {
+    return /denied|permission|not permitted|method|not exist|no existe|unknown|módulo|modulo|no carg|no disponible|no está disponible/i.test(String(error || ''));
+  }
+
   function checkForUpdates(silent, onResult) {
-    var currentVer = '2.2.46';
+    var currentVer = '2.2.53';
+
+    function paint(result) {
+      if (onResult) { onResult(null, result); }
+      if (result && result.updateAvailable) {
+        if (!silent || !updateDismissedSession) { openUpdateDialog(result); }
+      } else if (!silent) {
+        showToast('Tienes la versión más reciente (v' + currentVer + ')');
+      }
+    }
+
     portalServiceCall('checkUpdate', { currentVersion: currentVer }, function (err, res) {
-      if (err) {
-        if (onResult) { onResult(err, null); }
-        if (!silent) {
-          showToast('No se pudo comprobar actualizaciones: ' + err);
-        }
+      if (!err) { return paint(res); }
+      /* A stale service process is not a network failure: retry the same public
+         manifest from the app before showing anything to the viewer. */
+      if (staleUpdateService(err)) {
+        checkUpdateOverHttp(currentVer, function (httpErr, httpRes) {
+          if (!httpErr && httpRes) { return paint(httpRes); }
+          if (onResult) { onResult(err, null); }
+          if (!silent) {
+            showToast('El módulo de actualizaciones necesita reiniciarse: desenchufa la TV 30 segundos y vuelve a intentarlo.');
+          }
+        });
         return;
       }
-      if (onResult) { onResult(null, res); }
-      if (res && res.updateAvailable) {
-        if (!silent || !updateDismissedSession) {
-          openUpdateDialog(res);
-        }
-      } else {
-        if (!silent) {
-          showToast('Tienes la versión más reciente (v' + currentVer + ')');
-        }
-      }
+      if (onResult) { onResult(err, null); }
+      if (!silent) { showToast('No se pudo comprobar actualizaciones: ' + err); }
     }, 15000);
   }
 
@@ -4417,7 +4614,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     var updateBox = el('div', 'sp-about-update-box');
     updateBox.appendChild(el('div', 'sp-about-update-title', 'Actualizaciones de XuperTV'));
     updateBox.appendChild(el('div', 'sp-about-update-desc',
-      'Versión instalada: v2.2.46. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.'));
+      'Versión instalada: v2.2.48. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.'));
     var row = el('div', 'sp-about-update-row');
     var btnCheckUpdate = el('button', 'sp-about-update-btn focusable', 'Buscar actualizaciones');
     var msgUpdate = el('span', 'sp-about-update-msg');
@@ -4433,7 +4630,7 @@ function portalServiceCall(method, params, done, customTimeout) {
           msgUpdate.textContent = '¡Nueva versión disponible: v' + res.latestVersion + '!';
           msgUpdate.style.color = '#22c55e';
         } else {
-          msgUpdate.textContent = 'Tienes la versión más reciente (v2.2.46).';
+          msgUpdate.textContent = 'Tienes la versión más reciente (v2.2.48).';
           msgUpdate.style.color = '#38bdf8';
         }
       });
@@ -4502,8 +4699,8 @@ function portalServiceCall(method, params, done, customTimeout) {
   function renderNetdiag(summary, list, report) {
     clear(list);
     var summaryInfo = netdiagSummary(report.verdict);
-    summary.textContent = summaryInfo.text;
-    summary.className = 'dg-summary' + (summaryInfo.cls ? ' ' + summaryInfo.cls : '');
+    summary.textContent = report.serviceError ? report.serviceError : summaryInfo.text;
+    summary.className = 'dg-summary' + (report.serviceError ? ' bad' : (summaryInfo.cls ? ' ' + summaryInfo.cls : ''));
 
     var hosts = report.hosts || [];
     for (var i = 0; i < hosts.length; i++) {
@@ -4613,6 +4810,14 @@ function portalServiceCall(method, params, done, customTimeout) {
       if (s.panelW && s.panelH) { parts.push('panel ' + s.panelW + '×' + s.panelH); }
       if (s.scale) { parts.push('escala ' + (Math.round(s.scale * 100) / 100)); }
       if (report.version) { parts.push('versión ' + report.version); }
+      /* A service left over from a previous IPK keeps answering with its old
+         version and lacks the newest Luna methods (that is the real cause of
+         "Denied method call checkUpdate for category /" on webOS 3.4.3). */
+      var appVerNode = document.querySelector('.welcome-version');
+      var appVer = appVerNode ? String(appVerNode.textContent || '').replace(/[^\d.]/g, '') : '';
+      if (report.version && appVer && report.version !== appVer) {
+        parts.push('SERVICIO DESACTUALIZADO (app ' + appVer + '): desenchufa la TV 30 s');
+      }
       netdiagEnv.textContent = parts.join(' · ');
     }
   }
@@ -4737,19 +4942,24 @@ function portalServiceCall(method, params, done, customTimeout) {
       clearTimeout(pingTimer);
       if (pingError || !pingPayload) {
         localFailure('ping falló: ' + reportSafeText(pingError || 'sin respuesta'));
+      } else {
+        netdiagState.ping = pingPayload;
+        if (netdiagState.report) {
+          netdiagState.report.ping = pingPayload;
+        }
       }
     }, 24000);
 
     /* Two safety nets: one explains a slow network, the other gives the button
-       back if the service never answers at all. */
+       back if the service never answers at all. Align with the 45 s service timeout. */
     var slowTimer = setTimeout(function () {
       if (!netdiagState.running || netdiagState.runId !== runId) { return; }
       summary.textContent = 'Analizando… tu red está respondiendo lento, espera un momento.';
     }, 9000);
     var guardTimer = setTimeout(function () {
       if (!netdiagState.running || netdiagState.runId !== runId) { return; }
-      localFailure('ping respondió, pero netdiag no devolvió resultado en 32 segundos');
-    }, 32000);
+      localFailure('ping respondió, pero netdiag no devolvió resultado en 45 segundos');
+    }, 45000);
 
     portalServiceCall('netdiag', (function () {
       var vp = window.__xuperViewport || {};
@@ -6369,6 +6579,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     playerVideo = $('player-video');
     playerStatus = $('player-status');
     nextEpisodeLoading = $('next-episode-loading');
+    playerModeHint = $('player-mode-hint');
     playerOsdIcon = $('player-osd-icon');
     playerFrame = playerStage ? playerStage.querySelector('.player-frame') : null;
 
@@ -6529,6 +6740,18 @@ function portalServiceCall(method, params, done, customTimeout) {
     applySubtitleStyles();
     applyGlobalPlaybackPreferences();
 
+    /* A preparation notice ("Conectando…", "Cargando vídeo…") must never stay
+       over a stream that is already showing frames.  Several Starfish builds
+       skip loadeddata/playing/timeupdate after a source swap, which left the
+       overlay onscreen while live TV or a movie was playing normally. */
+    setInterval(function () {
+      if (!playerVideo || state.streamError) { return; }
+      if (!playerStatus || !playerStatus.classList.contains('is-active')) { return; }
+      if (playerVideo.paused || playerVideo.readyState < 2) { return; }
+      if ((playerVideo.currentTime || 0) <= 0) { return; }
+      setPlayerStatus('');
+    }, 2000);
+
     clear(playerInfo); clear(playerChannels);
 
     playerStage.classList.add('focusable');
@@ -6546,8 +6769,7 @@ function portalServiceCall(method, params, done, customTimeout) {
         }
         return false;
       }
-      if (dir === 'left') { openChannelPanel(); return true; }
-      if (dir === 'right') { closeChannelPanel(); return true; }
+      if (dir === 'left' || dir === 'right') { openChannelPanel(); return true; }
       if (dir === 'up') { setChannel(state.channel - 1); return true; }
       if (dir === 'down') { setChannel(state.channel + 1); return true; }
       return false;
@@ -6557,8 +6779,7 @@ function portalServiceCall(method, params, done, customTimeout) {
         togglePlayerPlayPause();
         return;
       }
-      if (state.infobar) { hideInfobar(); }
-      else { showInfobar(); }
+      openChannelPanel();
     };
 
     /* --- infobar (layout_live_infobar, 160dp = 240px) --- */
@@ -6765,8 +6986,13 @@ function portalServiceCall(method, params, done, customTimeout) {
     categoryPicker.classList.remove('is-active');
     if (keepFocus) { return; }
     var pill = playerChannels ? playerChannels.querySelector('.pc-cat-pill.is-selected') : null;
-    if (pill) { setFocus(pill); scrollSelectedCategoryPill(); }
+    if (pill && state.channelsOpen) { setFocus(pill); scrollSelectedCategoryPill(); }
     else if (state.screen === 'player' && playerStage) { setFocus(playerStage); }
+    else if (state.screen === 'home') {
+      var btn = document.querySelector('.live-fast .f-all');
+      if (btn) { setFocus(btn); }
+      else if (liveFocus) { setFocus(liveFocus); }
+    }
   }
 
   function renderCategoryPicker() {
@@ -6775,7 +7001,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     clear(pcatGrid);
     if (pcatSub) {
       pcatSub.textContent = cats.length
-        ? (cats.length + ' categorías · elige una para filtrar los canales')
+        ? (cats.length + ' categorías disponibles · elige una para filtrar')
         : 'Cargando categorías…';
     }
     for (var i = 0; i < cats.length; i++) {
@@ -6793,6 +7019,17 @@ function portalServiceCall(method, params, done, customTimeout) {
         };
         pcatGrid.appendChild(tile);
       })(cats[i]);
+    }
+    var exitBtn = $('pcat-btn-exit');
+    if (exitBtn) {
+      exitBtn._activate = function () { closeCategoryPicker(); };
+      exitBtn._onMove = function (dir) {
+        if (dir === 'up') {
+          var selTile = pcatGrid.querySelector('.pcat-tile.is-selected') || pcatGrid.lastChild;
+          if (selTile) { setFocus(selTile); return true; }
+        }
+        return false;
+      };
     }
   }
 
@@ -6926,14 +7163,62 @@ function portalServiceCall(method, params, done, customTimeout) {
   var relayStartWatch = null;
   var relayFellBack = false;
 
-  function relayContainer() {
-    var v = (window.webOS && window.webOS.systemInfo && window.webOS.systemInfo.version) || '';
-    if (!v && navigator.userAgent) {
-      var m = /Web0S|webOS[ /]([0-9]+(?:\.[0-9]+)?)/i.exec(navigator.userAgent);
+  /* Version of the TV, needed to choose the container of the local relay.
+     webOSTV.js `webOS.systemInfo` only exposes country/timezone (never a
+     version), so on its own it made every webOS 3.x/3.5 ask for fMP4 and the
+     native pipeline showed a black screen.  `PalmSystem.deviceInfo` is the
+     only synchronous source that really carries `platformVersion` on those
+     sets; the user agent string of LG TVs ("Web0S; Linux/SmartTV") has no
+     version at all.  0 means "unknown" and keeps the modern fMP4 path. */
+  var detectedWebOsMajor = null;
+  function webOsMajorVersion() {
+    if (detectedWebOsMajor !== null) { return detectedWebOsMajor; }
+    var v = '';
+    try {
+      if (window.webOS && window.webOS.systemInfo && window.webOS.systemInfo.version) {
+        v = String(window.webOS.systemInfo.version);
+      }
+    } catch (eSysInfo) { v = ''; }
+    if (!v && window.PalmSystem && window.PalmSystem.deviceInfo) {
+      try {
+        var info = window.PalmSystem.deviceInfo;
+        if (typeof info === 'string') { info = JSON.parse(info); }
+        if (info) {
+          if (info.platformVersion) {
+            v = String(info.platformVersion);
+          } else if (info.version) {
+            v = String(info.version);
+          } else if (info.platformVersionMajor !== undefined && info.platformVersionMajor !== null) {
+            v = String(info.platformVersionMajor) + '.' + String(info.platformVersionMinor || 0);
+          } else if (info.sdkVersion) {
+            v = String(info.sdkVersion);
+          }
+        }
+      } catch (eDeviceInfo) { v = ''; }
+    }
+    if (!v && navigator && navigator.userAgent) {
+      var m = /(?:webOS|Web0S)[ \/]([0-9]+(?:\.[0-9]+)?)/i.exec(navigator.userAgent);
       if (m && m[1]) { v = m[1]; }
     }
+    /* Fallback by Chromium engine version:
+       webOS 3.0 to 3.4 shipped Chrome/38.0.2125.122; webOS 3.5 shipped Chrome/53.0.2785.34;
+       webOS 4 shipped Chrome/68.0.3440.106. On webOS 3.4.3 models with no version string in
+       the User-Agent, Chrome/38 is a 100% reliable guarantee of webOS 3.x. */
+    if (!v && navigator && navigator.userAgent) {
+      if (/Chrome\/38\./i.test(navigator.userAgent)) { v = '3.0'; }
+      else if (/Chrome\/53\./i.test(navigator.userAgent)) { v = '3.5'; }
+      else if (/Chrome\/68\./i.test(navigator.userAgent)) { v = '4.0'; }
+    }
     var major = parseFloat(v);
-    if (!isNaN(major) && major < 4) { return 'ts'; }
+    detectedWebOsMajor = isNaN(major) ? 0 : major;
+    return detectedWebOsMajor;
+  }
+
+  function relayContainer() {
+    var major = webOsMajorVersion();
+    /* webOS 1/2/3 and 3.5 cannot demux the fragmented MP4 the relay emits;
+       they need MPEG-TS (authorized 2026-11-04 with "modificar fluido"). */
+    if (major > 0 && major < 4) { return 'ts'; }
     return 'mp4';
   }
 
@@ -6995,11 +7280,18 @@ function portalServiceCall(method, params, done, customTimeout) {
   }
   function scheduleBufferingNotice(text) {
     if (bufferingNoticeTimer || state.streamError) { return; }
+    /* Starfish fires waiting/stalled even while the picture and the clock keep
+       advancing (typical on live HLS).  Remember the position so the notice is
+       only painted when playback really stopped; otherwise the overlay covered
+       a perfectly healthy stream and stayed there. */
+    var startPos = playerVideo ? (playerVideo.currentTime || 0) : 0;
     bufferingNoticeTimer = setTimeout(function () {
       bufferingNoticeTimer = null;
-      if (!state.streamError && playerVideo && !playerVideo.paused && playerVideo.readyState < 3) {
-        setPlayerStatus(text);
-      }
+      if (state.streamError || !playerVideo || playerVideo.paused) { return; }
+      if (playerVideo.readyState >= 3) { return; }
+      /* The clock moved since the event: the stream never stopped. */
+      if ((playerVideo.currentTime || 0) > startPos + 0.35) { return; }
+      setPlayerStatus(text);
     }, 700);
   }
   /* Fragmented-MP4 seeks restart the native video pipeline on webOS 4.  Do
@@ -7160,6 +7452,7 @@ function portalServiceCall(method, params, done, customTimeout) {
        when the real load() arrives, wasting one ACB slot and ~70ms. */
     playerVideo.classList.remove('is-active');
     if (playerFrame) { playerFrame.style.display = 'block'; }
+    clearStreamModeHint();
   }
 
   function setPlayerStatus(text) {
@@ -7172,6 +7465,44 @@ function portalServiceCall(method, params, done, customTimeout) {
       playerStatus.textContent = '';
       playerStatus.classList.remove('is-active');
     }
+  }
+
+  /* Large, temporary notice shown only while Modo Fluido plays fullscreen.
+     It has no focus/pointer behaviour: it is pure guidance so viewers know the
+     mode exists for stuttering movies, not as the default picture. */
+  var playerModeHintTimer = null;
+  var playerModeHintKey = '';
+  function clearStreamModeHint() {
+    if (playerModeHintTimer) { clearTimeout(playerModeHintTimer); playerModeHintTimer = null; }
+    if (!playerModeHint) { playerModeHint = $('player-mode-hint'); }
+    if (playerModeHint) {
+      playerModeHint.classList.remove('is-active');
+      playerModeHint.textContent = '';
+    }
+  }
+  function showStreamModeHint() {
+    if (state.playerMode !== 'vod') { return; }
+    if (state.streamMode !== 'smooth' && state.streamMode !== 'relay') { return; }
+    if (state.screen !== 'player') { return; }
+    if (!playerModeHint) { playerModeHint = $('player-mode-hint'); }
+    if (!playerModeHint) { return; }
+    /* Once per title/episode: seeking and the start watchdog restart the
+       stream, and the notice must not pop up again on every restart. */
+    var hintKey = String((state.playerItem && state.playerItem.id) || '') + '|' +
+      String((state.playerEpisode && state.playerEpisode.id) || '');
+    if (hintKey !== '|' && hintKey === playerModeHintKey) { return; }
+    playerModeHintKey = hintKey;
+    playerModeHint.textContent = '';
+    playerModeHint.appendChild(el('span', 'pmh-title', 'Modo Fluido activado'));
+    playerModeHint.appendChild(el('span', 'pmh-sub',
+      'Úsalo cuando las películas van trabadas o se cortan. ' +
+      'Si tu TV las reproduce bien en Normal, déjalo en Normal para ver mejor imagen.'));
+    playerModeHint.classList.add('is-active');
+    if (playerModeHintTimer) { clearTimeout(playerModeHintTimer); }
+    playerModeHintTimer = setTimeout(function () {
+      playerModeHintTimer = null;
+      if (playerModeHint) { playerModeHint.classList.remove('is-active'); }
+    }, 9000);
   }
 
   function playUrl(url, playOptions) {
@@ -7262,7 +7593,10 @@ function portalServiceCall(method, params, done, customTimeout) {
       clearBufferingNotice();
       setPlayerStatus('');
     }
-    playerVideo.onloadeddata = clearStatus;
+    playerVideo.onloadeddata = function () {
+      clearStatus();
+      showStreamModeHint();
+    };
     playerVideo.oncanplay = function () { releaseRelaySeek(); clearStatus(); };
     playerVideo.onloadedmetadata = function () {
       clearStatus();
@@ -7304,7 +7638,9 @@ function portalServiceCall(method, params, done, customTimeout) {
       if (state.playerMode === 'vod') { advanceToNextEpisode(); }
     };
     playerVideo.ontimeupdate = function () {
-      if (playerVideo.currentTime > 0) { clearStatus(); }
+      /* Any advancing clock means the picture is decoding: never leave the
+         "Conectando…" overlay over a stream that is already playing. */
+      if (!state.streamError && (playerVideo.currentTime > 0 || playerVideo.readyState >= 2)) { clearStatus(); }
       if (state.playerMode === 'vod') {
         var cur = relayBaseUrl ? (relayStartOffset + (playerVideo.currentTime || 0)) : (playerVideo.currentTime || 0);
         var vidDur = (playerVideo && isFinite(playerVideo.duration) && playerVideo.duration > 0) ? playerVideo.duration : 0;
@@ -7593,6 +7929,15 @@ function portalServiceCall(method, params, done, customTimeout) {
 
     if (!keepCurrentVideo) {
       startPlayerVideo(state.playerItem, state.playerEpisode);
+    } else {
+      /* The mini player may still show a preparation notice; the same stream
+         keeps playing fullscreen, so drop any stale overlay instead of leaving
+         "Conectando…" over live video. */
+      if (!state.streamError) {
+        clearBufferingNotice();
+        setPlayerStatus('');
+        showStreamModeHint();
+      }
     }
   }
 
@@ -7664,7 +8009,7 @@ function portalServiceCall(method, params, done, customTimeout) {
     if (immediate) {
       doStart();
     } else {
-      liveChannelDebounceTimer = setTimeout(doStart, 180);
+      liveChannelDebounceTimer = setTimeout(doStart, 320);
     }
   }
 
@@ -7936,6 +8281,16 @@ function portalServiceCall(method, params, done, customTimeout) {
       if (f._activate) { f._activate(); }
     });
     try { buildSearch(); } catch (eSearch) { console.error('buildSearch error:', eSearch); }
+    try {
+      if (window.webOS && typeof window.webOS.deviceInfo === 'function') {
+        window.webOS.deviceInfo(function (dev) {
+          if (dev && (dev.version || dev.versionMajor || dev.sdkVersion)) {
+            var devVer = parseFloat(String(dev.version || dev.versionMajor || dev.sdkVersion || ''));
+            if (!isNaN(devVer) && devVer > 0) { detectedWebOsMajor = devVer; }
+          }
+        });
+      }
+    } catch (eDev) { /* ignore */ }
     try { startServiceKeepAlive(); } catch (eKa) {}
     try { portalServiceCall('prewarm', {}, function () {}); } catch (ePw) {}
     startWelcome();

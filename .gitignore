@@ -42,3 +42,9 @@ desktop.ini
 *.swp
 __pycache__/
 *.pyc
+
+.agents/
+.antigravity/
+.claude/
+agent/
+skills-lock.json

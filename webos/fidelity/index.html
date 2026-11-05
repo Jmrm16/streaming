@@ -101,7 +101,7 @@ if (!Array.prototype.findIndex) {
        ============================================================ -->
   <section id="screen-welcome" class="screen is-active">
     <div class="welcome-name">Xuper Hydra</div>
-    <div class="welcome-version">v2.2.46</div>
+    <div class="welcome-version">v2.2.53</div>
     <div class="welcome-loading"><img id="welcome-loading-img" alt="" src="assets/original/welcome/img_welcome_loading1.png"></div>
     <div class="welcome-free">100% GRATIS · Prohibida su venta · Grupo oficial: t.me/+9f4I_N2BqddkZGYx</div>
   </section>
@@ -172,6 +172,8 @@ if (!Array.prototype.findIndex) {
         <div class="next-episode-loading-text">El siguiente capítulo se está<br>cargando...</div>
       </div>
       <div class="player-status" id="player-status"></div>
+      <!-- Large, temporary hint shown when playback runs in Modo Fluido. -->
+      <div class="player-mode-hint" id="player-mode-hint"></div>
       <div class="player-osd-icon" id="player-osd-icon"></div>
     </div>
     <!-- Live TV InfoBar -->
@@ -271,15 +273,24 @@ if (!Array.prototype.findIndex) {
 
     <div class="player-channels" id="player-channels"></div>
 
-    <!-- Live column picker.  The in-player rail can only show a few of the 38
-         portal categories, so Up on the rail opens this full-screen grid (the
-         reference app opens an "all columns" screen from live home). -->
+    <!-- Live column picker (Redesigned TV Categories Modal) -->
     <div class="player-categories" id="player-categories">
-      <div class="pcat-head">
-        <div class="pcat-title">Categorías de TV</div>
-        <div class="pcat-sub" id="pcat-sub"></div>
+      <div class="pcat-modal">
+        <div class="pcat-header">
+          <div class="pcat-badge">EXPLORAR CANALES</div>
+          <div class="pcat-title">Categorías de TV en vivo</div>
+          <div class="pcat-sub" id="pcat-sub">Elige una categoría para filtrar los canales disponibles</div>
+        </div>
+        <div class="pcat-grid scrollable" id="pcat-grid"></div>
+        <div class="pcat-footer">
+          <div class="pcat-hints">
+            <span class="pcat-key">OK</span><span class="pcat-hint-text">Seleccionar</span>
+            <span class="pcat-hint-sep">·</span>
+            <span class="pcat-key">BACK</span><span class="pcat-hint-text">Cerrar</span>
+          </div>
+          <button class="pcat-exit-btn focusable" id="pcat-btn-exit">Cerrar / Volver</button>
+        </div>
       </div>
-      <div class="pcat-grid scrollable" id="pcat-grid"></div>
     </div>
   </section>
 

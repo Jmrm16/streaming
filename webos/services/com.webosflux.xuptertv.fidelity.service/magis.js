@@ -971,7 +971,7 @@ function search(value, done) {
   });
 }
 
-function detail(contentId, done) {
+function detail(contentId, done, retryDone) {
   var id = trim(contentId);
   if (!id) { return done(new Error('falta contentId')); }
   ensureSession(function (err) {
@@ -981,6 +981,14 @@ function detail(contentId, done) {
     }, function (err2, answer) {
       var cached = itemCache[id] || null;
       if (err2) {
+        /* A transient timeout or a portal hiccup while the detail sheet is
+           opening (the mini player asks for it right before fullscreen) made
+           the preview show "v4/getItemData" while a second try loads fine.
+           Retry once for anything that is not a definitive portal code. */
+        if (!retryDone && !err2.portalCode && !/portal\d+/i.test(err2.message || '')) {
+          console.log('[magis] reintentando detalle tras error temporal: ' + err2.message);
+          return setTimeout(function () { detail(id, done, true); }, 900);
+        }
         /* Movies answer portal100006 ("episode does not exist") or portal error codes
            because they do not have an episode tree in v4/getItemData. If cached is missing
            (e.g. after service restart), synthesize a minimal item so playback and detail view

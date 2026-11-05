@@ -383,6 +383,17 @@ function applyUpdate(ipkUrl, onStatus, cb) {
       }
 
       onStatus('success', 100, '¡Instalación completada! Reiniciando XuperTV...');
+      /* The installed IPK replaces the files, but this Node process keeps the
+         old code in memory.  If it survives the update, Luna answers the next
+         launch with the old method list ("Denied method call checkUpdate for
+         category /").  Exit once the app has been relaunched so ls-hubd starts
+         the service again from the new package. */
+      setTimeout(function () {
+        try {
+          if (typeof process.reallyExit === 'function') { process.reallyExit(0); }
+          else { process.kill(process.pid, 'SIGKILL'); }
+        } catch (eRestart) { /* ignore */ }
+      }, 6000);
       setTimeout(function () {
         relaunchApp();
       }, 1000);
