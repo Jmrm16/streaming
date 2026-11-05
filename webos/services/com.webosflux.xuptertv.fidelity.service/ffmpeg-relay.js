@@ -111,7 +111,7 @@ function ensureExecutable(cb, force) {
  * start plus a 31 MB copy to /tmp can delay the first `ping` past the app's
  * 25 s deadline, which looks like "el servicio no arrancó".  Defer the probe
  * so the service answers Luna first and the relay is validated on demand. */
-setTimeout(function () { ensureExecutable(function () {}); }, 4000);
+setTimeout(function () { ensureExecutable(function () {}); }, 30000);
 
 function stopCurrent() {
   if (current) {

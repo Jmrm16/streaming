@@ -162,6 +162,89 @@ function addSubtitle(target) {
   return baseUrl() + '/sub/' + token + '.srt';
 }
 
+function forwardImg(req, res) {
+  var parsed = urlmod.parse(req.url || '', true);
+  var targetUrl = parsed.query && parsed.query.u;
+  if (!targetUrl || typeof targetUrl !== 'string') {
+    res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+    res.end('missing target url');
+    return;
+  }
+  var parsedTarget;
+  try {
+    parsedTarget = urlmod.parse(targetUrl);
+  } catch (eParse) {
+    res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+    res.end('invalid target url');
+    return;
+  }
+  if (parsedTarget.protocol !== 'http:' && parsedTarget.protocol !== 'https:') {
+    res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+    res.end('only http/https allowed');
+    return;
+  }
+  var isHttps = (parsedTarget.protocol === 'https:');
+  var client = isHttps ? https : http;
+  var agent = isHttps ? httpsAgent : httpAgent;
+  var reqOpts = {
+    protocol: parsedTarget.protocol,
+    hostname: parsedTarget.hostname,
+    port: parsedTarget.port || (isHttps ? 443 : 80),
+    path: parsedTarget.path || parsedTarget.pathname,
+    method: 'GET',
+    agent: agent,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (SmartHub; SMART-TV; U; Linux/SmartTV)',
+      'Accept': 'image/*, */*'
+    }
+  };
+  var ended = false;
+  var sendErr = function (code, text) {
+    if (ended) { return; }
+    ended = true;
+    try {
+      res.writeHead(code, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+      res.end(text);
+    } catch (eEnd) {}
+  };
+  var upstream = client.request(reqOpts, function (upRes) {
+    var status = upRes.statusCode;
+    if ((status === 301 || status === 302 || status === 307 || status === 308) && upRes.headers.location) {
+      try { upRes.destroy(); } catch (eDest) {}
+      res.writeHead(302, {
+        'Location': '/img?u=' + encodeURIComponent(upRes.headers.location),
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end();
+      return;
+    }
+    if (status !== 200 && status !== 304) {
+      try { upRes.destroy(); } catch (eDest2) {}
+      sendErr(status || 502, 'upstream status ' + status);
+      return;
+    }
+    var headers = {
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'public, max-age=86400'
+    };
+    if (upRes.headers['content-type']) {
+      headers['Content-Type'] = upRes.headers['content-type'];
+    }
+    if (upRes.headers['content-length']) {
+      headers['Content-Length'] = upRes.headers['content-length'];
+    }
+    res.writeHead(status, headers);
+    upRes.pipe(res);
+  });
+  upstream.on('error', function (err) {
+    sendErr(502, 'image proxy error: ' + (err && err.message));
+  });
+  upstream.setTimeout(10000, function () {
+    try { upstream.abort(); } catch (eAbrt) {}
+    sendErr(504, 'image proxy timeout');
+  });
+}
+
 function sendSubtitle(req, res, entry) {
   resolveHostIp(entry, function (ip) {
     var parsed = urlmod.parse(entry.url || '');
@@ -629,6 +712,16 @@ function handler(req, res) {
     res.end('aborted');
     return;
   }
+  if (/^\/img(\?|$)/.test(req.url || '')) {
+    var remote = req.socket && req.socket.remoteAddress;
+    if (remote !== '127.0.0.1' && remote !== '::ffff:127.0.0.1' && remote !== '::1') {
+      res.writeHead(403, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+      res.end('Forbidden: local loopback only');
+      return;
+    }
+    forwardImg(req, res);
+    return;
+  }
   var sub = /^\/sub\/([a-f0-9]{24})\.srt$/.exec(req.url || '');
   if (sub) {
     var subEntry = subtitleTokens[sub[1]];
@@ -685,6 +778,7 @@ function handler(req, res) {
 }
 
 function start(cb) {
+  if (typeof cb !== 'function') { cb = function () {}; }
   if (server && port) { return cb(null, port); }
   server = http.createServer(handler);
   server.timeout = 0;

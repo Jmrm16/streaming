@@ -1264,6 +1264,10 @@ while [ $i -lt 10 ]; do
   case "$PING" in
     *'"returnValue":true'*) break ;;
   esac
+  PING=$(luna-send-pub -n 1 -f "palm://@@SVCID@@/ping" '{}' 2>&1)
+  case "$PING" in
+    *'"returnValue":true'*) break ;;
+  esac
   i=$((i + 1))
   sleep 1
 done

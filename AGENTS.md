@@ -99,7 +99,7 @@ Antes de entregar cualquier cambio que afecte la app, comprobar:
 5. Que `proxy.js` mantenga la resolución previa `resolveHostIp`, el SNI real y el camuflaje de respaldo `cachefly.net`.
 6. Que `dnsx.js` conserve el pool multirresolutor DoH en paralelo.
 7. Que el binario `ffmpeg` conserve modo `0755` dentro de la IPK construida.
-8. Que `services.json` **no** declare `commands` (ver sección 4).
+8. Que `services.json` declare `commands` exclusivamente con `"public": false` (y jamás `"public": true`, ver sección 4).
 9. Que el autotest de `ffmpeg` siga diferido con `setTimeout` en `ffmpeg-relay.js`.
 10. Que `magis.js` conserve el rescate por semillas (`portal100024`) con pool, expiración y marcas de semilla muerta.
 11. Que ningún servicio declare una `function` dentro de un bloque (ver sección 5): webOS 3.x no carga el servicio.
@@ -109,13 +109,22 @@ detenerse y pedir autorización explícita al usuario antes de hacerlo.
 
 ---
 
-## 4. Registro del servicio Luna (causa de "el servicio no arrancó")
+## 4. Registro del servicio Luna (causa de "el servicio no arrancó" y "Unknown method")
 
-El bloque `"commands": [...]` dentro de `webos/services/com.webosflux.xuptertv.fidelity.service/services.json`
-activa ACLs estrictas en `ls-hubd` y provoca `Denied method call for category /`
-o que el servicio no responda al `ping` en varias versiones de webOS (3.x y 6.x).
-Ya se eliminó dos veces en el historial (`e30aa9e`, `4bb57f9`); **no volver a añadirlo**.
-Los métodos se registran en `index.js` con `service.register(...)` y Luna los expone sin esa lista.
+En webOS, `services.json` define los métodos expuestos por el servicio.
+- **Regla crítica de seguridad y bus:** Los métodos deben declararse con `"public": false`
+  (comandos privados de la aplicación compañera dentro del mismo paquete).
+- **Jamás declarar `"public": true`:** Si se declara `"public": true` sin permisos
+  de plataforma ni roles ACG del sistema, `ls-hubd` en webOS 4+, 5+ y 6+ bloquea
+  las llamadas con `Denied method call for category /` (causa histórica en `e30aa9e` y `4bb57f9`).
+- **Por qué son obligatorios los `commands` con `"public": false` en webOS 3.x:**
+  En webOS 1.x, 2.x y 3.x, `ls-hubd` genera su tabla estática de métodos a partir
+  de `commands` en `services.json`. Si este bloque se elimina por completo, `ls-hubd`
+  desconoce los métodos antes de levantar el proceso y rechaza de inmediato con
+  `Unknown method "ping" for category "/"` (el fallo reportado en webOS 3.4.3).
+  Al declararlos con `"public": false`, la aplicación del mismo paquete
+  (`com.webosflux.xuptertv.fidelity`) tiene acceso total garantizado tanto en webOS 3
+  como en webOS 4/5/6/22+.
 
 Además, el autotest de `ffmpeg` no debe ejecutarse durante la carga del módulo:
 en TVs de 1 GB (webOS 3.x) el arranque en frío más la copia de 31 MB a `/tmp`
