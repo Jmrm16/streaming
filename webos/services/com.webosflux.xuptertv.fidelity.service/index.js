@@ -663,6 +663,7 @@ function startHttpApi() {
     if (needModule(e, updater, "./updater")) {
       var r = (e.payload || {}).ipkUrl;
       if (!r) return fail(e, new Error("URL de actualizacion no especificada"));
+      var targetVer = (e.payload || {}).targetVersion || (e.payload || {}).version || "";
       updater.applyUpdate(
         r,
         function (r, a, s) {
@@ -673,7 +674,8 @@ function startHttpApi() {
         function (r, a) {
           if (r) return fail(e, r);
           respond(e, null, { success: !0, finished: !0 });
-        }
+        },
+        targetVer
       );
     }
   }),

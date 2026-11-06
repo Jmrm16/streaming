@@ -54,7 +54,12 @@ function compareSemVer(e, t) {
   return 0;
 }
 function expectedVersionFromUrl(e) {
-  var t = /fidelity_([^_/?]+)_all\.ipk(?:[?#]|$)/i.exec(String(e || ""));
+  var s = String(e || "");
+  var t = /fidelity_([^_/?]+)_all\.ipk(?:[?#]|$)/i.exec(s);
+  if (t && t[1]) return t[1];
+  t = /v([0-9]+(?:\.[0-9]+)+)/i.exec(s);
+  if (t && t[1]) return t[1];
+  t = /([0-9]+\.[0-9]+\.[0-9]+)/.exec(s);
   return t && t[1] ? t[1] : "";
 }
 function installedAppVersion() {
@@ -267,14 +272,14 @@ var downloadFile = function (e, t, n, r, a) {
         }));
     });
   },
-  installViaLunaSend = function (e, t, n) {
+  installViaLunaSend = function (e, t, n, o) {
     var r,
       a = JSON.stringify({ id: APP_ID, ipkUrl: e, subscribe: !0 }),
-      o = fs.existsSync("/usr/bin/luna-send-pub")
+      p = fs.existsSync("/usr/bin/luna-send-pub")
         ? "/usr/bin/luna-send-pub"
         : "luna-send-pub";
     try {
-      r = spawn(o, [
+      r = spawn(p, [
         "-i",
         "-f",
         "luna://com.webos.appInstallService/dev/install",
@@ -286,7 +291,7 @@ var downloadFile = function (e, t, n, r, a) {
       );
     }
     var s = !1,
-      i = expectedVersionFromUrl(e),
+      i = o || expectedVersionFromUrl(e),
       c = null,
       u = null,
       l = "",
@@ -303,18 +308,22 @@ var downloadFile = function (e, t, n, r, a) {
       },
       f = function () {
         var e = installedAppVersion();
-        return !!(
-          i &&
-          e &&
-          compareSemVer(e, i) >= 0 &&
-          d(null, { state: "installed", version: e })
-        );
+        if (e) {
+          if (i) {
+            if (compareSemVer(e, i) >= 0)
+              return d(null, { state: "installed", version: e });
+          } else {
+            return d(null, { state: "installed", version: e });
+          }
+        }
+        return !1;
       };
-    if (!i)
-      return d(new Error("La URL de actualización no contiene una versión válida"));
     ((u = setInterval(f, 1500)),
       (c = setTimeout(function () {
-        d(new Error("La TV no confirmó la versión " + i + " tras instalarla"));
+        var e = installedAppVersion();
+        if (e && (!i || compareSemVer(e, i) >= 0))
+          return d(null, { state: "installed", version: e });
+        d(new Error("La TV no confirmó la versión " + (i || "nueva") + " tras instalarla"));
       }, 18e4)),
       f(),
       r.stdout.on("data", function (e) {
@@ -345,7 +354,12 @@ var downloadFile = function (e, t, n, r, a) {
             new Error("El instalador finalizó con código " + e + ": " + l)
           );
         t && t("Esperando confirmación de webOS...");
-        f();
+        setTimeout(function () {
+          f();
+          if (!s && /installed/i.test(l)) {
+            d(null, { state: "installed", version: installedAppVersion() || i });
+          }
+        }, 1500);
       }));
   },
   relaunchApp = function () {
@@ -364,11 +378,15 @@ var downloadFile = function (e, t, n, r, a) {
       console.error("[updater] error relanzando app:", e);
     }
   };
-function applyUpdate(e, t, n) {
+function applyUpdate(e, t, n, r) {
+  var targetVer = r || expectedVersionFromUrl(e),
+    savePath = targetVer
+      ? "/tmp/com.webosflux.xuptertv.fidelity_" + targetVer + "_all.ipk"
+      : TARGET_IPK_PATH;
   (t("downloading", 0, "Iniciando descarga de la actualización..."),
     downloadFile(
       e,
-      TARGET_IPK_PATH,
+      savePath,
       function (e, n, r) {
         var a =
           e >= 0
@@ -376,23 +394,23 @@ function applyUpdate(e, t, n) {
             : "Descargando paquete (" + Math.round(n / 1048576) + " MB)...";
         t("downloading", e >= 0 ? e : 0, a);
       },
-      function (e, r) {
-        if (e) {
+      function (err, downloadedPath) {
+        if (err) {
           try {
-            fs.existsSync(TARGET_IPK_PATH) && fs.unlinkSync(TARGET_IPK_PATH);
+            fs.existsSync(savePath) && fs.unlinkSync(savePath);
           } catch (e) {}
-          return n(new Error("Error en la descarga: " + (e && e.message)));
+          return n(new Error("Error en la descarga: " + (err && err.message)));
         }
         (t("installing", 100, "Instalando actualización en el televisor..."),
           installViaLunaSend(
-            r,
+            downloadedPath,
             function (e) {
               t("installing", 100, "Instalando en webOS: " + e);
             },
             function (e) {
               try {
-                fs.existsSync(TARGET_IPK_PATH) &&
-                  fs.unlinkSync(TARGET_IPK_PATH);
+                fs.existsSync(savePath) && fs.unlinkSync(savePath);
+                fs.existsSync(TARGET_IPK_PATH) && fs.unlinkSync(TARGET_IPK_PATH);
               } catch (e) {}
               if (e)
                 return n(
@@ -414,7 +432,8 @@ function applyUpdate(e, t, n) {
                   relaunchApp();
                 }, 1e3),
                 n(null, { success: !0 }));
-            }
+            },
+            targetVer
           ));
       }
     ));
