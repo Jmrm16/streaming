@@ -32,7 +32,10 @@ param(
     [string]$TvUser,
     [int]$Port = 0,
     [switch]$DryRun,
-    [switch]$NoPause
+    [switch]$NoPause,
+    # Solo lectura: no instala nada. Entra por SSH, mira por que el servicio no
+    # arranca y guarda el resultado en diagnostico-xupertv-tv.txt
+    [switch]$Diagnose
 )
 
 $ErrorActionPreference = 'Stop'
@@ -777,6 +780,12 @@ Ok 'Cliente SSH disponible'
 
 # ---------------------------------------------------------- 2. el paquete
 Step '2/6' 'Buscando el paquete de la aplicacion (.ipk)'
+if ($Diagnose) {
+    # El diagnostico no instala nada: no hace falta el .ipk.
+    $ipkPath = ''
+    $ipkItem = $null
+    Info 'Modo diagnostico: no se instala nada.'
+} else {
 try {
     $ipkPath = Get-IpkCandidate -explicit $Ipk
 } catch {
@@ -798,6 +807,7 @@ if (-not $ipkPath) {
 }
 $ipkItem = Get-Item -LiteralPath $ipkPath
 Ok ($ipkItem.Name + '  (' + ('{0:N1}' -f ($ipkItem.Length / 1MB)) + ' MB)')
+}
 
 # ---------------------------------------------------------- 3. la TV
 $cfg = $null
@@ -958,8 +968,8 @@ $script:SshOpts = @(Get-SshOpts)
 $script:ScpLegacy = Test-ScpLegacy
 
 $remoteDir = '/media/developer/temp'
-$remoteIpk = "$remoteDir/" + $ipkItem.Name
-$expected = Get-IpkVersion $ipkPath
+$remoteIpk = if ($ipkItem) { "$remoteDir/" + $ipkItem.Name } else { '' }
+$expected = if ($ipkPath) { Get-IpkVersion $ipkPath } else { '' }
 if (-not $expected) { $expected = 'desconocida' }
 
 if ($DryRun) {
@@ -1105,6 +1115,110 @@ while (-not $tvPass) {
 Write-Host ''
 
 $authArgs = @(Get-AuthArgs)
+
+if ($Diagnose) {
+    Step 'DIAG' 'Leyendo por SSH por que el servicio no arranca (no instala nada)'
+    $diagSh = @'
+APPID=com.webosflux.xuptertv.fidelity
+SVCID=com.webosflux.xuptertv.fidelity.service
+echo "=== SISTEMA ==="
+uname -a 2>&1
+echo "--- node ---"
+which node 2>/dev/null || echo "sin node en PATH"
+node -v 2>&1
+echo
+echo "=== APP INSTALADA ==="
+for d in /media/developer/apps/usr/palm/applications/$APPID /media/cryptofs/apps/usr/palm/applications/$APPID /usr/palm/applications/$APPID; do
+  if [ -d "$d" ]; then
+    echo "DIR $d"
+    grep -o '"version"[^,]*' "$d/appinfo.json" 2>/dev/null
+  fi
+done
+echo
+echo "=== SERVICIO INSTALADO ==="
+SVC=""
+for d in /media/developer/apps/usr/palm/services/$SVCID /media/cryptofs/apps/usr/palm/services/$SVCID /usr/palm/services/$SVCID; do
+  if [ -d "$d" ]; then
+    echo "DIR $d"
+    SVC="$d"
+    ls -l "$d" 2>&1
+  fi
+done
+[ -z "$SVC" ] && echo "NO ENCONTRADO el directorio del servicio"
+echo
+echo "=== PROCESO DEL SERVICIO ==="
+ps -ef 2>/dev/null | grep -i "fidelity.service" | grep -v grep || echo "no hay proceso del servicio"
+echo
+echo "=== LUNA: PING ==="
+for LS in luna-send luna-send-pub /usr/bin/luna-send /usr/sbin/luna-send; do
+  if command -v "$LS" >/dev/null 2>&1; then
+    echo "probando $LS"
+    "$LS" -n 1 -f luna://$SVCID/ping '{}' 2>&1 | head -c 400
+    echo
+  fi
+done
+echo
+echo "=== API LOCAL HTTP (respaldo) ==="
+if command -v wget >/dev/null 2>&1; then
+  wget -q -O - "http://127.0.0.1:8910/ping" 2>&1 | head -c 400
+else
+  echo "sin wget en la TV"
+fi
+echo
+echo
+echo "=== SINTAXIS DE LOS MODULOS (Node de la TV) ==="
+if [ -n "$SVC" ]; then
+  cd "$SVC" || exit 0
+  for f in *.js; do
+    if node -e "new Function(require('fs').readFileSync('$f','utf8'));" >/dev/null 2>&1; then
+      echo "OK   $f"
+    else
+      echo "FALLA $f"
+      node -e "new Function(require('fs').readFileSync('$f','utf8'));" 2>&1 | head -n 4
+    fi
+  done
+  echo "--- carga de modulos ---"
+  if timeout -t 1 true >/dev/null 2>&1; then TO="timeout -t 10"; else TO="timeout 10"; fi
+  $TO node -e "require('./magis');require('./proxy');require('./dnsx');require('./netdiag');require('./upstream');console.log('MODULOS OK')" 2>&1 | head -n 20
+  echo "--- permisos ffmpeg ---"
+  ls -l ffmpeg 2>&1
+fi
+echo
+echo "=== LOGS ==="
+for f in /var/log/luna-service2.log /var/log/messages /tmp/xuper-relay.log; do
+  if [ -f "$f" ]; then
+    echo "--- $f ---"
+    tail -n 400 "$f" 2>/dev/null | grep -i -E "xupter|fidelity|denied|unknown method|syntaxerror|no se pudo cargar" | tail -n 40
+  fi
+done
+echo "--- logread ---"
+logread 2>/dev/null | tail -n 400 | grep -i -E "xupter|fidelity|denied|unknown method|syntaxerror" | tail -n 40
+echo
+echo "=== FIN ==="
+'@
+    $diagSh = $diagSh -replace "`r`n", "`n"
+    $localSh = Join-Path $env:TEMP 'xuper-diag.sh'
+    [System.IO.File]::WriteAllText($localSh, $diagSh, (New-Object System.Text.UTF8Encoding($false)))
+    $remoteSh = '/tmp/xuper-diag.sh'
+    if (Send-FileToTv $localSh $remoteSh $tvPass) {
+        $runArgs = @('-p', "$Port") + $script:SshOpts + $authArgs + @(($TvUser + '@' + $TvHost), ('sh ' + $remoteSh))
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        if ($script:UseKey) { $out = (& ssh @runArgs 2>&1 | Out-String) } else { $out = ($tvPass | & ssh @runArgs 2>&1 | Out-String) }
+        $ErrorActionPreference = $prev
+        $outFile = Join-Path $PSScriptRoot 'diagnostico-xupertv-tv.txt'
+        $out | Set-Content -LiteralPath $outFile -Encoding UTF8
+        Write-Host ''
+        Write-Host $out
+        Write-Host ''
+        Ok ('Diagnostico guardado en ' + $outFile)
+    } else {
+        Fail 'No pude copiar el diagnostico a la TV.'
+        if ($script:LastTransferError) { Info (($script:LastTransferError -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 2) -join ' ') }
+    }
+    Pause-End
+    exit 0
+}
 
 # Liberar espacio en la particion de desarrollo borrando paquetes e instaladores temporales viejos
 $cleanArgs = @('-p', "$Port") + $script:SshOpts + $authArgs + @(($TvUser + '@' + $TvHost), 'rm -f /media/developer/temp/*.ipk /media/developer/temp/*.log /media/developer/temp/*.json /tmp/*.ipk 2>/dev/null')

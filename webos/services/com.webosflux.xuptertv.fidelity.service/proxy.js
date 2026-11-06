@@ -295,7 +295,7 @@ function readRange(e, t, r, n) {
               e.statusCode >= 200 && e.statusCode < 300
                 ? null
                 : new Error("rango rechazado"),
-              Buffer.concat(t),
+              Buffer.concat(t)
             );
           }));
       });
@@ -436,7 +436,7 @@ function forward(e, t, r, n) {
               console.log(
                 "[proxy] CDN CacheFly respondió " +
                   o.statusCode +
-                  ", reintentando con SNI camuflado...",
+                  ", reintentando con SNI camuflado..."
               ),
               (r._maskSni = !0),
               (r.resolvedIp = ""),
@@ -485,7 +485,7 @@ function forward(e, t, r, n) {
                 var e = rewriteHlsManifest(
                   Buffer.concat(h).toString("utf8"),
                   n,
-                  r.url,
+                  r.url
                 );
                 (delete d["Content-Length"],
                   delete d["Content-Range"],
@@ -542,7 +542,7 @@ function forward(e, t, r, n) {
                 console.log(
                   "[proxy] upstream CacheFly falló (" +
                     (o && (o.code || o.message)) +
-                    "), reintentando con SNI camuflado cachefly.net...",
+                    "), reintentando con SNI camuflado cachefly.net..."
                 ),
                 (r._maskSni = !0),
                 (r.resolvedIp = ""),
@@ -561,7 +561,7 @@ function forward(e, t, r, n) {
                   ? (console.log(
                       "[proxy] upstream HTTPS falló (" +
                         (o && (o.code || o.message)) +
-                        "), reintentando con HTTP compatible...",
+                        "), reintentando con HTTP compatible..."
                     ),
                     (r.url = r.url.replace(/^https:\/\//i, "http://")),
                     (r.resolvedIp = ""),
@@ -570,7 +570,7 @@ function forward(e, t, r, n) {
                   : (console.log(
                       "[proxy] upstream HTTP falló (" +
                         (o && (o.code || o.message)) +
-                        "), reintentando con HTTPS por posible bloqueo DPI...",
+                        "), reintentando con HTTPS por posible bloqueo DPI..."
                     ),
                     (r.url = r.url.replace(/^http:\/\//i, "https://")),
                     (r.resolvedIp = ""),
@@ -591,7 +591,7 @@ function forward(e, t, r, n) {
                     "[proxy] upstream falló (" +
                       (o && (o.code || o.message)) +
                       "), reintentando con CDN alternativa: " +
-                      l,
+                      l
                   ),
                   (r.url = l),
                   i && i.headers && (r.headers = i.headers),
@@ -684,7 +684,7 @@ function handler(e, t) {
         void t.end("expired"));
   }
   var o = /^\/hls\/([a-f0-9]{24})\/([A-Za-z0-9_-]+)$/.exec(
-    (e.url || "").split("?")[0],
+    (e.url || "").split("?")[0]
   );
   if (o) {
     var s = tokens[o[1]];
@@ -708,7 +708,7 @@ function handler(e, t) {
             backupUrls: s.backupUrls,
             backupIndex: s.backupIndex,
           },
-          o[1],
+          o[1]
         )
       : (t.writeHead(400, {
           "Content-Type": "text/plain",
@@ -717,7 +717,7 @@ function handler(e, t) {
         void t.end("invalid hls child"));
   }
   var i = /^\/media\/([a-f0-9]{24})(?:\/([^\?#]*))?(?:[?#].*)?$/.exec(
-    e.url || "",
+    e.url || ""
   );
   if (!i)
     return (

@@ -99,7 +99,7 @@ function dohQuery(e, n, r) {
             return i(new Error("DoH " + n.ip + ": sin registros A"));
           i(null, s);
         }));
-    },
+    }
   );
   return (
     a.setTimeout(DOH_TIMEOUT, function () {
@@ -278,7 +278,7 @@ function probe(e, n, r) {
       PROBE_TIMEOUT,
       function () {
         i(new Error("tiempo agotado"));
-      },
+      }
     ),
       s.on("connect", function () {
         i(null);

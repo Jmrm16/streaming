@@ -756,6 +756,85 @@
   color: #ff5260;
 }
 
+/* En Inicio la mini-TV ocupa la parte superior. Las acciones quedan justo
+   debajo, no pegadas al borde inferior donde se pierden en paneles pequeños. */
+.live-fast {
+  top: 654px;
+  bottom: auto;
+}
+#screen-home.is-rail-open .live-fast { top: 566px; }
+.live-fast .fast-btn {
+  width: auto;
+  min-width: 132px;
+  box-sizing: border-box;
+  justify-content: center;
+}
+
+/* Favoritos de la canalera: una acción independiente en cada fila. Así OK
+   reproduce el canal y → llega a la estrella, sin depender de doble pulsación. */
+.player-channels .pc-row .nm,
+.player-channels .pc-row .epg { right: 76px; }
+.player-channels .pc-channel-fav {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  width: 48px;
+  height: 48px;
+  margin-top: -24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #9aa0a8;
+  font-size: 32px;
+  line-height: 48px;
+  text-align: center;
+  outline: none;
+}
+.player-channels .pc-channel-fav.is-favorite { color: #ffcc00; text-shadow: 0 0 8px rgba(255,204,0,.5); }
+.player-channels .pc-channel-fav.is-focused {
+  background: #d21525;
+  color: #ffffff;
+  box-shadow: 0 0 0 2px #ffffff;
+}
+
+/* Inicio TV: la previsualización queda limpia. Buscar, favoritos y categorías
+   pertenecen al encabezado de la lista de canales de la derecha. */
+.live-fast,
+#screen-home.is-rail-open .live-fast {
+  left: auto;
+  right: 40px;
+  top: 16px;
+  bottom: auto;
+  width: 506px;
+  height: 54px;
+  padding: 5px;
+  gap: 6px;
+  background: rgba(14,16,22,.94);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+.live-fast .fast-btn {
+  width: 120px;
+  min-width: 0;
+  height: 42px;
+  padding: 0;
+  border-radius: 6px;
+  justify-content: center;
+}
+.live-fast .fast-btn span { display: none; }
+.live-fast .fast-btn svg { width: 24px; height: 24px; margin: 0; }
+.live-fast .fast-btn.f-srch,
+.live-fast .fast-btn.f-filter,
+.live-fast .fast-btn.f-fav,
+.live-fast .fast-btn.f-all { background-image: none !important; }
+.live-list {
+  top: 86px !important;
+  height: 634px !important;
+  z-index: 4;
+}
+
 /* Estrella de favorito en la lista de canales de Home */
 .live-row .channel-star {
   position: absolute;
@@ -766,6 +845,30 @@
   font-size: 26px;
   color: #ffcc00;
   text-shadow: 0 0 8px rgba(255,204,0,.5);
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  line-height: 44px;
+  outline: none;
+}
+.live-row .channel-star.is-focused {
+  background: #d21525;
+  color: #ffffff;
+  box-shadow: 0 0 0 2px #ffffff;
+}
+
+/* El canal en reproducción conserva una referencia visual aunque el foco se
+   mueva a Buscar, Favoritos o Categorías. El foco remoto sigue siendo blanco. */
+.live-row.is-current:not(.is-focused) {
+  background: rgba(210, 21, 37, .34);
+  box-shadow: inset 5px 0 0 #d21525;
+}
+.player-channels .pc-row.is-current:not(.is-focused) {
+  background: rgba(210, 21, 37, .22);
+  box-shadow: inset 4px 0 0 #d21525;
 }
 
 /* Selector de Categorías de TV: Estilo Dark Fidelity idéntico a Account */

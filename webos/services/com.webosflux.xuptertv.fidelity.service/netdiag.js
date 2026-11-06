@@ -72,7 +72,7 @@ function httpsCheck(e, r, t) {
           t.on("end", function () {
             s({ host: e, ip: r, ok: n > 0, status: n, ms: now() - o });
           }));
-      },
+      }
     );
     (i.setTimeout(HTTP_TIMEOUT, function () {
       try {
@@ -281,7 +281,7 @@ function run(e, r) {
             tcp443: null,
             http: null,
           };
-        },
+        }
       );
     }),
     u = dnsx.providers.map(function (e) {
@@ -299,7 +299,7 @@ function run(e, r) {
             ms: PROVIDER_DEADLINE,
             error: "sin respuesta",
           };
-        },
+        }
       );
     }),
     c = !1,
@@ -428,7 +428,7 @@ function runLayers(e, r) {
           error: "sin respuesta",
           ms: LAYER_DEADLINE,
         };
-      },
+      }
     );
   }
   ((e = e || {}).portalUrl && (n.push("portal"), t.push(o(e.portalUrl, null))),

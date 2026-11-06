@@ -162,6 +162,28 @@ powershell -ExecutionPolicy Bypass -File tools/setup-ffmpeg.ps1
 > arranca. `Set-Content -Encoding UTF8` de PowerShell 5.1 añade BOM; usar
 > `UTF8Encoding($false)`.
 
+### Regla permanente: compatibilidad webOS 3.4.3
+
+La versión verificada en un LG webOS 3.4.3 (Linux 3.10, ARMv7 y Node.js
+`v0.12.2`) funciona con la arquitectura actual. Por tanto, cualquier cambio
+futuro debe conservar obligatoriamente:
+
+- Servicio en **ES5 puro**, sin sintaxis moderna ni declaraciones `function`
+  dentro de bloques; todos los módulos deben pasar con el Node.js de la TV.
+- `services.json` con todos los `commands` declarados y con `"public": false`.
+- La API de respaldo local `http://127.0.0.1:8910`, usada si Luna deniega una
+  llamada privada en webOS 3.x.
+- Autotest de FFmpeg diferido, para que el primer `ping` de Luna responda antes
+  de cualquier trabajo pesado.
+- FFmpeg dentro de la IPK con permiso `0755`.
+- Tras cada instalación, el diagnóstico debe confirmar que la versión de
+  `ping` coincide con la versión de `appinfo.json`. Si no coincide, hay un
+  proceso antiguo aún cargado: apagar/desconectar la TV 30 segundos y volver a
+  iniciar antes de diagnosticar un fallo de la app.
+
+No retirar estos puntos por cambios visuales, de catálogo o de instalación:
+son necesarios para que webOS 3.4.3 siga arrancando el servicio y reproduzca.
+
 Instalación en la TV de pruebas (`ares-install` falla en este equipo tras la
 subida; el servicio Luna sí instala):
 
