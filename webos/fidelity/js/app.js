@@ -3022,7 +3022,11 @@
                 try {
                   return void window.webOS.service.request("luna://" + l, {
                     method: "applyUpdate",
-                    parameters: { ipkUrl: Ft.ipkUrl, subscribe: !0 },
+                    parameters: {
+                      ipkUrl: Ft.ipkUrl,
+                      targetVersion: (Ft && (Ft.latestVersion || Ft.version)) || "",
+                      subscribe: !0
+                    },
                     subscribe: !0,
                     resubscribe: !1,
                     onSuccess: function (e) {
@@ -3215,7 +3219,7 @@
     });
   }
   function oa(e, t) {
-    var a = "2.2.76";
+    var a = "2.2.77";
     function i(i) {
       (t && t(null, i),
         i && i.updateAvailable
@@ -4880,7 +4884,7 @@
           e(
             "div",
             "sp-about-update-desc",
-            "Versión instalada: v2.2.76. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC."
+            "Versión instalada: v2.2.77. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC."
           )
         ));
       var s = e("div", "sp-about-update-row"),
@@ -4904,7 +4908,7 @@
                         "¡Nueva versión disponible: v" + t.latestVersion + "!"),
                       (d.style.color = "#22c55e"))
                     : ((d.textContent =
-                        "Tienes la versión más reciente (v2.2.76)."),
+                        "Tienes la versión más reciente (v2.2.77)."),
                       (d.style.color = "#38bdf8")));
             }));
         }),

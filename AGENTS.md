@@ -20,14 +20,13 @@ comportamiento:
 ### Contrato obligatorio de reproducción:
 - **Normal** usa el proxy directo (`proxy.baseUrl() + '/media/...'`).
 - **Modo Fluido** usa obligatoriamente `resolveSmooth` y una URL local del relay:
-  - webOS 4 en adelante (y versión de webOS desconocida):
-    `http://127.0.0.1:8787/s/<token>.mp4` (MP4 fragmentado).
-  - webOS 1/2/3 y 3.5 (autorizado 2026-11-04 con "modificar fluido"):
-    `http://127.0.0.1:8787/t/<token>.ts` (MPEG-TS), porque el pipeline nativo de
-    esas versiones no demuxa siempre el fMP4 y deja la pantalla en negro o el
-    audio desincronizado. El contenedor lo elige la app (`relayContainer()` en
-    `app.js`, `container` en el payload de `resolveSmooth`) y nunca cambia el
-    camino Normal.
+  - Todas las versiones de webOS (1/2/3/3.5/4+): `http://127.0.0.1:8787/s/<token>.mp4`
+    (MP4 fragmentado). Autorizado 2026-11-06 con "fMP4 como XuperMH": el
+    pipeline nativo de webOS 1/2/3 no demuxa de forma fiable el MPEG-TS crudo y
+    dejaba la pantalla en negro; XuperMH v2.31.1 usa siempre fMP4 en esas TVs.
+    El relay conserva el soporte `/t/<token>.ts` por compatibilidad, pero la app
+    ya no lo solicita. El contenedor lo elige la app (`_r()` en `app.js`,
+    `container` en el payload de `resolveSmooth`) y nunca cambia el camino Normal.
 - **Modo Fluido nunca debe quedar en negro**: si el `<video>` no llega a
   `readyState >= 2` en 15 s, `watchdog de arranque` (`relayStartWatch`) vuelve a
   Normal una sola vez por título con aviso al espectador.
