@@ -13,6 +13,11 @@ var http = require("http"),
   ],
   TARGET_IPK_PATH = "/tmp/xuper-ota.ipk",
   APP_ID = "com.webosflux.xuptertv.fidelity",
+  INSTALLED_APPINFO_PATHS = [
+    "/media/developer/apps/usr/palm/applications/" + APP_ID + "/appinfo.json",
+    "/media/cryptofs/apps/usr/palm/applications/" + APP_ID + "/appinfo.json",
+    "/usr/palm/applications/" + APP_ID + "/appinfo.json",
+  ],
   lunaService = null;
 function setLunaService(e) {
   lunaService = e;
@@ -47,6 +52,18 @@ function compareSemVer(e, t) {
     if (s < i) return -1;
   }
   return 0;
+}
+function expectedVersionFromUrl(e) {
+  var t = /fidelity_([^_/?]+)_all\.ipk(?:[?#]|$)/i.exec(String(e || ""));
+  return t && t[1] ? t[1] : "";
+}
+function installedAppVersion() {
+  for (var e = 0; e < INSTALLED_APPINFO_PATHS.length; e++)
+    try {
+      var t = JSON.parse(fs.readFileSync(INSTALLED_APPINFO_PATHS[e], "utf8"));
+      if (t && t.version) return String(t.version);
+    } catch (e) {}
+  return "";
 }
 var resolveHostIp = function (e, t) {
     if (!e || (dnsx && dnsx.isIpv4 && dnsx.isIpv4(e))) return t(null, e);
@@ -269,55 +286,66 @@ var downloadFile = function (e, t, n, r, a) {
       );
     }
     var s = !1,
-      i = function (e, t) {
+      i = expectedVersionFromUrl(e),
+      c = null,
+      u = null,
+      l = "",
+      d = function (e, t) {
         if (!s) {
           s = !0;
+          c && clearTimeout(c);
+          u && clearInterval(u);
           try {
             r.kill("SIGKILL");
           } catch (e) {}
           n(e, t);
         }
       },
-      c = setTimeout(function () {
-        i(new Error("Tiempo límite de instalación superado"));
-      }, 18e4),
-      u = "";
-    (r.stdout.on("data", function (e) {
-      var n = (u += e.toString()).split(/\r?\n/);
-      u = n.pop();
-      for (var r = 0; r < n.length; r++) {
-        var a = n[r];
-        if (a) {
-          if (/installed/i.test(a))
-            return (clearTimeout(c), i(null, { state: "installed", raw: a }));
-          if (
-            /FAILED_IPKG_INSTALL/i.test(a) ||
-            (/"returnValue":\s*false/i.test(a) && /errorCode/i.test(a))
-          )
-            return (
-              clearTimeout(c),
-              i(new Error("La TV rechazó la instalación: " + a))
-            );
-          t && t(a);
+      f = function () {
+        var e = installedAppVersion();
+        return !!(
+          i &&
+          e &&
+          compareSemVer(e, i) >= 0 &&
+          d(null, { state: "installed", version: e })
+        );
+      };
+    if (!i)
+      return d(new Error("La URL de actualización no contiene una versión válida"));
+    ((u = setInterval(f, 1500)),
+      (c = setTimeout(function () {
+        d(new Error("La TV no confirmó la versión " + i + " tras instalarla"));
+      }, 18e4)),
+      f(),
+      r.stdout.on("data", function (e) {
+        var r = (l += e.toString()).split(/\r?\n/);
+        l = r.pop();
+        for (var a = 0; a < r.length; a++) {
+          var o = r[a];
+          if (o) {
+            if (/installed/i.test(o))
+              (t && t("La TV confirmó la instalación; verificando versión..."),
+                f());
+            if (
+              /FAILED_IPKG_INSTALL/i.test(o) ||
+              (/"returnValue":\s*false/i.test(o) && /errorCode/i.test(o))
+            )
+              return d(new Error("La TV rechazó la instalación: " + o));
+            t && t(o);
+          }
         }
-      }
-    }),
+      }),
       r.on("error", function (e) {
-        (clearTimeout(c), i(e));
+        d(e);
       }),
       r.on("close", function (e) {
-        return (
-          clearTimeout(c),
-          /installed/i.test(u)
-            ? i(null, { state: "installed" })
-            : 0 === e
-              ? i(null, { state: "completed" })
-              : void i(
-                  new Error(
-                    "El instalador finalizó con código " + e + ": " + u,
-                  ),
-                )
-        );
+        if (s) return;
+        if (0 !== e)
+          return d(
+            new Error("El instalador finalizó con código " + e + ": " + l),
+          );
+        t && t("Esperando confirmación de webOS...");
+        f();
       }));
   },
   relaunchApp = function () {

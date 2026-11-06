@@ -576,4 +576,281 @@
 }
 .pc-search-input.is-focused { box-shadow: 0 0 0 2px #fff; }
 
+/* =============================================================================
+   Canalera y Controles de TV: Dark Fidelity Style (coherente con Sidebar y Account)
+   ============================================================================= */
+.player-channels .pc-header {
+  left: 0;
+  right: 0;
+  height: 128px;
+  padding: 16px 24px 10px;
+  background: rgba(14, 16, 22, .96);
+  border-bottom: 1px solid rgba(255,255,255,.08);
+  box-sizing: border-box;
+  z-index: 8;
+}
+.player-channels .pc-title-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.player-channels .pc-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: 0.5px;
+}
+.player-channels .pc-cat-badge {
+  display: inline-block;
+  margin-left: 14px;
+  padding: 3px 12px;
+  font-size: 17px;
+  font-weight: 600;
+  border-radius: 6px;
+  background: rgba(225, 28, 42, .18);
+  color: #ff5260;
+  border: 1px solid rgba(225, 28, 42, .35);
+  max-width: 260px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.player-channels .pc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.player-channels .pc-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 42px;
+  line-height: 42px;
+  padding: 0 16px;
+  border-radius: 10px;
+  background: #1e2128;
+  border: 1px solid rgba(255,255,255,.12);
+  color: #e5e7eb;
+  font-size: 18px;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+  -webkit-transition: all .12s ease;
+  transition: all .12s ease;
+}
+.player-channels .pc-toolbar-btn svg {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+.player-channels .pc-toolbar-btn.is-focused {
+  background: #d21525;
+  color: #ffffff;
+  border-color: transparent;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 12px rgba(210, 21, 37, .6);
+  -webkit-transform: scale(1.03);
+  transform: scale(1.03);
+}
+.player-channels .pc-toolbar-btn.is-active {
+  background: rgba(225, 28, 42, .25);
+  border-color: #e11c2a;
+  color: #ff5260;
+}
+.player-channels .pc-categories { display: none; }
+.player-channels .pc-div { left: 0; top: 127px; right: 0; }
+.player-channels .pc-list { left: 0; top: 128px; bottom: 82px; }
+.player-channels .pc-row {
+  min-height: 98px;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid rgba(255,255,255,.05);
+}
+.player-channels .pc-row .num { font-weight: 600; font-size: 26px; }
+.player-channels .pc-row .channel-star {
+  margin-left: auto;
+  padding-right: 8px;
+  font-size: 26px;
+  color: #ffcc00;
+  text-shadow: 0 0 8px rgba(255,204,0,.5);
+}
+.player-channels .pc-menu { left: 0; }
+.pc-search-box {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 136px;
+  z-index: 15;
+  padding: 16px 20px;
+  background: #181b22;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.14);
+  box-shadow: 0 10px 35px rgba(0,0,0,.7);
+}
+.pc-search-label { display: block; font-size: 19px; color: #a0a6b2; margin-bottom: 8px; }
+.pc-search-input {
+  width: 100%;
+  height: 48px;
+  padding: 0 14px;
+  background: #0e1015;
+  border: 1px solid rgba(255,255,255,.15);
+  border-radius: 8px;
+  color: #ffffff;
+  font-size: 20px;
+  outline: none;
+  box-sizing: border-box;
+}
+.pc-search-input.is-focused { border-color: #d21525; box-shadow: 0 0 0 2px #fff; }
+
+/* Botones de acción rápida en Inicio (Live Fast) */
+.live-fast {
+  position: absolute;
+  z-index: 20;
+  left: 192px;
+  bottom: 22px;
+  height: 52px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+}
+#screen-home.is-rail-open .live-fast { left: 354px; }
+.live-fast .fast-btn {
+  height: 48px;
+  line-height: 48px;
+  padding: 0 20px;
+  border-radius: 10px;
+  background: #1e2128;
+  color: #e5e7eb;
+  font-size: 19px;
+  font-weight: 600;
+  border: 1px solid rgba(255,255,255,.12);
+  outline: none;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  -webkit-transition: all .12s ease;
+  transition: all .12s ease;
+}
+.live-fast .fast-btn svg {
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+.live-fast .fast-btn.is-focused {
+  background: #d21525;
+  color: #ffffff;
+  border-color: transparent;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 12px rgba(210, 21, 37, .6);
+  -webkit-transform: scale(1.03);
+  transform: scale(1.03);
+}
+.live-fast .fast-btn.is-active {
+  background: rgba(225, 28, 42, .25);
+  border-color: #e11c2a;
+  color: #ff5260;
+}
+
+/* Estrella de favorito en la lista de canales de Home */
+.live-row .channel-star {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  -webkit-transform: translateY(-50%);
+  transform: translateY(-50%);
+  font-size: 26px;
+  color: #ffcc00;
+  text-shadow: 0 0 8px rgba(255,204,0,.5);
+}
+
+/* Selector de Categorías de TV: Estilo Dark Fidelity idéntico a Account */
+.player-categories {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  z-index: 95;
+  background: #0c0e14;
+  background: -webkit-linear-gradient(top, #0f121a 0%, #08090d 100%);
+  background: linear-gradient(180deg, #0f121a 0%, #08090d 100%);
+  padding: 0;
+  box-sizing: border-box;
+}
+.pcat-head {
+  margin: 50px 100px 24px;
+  padding-left: 22px;
+  border-left: 5px solid #d21525;
+}
+.pcat-title {
+  font-size: 42px;
+  font-weight: 700;
+  line-height: 50px;
+  color: #ffffff;
+  letter-spacing: 0.5px;
+}
+.pcat-sub {
+  margin-top: 6px;
+  font-size: 21px;
+  color: #9ca3af;
+}
+.pcat-grid {
+  position: absolute;
+  left: 100px;
+  right: 100px;
+  top: 175px;
+  bottom: 50px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.pcat-tile {
+  display: inline-block;
+  vertical-align: top;
+  width: 312px;
+  height: 72px;
+  line-height: 72px;
+  margin: 0 20px 20px 0;
+  padding: 0 24px;
+  border-radius: 12px;
+  background: #181b22;
+  border: 1px solid rgba(255, 255, 255, .08);
+  color: #ffffff;
+  font-size: 22px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-sizing: border-box;
+  outline: none;
+  cursor: pointer;
+  -webkit-transition: all .12s ease;
+  transition: all .12s ease;
+}
+.pcat-tile.is-selected {
+  background: rgba(225, 28, 42, .22);
+  border-color: #d21525;
+  color: #ffffff;
+}
+.pcat-tile.is-focused {
+  background: #d21525;
+  color: #ffffff;
+  border-color: transparent;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, .95), 0 0 16px rgba(210, 21, 37, .6);
+  -webkit-transform: scale(1.03);
+  transform: scale(1.03);
+}
+
+/* Carrusel de Catálogo: navegación fluida estilo Netflix */
+.catalog-rail::-webkit-scrollbar { display: none; }
+.catalog-rail {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+
 
