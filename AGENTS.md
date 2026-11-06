@@ -103,6 +103,9 @@ Antes de entregar cualquier cambio que afecte la app, comprobar:
 10. Que `magis.js` conserve el rescate por semillas (`portal100024`) con pool, expiración y marcas de semilla muerta.
 11. Que ningún servicio declare una `function` dentro de un bloque (ver sección 5): webOS 3.x no carga el servicio.
 12. Que `version.json` y los tags/releases de GitHub se publiquen obligatoriamente con el IPK (ver sección 6).
+13. Que el modo fluido fMP4 se mantenga en todas las versiones con su watchdog anti-pantalla-negra.
+14. Que TV en vivo mantenga favoritos (`liveFavorites`), botones de cabecera (`f-fav`, `f-all`, `f-srch`), tecla amarilla y foco al primer canal visible (ver sección 7).
+15. Que el carrusel de catálogo mantenga rieles `.catalog-rail` y loop horizontal de retorno estilo Netflix (ver sección 7).
 
 Si una tarea visual requiere tocar alguna de estas rutas o módulos protegidos,
 detenerse y pedir autorización explícita al usuario antes de hacerlo.
@@ -191,4 +194,30 @@ Para que los usuarios puedan actualizar la app vía OTA desde sus televisores o 
 - Crear el tag de Git localmente y subirlo al repositorio remoto (`git tag -a vX.X.XX -m "..." && git push origin vX.X.XX`).
 - Crear la Release en GitHub con el archivo `.ipk` compilado adjunto (`gh release create vX.X.XX dist/com.webosflux.xuptertv.fidelity_X.X.XX_all.ipk --title "..." --notes "..."`).
 - **Excepción única:** SOLO se omitirá la subida del tag y la creación del release si el usuario indica explícitamente: **"no la subas"** o **"no subas el tag"**.
+
+---
+
+## 7. TV en Vivo (Favoritos, Navegación y Controles) y Carrusel Netflix (Zona Protegida)
+
+Los controles de navegación de canales en vivo, el sistema de favoritos y el carrusel continuo de catálogo son zonas protegidas. **Ningún agente ni PR debe modificar, simplificar, reemplazar, desmantelar o eliminar este comportamiento ni su diseño visual**, salvo que el usuario dé autorización explícita diciendo:
+**"modificar TV en vivo"**, **"modificar favoritos de TV"** o **"modificar carrusel"**.
+
+### Contrato obligatorio de TV en Vivo:
+1. **Sistema de Favoritos (`X.liveFavorites` / `Q.liveFavorites`):**
+   - Cada canal posee su botón de estrella (`.pc-channel-fav` / `pc-fav-star`) que permite marcarlo o desmarcarlo como favorito.
+   - La cabecera incluye el botón de filtro de favoritos (`.f-fav` / `channelFavorites`) que alterna `liveFavoritesOnly` y muestra aviso visual (*"★ Mostrando canales favoritos"* / *"Mostrando todos los canales"*).
+   - Acceso rápido desde control remoto con la **tecla amarilla** (`ColorF2Yellow` / keycode 405) para añadir o quitar favoritos de forma inmediata.
+   - El estado de favoritos se persiste entre sesiones.
+2. **Barra de Acciones Dark Fidelity y Foco Estable:**
+   - La barra de herramientas mantiene el orden canónico y diseño oscuro consistente con la barra lateral y Account: **Buscar**, **Filtrar**, **Favoritos** y **Todos** (`.live-fast`, `.pc-search`, `.pc-filter`, `.pc-fav`, `.pc-all`).
+   - El botón **Todos** (`selectAllLiveChannels`) restaura la lista completa de canales sin forzar la apertura del modal de categorías.
+   - **Estabilidad de foco:** Al aplicar filtros de categorías o búsquedas por texto, el foco del cursor debe posicionarse automáticamente en el primer canal visible (`visibleLiveIndexes()[0]`), impidiendo que el foco quede en el vacío o se descoloque la lista.
+   - Al navegar verticalmente en la lista de canales, el foco no debe saltar bruscamente ni reordenar los elementos.
+
+### Contrato obligatorio del Carrusel de Películas y Series (Estilo Netflix):
+1. **Rieles horizontales de catálogo (`.catalog-rail`):**
+   - Las filas de categorías populares, películas, series y crimen deben renderizarse en contenedores horizontales con scroll oculto (`.catalog-rail`), cargando todas las tarjetas correspondientes sin recortes arbitrarios.
+2. **Loop y retorno fluido:**
+   - Al navegar con la flecha derecha y llegar al último elemento visible de la fila, el carrusel debe volver suavemente al primer elemento (`rail.scrollLeft = 0; rt(rail.children[0]);`), permitiendo una navegación infinita idéntica a Netflix en lugar de bloquear el movimiento.
+
 
