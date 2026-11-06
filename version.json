@@ -1,9 +1,9 @@
 {
-  "version": "2.2.62",
+  "version": "2.2.76",
   "name": "XuperTV",
   "minWebos": "1.0.0",
-  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.62/com.webosflux.xuptertv.fidelity_2.2.62_all.ipk",
-  "sha256": "018B740F387139F10FCC57508A51FFE3EA77ADFF7EA1A65E5029DB80F0ABF891",
-  "changelog": "Diseño Dark Fidelity de botones buscar, favoritos y categorías; 39 categorías de TV con filtrado robusto; favoritos directos con estrella; carruseles horizontales con navegación y bucle estilo Netflix para todas las películas.",
+  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.76/com.webosflux.xuptertv.fidelity_2.2.76_all.ipk",
+  "sha256": "5AA8D073CFF6834B565AF532AFC51B7324D76B8AA8C0CC61137F78CFBF9BF830",
+  "changelog": "Reordena la navegación de TV: Buscar, Filtrar, Favoritos y Todos; el foco baja al primer canal visible y no abre categorías al navegar.",
   "releaseDate": "2026-11-06"
 }

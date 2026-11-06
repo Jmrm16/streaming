@@ -105,7 +105,7 @@ function connectionFor(t, n, r, e, o) {
         { socket: i, servername: e || n, rejectUnauthorized: !1 },
         function () {
           o(null, u);
-        },
+        }
       );
     } catch (t) {
       try {

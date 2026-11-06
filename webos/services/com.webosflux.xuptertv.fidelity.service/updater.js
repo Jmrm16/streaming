@@ -115,12 +115,12 @@ var resolveHostIp = function (e, t) {
           if (404 === r.statusCode)
             return t(
               new Error(
-                'No se encontró version.json en GitHub (HTTP 404). Debes hacer "git push" a tu repositorio.',
-              ),
+                'No se encontró version.json en GitHub (HTTP 404). Debes hacer "git push" a tu repositorio.'
+              )
             );
           if (r.statusCode < 200 || r.statusCode >= 300)
             return t(
-              new Error("HTTP " + r.statusCode + " al consultar actualización"),
+              new Error("HTTP " + r.statusCode + " al consultar actualización")
             );
           var o = "";
           (r.setEncoding("utf8"),
@@ -135,8 +135,8 @@ var resolveHostIp = function (e, t) {
                 return t(
                   new Error(
                     "Formato JSON inválido en servidor de actualización: " +
-                      (e && e.message),
-                  ),
+                      (e && e.message)
+                  )
                 );
               }
               t(null, e);
@@ -151,8 +151,8 @@ var resolveHostIp = function (e, t) {
           } catch (e) {}
           t(
             new Error(
-              "Tiempo de espera agotado al consultar servidor de actualización",
-            ),
+              "Tiempo de espera agotado al consultar servidor de actualización"
+            )
           );
         }));
     });
@@ -218,7 +218,7 @@ var downloadFile = function (e, t, n, r, a) {
           }
           if (o.statusCode < 200 || o.statusCode >= 300)
             return r(
-              new Error("HTTP " + o.statusCode + " al descargar el paquete"),
+              new Error("HTTP " + o.statusCode + " al descargar el paquete")
             );
           var i = parseInt(o.headers["content-length"], 10) || 0,
             c = 0,
@@ -282,7 +282,7 @@ var downloadFile = function (e, t, n, r, a) {
       ]);
     } catch (e) {
       return n(
-        new Error("No se pudo ejecutar luna-send-pub: " + (e && e.message)),
+        new Error("No se pudo ejecutar luna-send-pub: " + (e && e.message))
       );
     }
     var s = !1,
@@ -342,7 +342,7 @@ var downloadFile = function (e, t, n, r, a) {
         if (s) return;
         if (0 !== e)
           return d(
-            new Error("El instalador finalizó con código " + e + ": " + l),
+            new Error("El instalador finalizó con código " + e + ": " + l)
           );
         t && t("Esperando confirmación de webOS...");
         f();
@@ -357,7 +357,7 @@ var downloadFile = function (e, t, n, r, a) {
       var n = spawn(
         e,
         ["-n", "1", "-f", "luna://com.webos.applicationManager/launch", t],
-        { detached: !0, stdio: "ignore" },
+        { detached: !0, stdio: "ignore" }
       );
       n.unref && n.unref();
     } catch (e) {
@@ -396,12 +396,12 @@ function applyUpdate(e, t, n) {
               } catch (e) {}
               if (e)
                 return n(
-                  new Error("Error en instalación: " + (e && e.message)),
+                  new Error("Error en instalación: " + (e && e.message))
                 );
               (t(
                 "success",
                 100,
-                "¡Instalación completada! Reiniciando XuperTV...",
+                "¡Instalación completada! Reiniciando XuperTV..."
               ),
                 setTimeout(function () {
                   try {
@@ -414,9 +414,9 @@ function applyUpdate(e, t, n) {
                   relaunchApp();
                 }, 1e3),
                 n(null, { success: !0 }));
-            },
+            }
           ));
-      },
+      }
     ));
 }
 module.exports = {

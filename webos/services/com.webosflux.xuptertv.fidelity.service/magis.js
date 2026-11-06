@@ -118,7 +118,7 @@ function decryptBlob(e) {
   var r = bufFrom(e, "hex").toString("ascii"),
     t = crypto.createDecipheriv("des-ede3", bufFrom(KEY_HEX, "hex"), EMPTY_IV);
   return Buffer.concat([t.update(bufFrom(r, "base64")), t.final()]).toString(
-    "utf8",
+    "utf8"
   );
 }
 function randomHex(e) {
@@ -146,7 +146,7 @@ function imageOf(e, r) {
           e.poster ||
           e.imageUrl ||
           e.image ||
-          "",
+          ""
       )
     : "poster" === r
       ? trim(
@@ -158,7 +158,7 @@ function imageOf(e, r) {
             e.icon ||
             e.imageUrl ||
             e.image ||
-            "",
+            ""
         )
       : "stage" === r
         ? trim(
@@ -168,7 +168,7 @@ function imageOf(e, r) {
               e.landscape ||
               e.wideImage ||
               e.bannerImage ||
-              "",
+              ""
           )
         : "";
 }
@@ -203,25 +203,45 @@ function resetSessionAfterLiveFailure() {
     (liveResolveCache = {}));
 }
 var queue = [],
-  lastCallAt = 0;
+  lastCallAt = 0,
+  queueToken = 0,
+  QUEUE_WATCHDOG_MS = 12e3;
 function enqueue(e) {
   (queue.push(e), drain());
+}
+function releaseQueue(e) {
+  e === queueToken && ((session.busy = !1), drain());
 }
 function drain() {
   if (!session.busy && queue.length) {
     var e = lastCallAt + RATE_MS - Date.now();
     if (e > 0)
       return (
+        (queueToken += 1),
         (session.busy = !0),
         void setTimeout(function () {
           ((session.busy = !1), drain());
         }, e)
       );
-    var r = queue.shift();
+    var r = queue.shift(),
+      t = ++queueToken;
     ((session.busy = !0),
       (lastCallAt = Date.now()),
+      /* Watchdog: si una petición al portal no llama nunca de vuelta (red
+         filtrada, socket colgado), la cola quedaría bloqueada y toda la app
+         respondería "sin respuesta". Se libera y se sigue con la siguiente. */
+      setTimeout(function () {
+        t === queueToken &&
+          session.busy &&
+          ((queueToken += 1),
+          (session.busy = !1),
+          console.log(
+            "[magis] cola liberada por watchdog: una petición no respondió"
+          ),
+          drain());
+      }, QUEUE_WATCHDOG_MS),
       r(function () {
-        ((session.busy = !1), drain());
+        releaseQueue(t);
       }));
   }
 }
@@ -328,8 +348,8 @@ function post(e, r, t) {
                           ": respuesta no JSON (" +
                           t.statusCode +
                           ") en " +
-                          r,
-                      ),
+                          r
+                      )
                     );
                   }
                   ((preferredHost = r),
@@ -337,7 +357,7 @@ function post(e, r, t) {
                       console.log(
                         "[magis] portal respondió por HTTP plano en " +
                           r +
-                          " (TLS/SNI filtrado por el operador)",
+                          " (TLS/SNI filtrado por el operador)"
                       ));
                   var l = HOSTS.indexOf(r);
                   l > 0 && (HOSTS.splice(l, 1), HOSTS.unshift(r));
@@ -347,7 +367,7 @@ function post(e, r, t) {
                       : String(s.returnCode);
                   if ("" !== u && "0" !== u) {
                     var d = new Error(
-                      e + " -> " + u + " " + text(s.errorMessage),
+                      e + " -> " + u + " " + text(s.errorMessage)
                     );
                     return ((d.portalCode = u), c(d));
                   }
@@ -361,8 +381,8 @@ function post(e, r, t) {
                           e +
                             ": no se pudo descifrar la respuesta (" +
                             r.message +
-                            ")",
-                        ),
+                            ")"
+                        )
                       );
                     }
                     try {
@@ -457,7 +477,7 @@ function call(e, r, t, n) {
           u =
             a &&
             /未登录|sesi[oó]n|login|token.*expir|invalid.*sn/i.test(
-              a.message || "",
+              a.message || ""
             );
         if (
           a &&
@@ -469,7 +489,7 @@ function call(e, r, t, n) {
             console.log(
               "[magis] sesión no iniciada (" +
                 (i || a.message) +
-                "). Renovando sesión limpia...",
+                "). Renovando sesión limpia..."
             ),
             (session.ready = !1),
             (session.userId = ""),
@@ -507,7 +527,7 @@ function call(e, r, t, n) {
                     t._seedTries +
                     "/" +
                     SEED_RESCUE_ROUNDS +
-                    ")",
+                    ")"
                 ),
                 call(e, r, t, n));
             })
@@ -638,7 +658,7 @@ function refreshSeeds(e) {
                   return n(new Error("lista de semillas vacía"));
                 (storeSeeds(t),
                   console.log(
-                    "[magis] semillas actualizadas: " + seedPool.length,
+                    "[magis] semillas actualizadas: " + seedPool.length
                   ),
                   n(null));
               }));
@@ -724,7 +744,7 @@ function rescueSeed(e, r) {
         ((seedPool = s),
         console.log(
           "[magis] semillas iniciales cargadas desde fallback local: " +
-            seedPool.length,
+            seedPool.length
         ));
     } catch (e) {}
   try {
@@ -741,7 +761,7 @@ function ensureSession(e) {
     if (!session.at || r - session.at < SESSION_MAX_AGE_MS)
       return e(null, session);
     (console.log(
-      "[magis] sesión superó 6 horas en memoria. Renovando sesión preventiva...",
+      "[magis] sesión superó 6 horas en memoria. Renovando sesión preventiva..."
     ),
       (session.ready = !1));
   }
@@ -794,7 +814,7 @@ function ensureSession(e) {
                       (console.log(
                         "[magis] sesión no activada por red (" +
                           (e && e.message) +
-                          "). Reintentando una vez...",
+                          "). Reintentando una vez..."
                       ),
                         HOSTS.push(HOSTS.shift()),
                         ((e || new Error("reintento"))._retried = !0),
@@ -812,7 +832,7 @@ function ensureSession(e) {
                       (session.at = Date.now()),
                       void s(null, session))
                     : a(new Error("el portal no activó el dispositivo")));
-            },
+            }
           ));
       }));
   }
@@ -837,7 +857,7 @@ function ensureSession(e) {
         (console.log(
           "[magis] sesión por semilla " +
             seedIdentity(t).slice(0, 16) +
-            " (bloqueo regional)",
+            " (bloqueo regional)"
         ),
           s(null, session));
       }));
@@ -938,7 +958,7 @@ function home(e, r, t) {
         var o = itemsFromTree(a, e);
         ((treeCache[n] = { at: Date.now(), items: o }),
           t(null, { root: e, pageNum: r, items: o, cached: !1 }));
-      },
+      }
     );
   });
 }
@@ -955,7 +975,7 @@ function column(e, r, t) {
         function (e, s) {
           if (e) return t(e);
           t(null, { root: n, pageNum: r, items: itemsFromTree(s, "") });
-        },
+        }
       );
     }));
 }
@@ -994,7 +1014,7 @@ function search(e, r) {
           }
         ((searchCache[n] = { at: Date.now(), items: a }),
           r(null, { items: a, total: t && t.totalSize, cached: !1 }));
-      },
+      }
     );
   });
 }
@@ -1032,7 +1052,7 @@ function detail(e, r, t) {
               : r(e)
             : (console.log(
                 "[magis] reintentando detalle tras error temporal: " +
-                  e.message,
+                  e.message
               ),
               setTimeout(function () {
                 detail(n, r, !0);
@@ -1066,14 +1086,14 @@ function detail(e, r, t) {
                     c.image ||
                     c.cover ||
                     c.posterUrl ||
-                    c.poster,
+                    c.poster
                 ),
                 description: text(
                   c.description ||
                     c.desc ||
                     c.synopsis ||
                     c.shortDescription ||
-                    c.introduce,
+                    c.introduce
                 ),
               });
           }
@@ -1085,7 +1105,7 @@ function detail(e, r, t) {
               trim(m[p].contentId) &&
               f.push({ id: trim(m[p].contentId), number: m[p].seasonNumber });
         r(null, { item: i, episodes: l, seasons: f });
-      },
+      }
     );
   });
 }
@@ -1176,7 +1196,7 @@ function getSlb(e) {
         : vodCdns(t).length
           ? ((slbCache = { at: Date.now(), slb: t }), void e(null, t))
           : e(new Error("el portal no expuso CDN de vod libre"));
-    },
+    }
   );
 }
 function fieldNumber(e) {
@@ -1187,7 +1207,7 @@ function trackHeight(e) {
   var r = fieldNumber(e && (e.videoHeight || e.height || e.pixelHeight));
   if (r) return r;
   var t = text(
-      e && (e.resolution || e.videoResolution || e.quality),
+      e && (e.resolution || e.videoResolution || e.quality)
     ).toLowerCase(),
     n = t.match(/\d{3,4}\s*[x×]\s*(\d{3,4})/);
   return n
@@ -1256,11 +1276,55 @@ function mediaScore(e) {
     (i += n ? 0 : s ? 80 : 160),
     /av1|vp9|10bit|hdr/.test(r) && (i += 500),
     a || (i += 2e3),
-    o.height > 1080 && (i += 500 + o.height),
     o.frameRate > 30 && (i += 300 + o.frameRate),
     o.bitrateKbps > 9e3 ? (i += 250) : o.bitrateKbps > 6500 && (i += 80),
     i
   );
+}
+/* Preferencias de reproducción enviadas por la app (webOS 3.x no decodifica
+   HEVC/4K en muchos modelos): techo de calidad por altura y castigo a códecs
+   que el panel no soporta. Sin preferencias se mantiene el orden anterior. */
+var xQualityPref = "auto",
+  xHevcOk = !0,
+  xUhdOk = !1;
+function xTier(e) {
+  var t = "2160" === xQualityPref || ("auto" === xQualityPref && xUhdOk);
+  return t
+    ? e >= 2e3
+      ? 1
+      : e >= 1e3
+        ? 2
+        : e >= 700
+          ? 3
+          : 4
+    : "720" === xQualityPref
+      ? e >= 700 && e < 2e3
+        ? e < 1e3
+          ? 1
+          : 3
+        : e < 700
+          ? 2
+          : 4
+      : e >= 1e3 && e < 2e3
+        ? 1
+        : e >= 700 && e < 1e3
+          ? 2
+          : e < 700
+            ? 3
+            : 4;
+}
+function xQScore(e) {
+  var t = trackHeight(e),
+    r = mediaScore(e) + 1e3 * xTier(t),
+    n = trim(e && e.encodeFormat)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+  return xHevcOk || !/h265|hevc|av1|vp9|10bit|hdr/.test(n) || (r += 4e3), r;
+}
+function rankTracks(e) {
+  return e.slice().sort(function (e, r) {
+    return xQScore(e) - xQScore(r);
+  });
 }
 function collectTracks(e) {
   for (var r = [], t = (e && e.totalMovieList) || [], n = 0; n < t.length; n++)
@@ -1332,7 +1396,7 @@ function loadPlay(e, r, t) {
               return a(new Error("el portal no devolvió pistas de vídeo"));
             var o = { play: r, episode: t, tracks: n };
             ((playCache[s] = { at: Date.now(), data: o }), a(null, o));
-          },
+          }
         );
       }));
 }
@@ -1347,7 +1411,7 @@ function mediaInfo(e, r, t) {
       tracks: r.tracks.map(trackSummary),
       selected: trackSummary(n),
       duration: durationSeconds(
-        n.duration || r.episode.duration || (r.play && r.play.duration),
+        n.duration || r.episode.duration || (r.play && r.play.duration)
       ),
     });
   });
@@ -1355,17 +1419,36 @@ function mediaInfo(e, r, t) {
 function resolve(e, r, t, n) {
   ("function" == typeof t && ((n = t), (t = {})),
     (t = t || {}),
+    (xQualityPref =
+      "720" === trim(t.quality).toLowerCase() ||
+      "save" === trim(t.quality).toLowerCase()
+        ? "720"
+        : "1080" === trim(t.quality).toLowerCase()
+          ? "1080"
+          : "2160" === trim(t.quality).toLowerCase()
+            ? "2160"
+            : "auto"),
+    (xHevcOk = !(
+      !1 === t.hevc ||
+      "false" === String(t.hevc) ||
+      "0" === String(t.hevc)
+    )),
+    (xUhdOk = !(
+      !t.uhd ||
+      "false" === String(t.uhd) ||
+      "0" === String(t.uhd)
+    )),
     loadPlay(e, r, function (e, r) {
       if (e) return n(e);
       var s = r.play,
         a = r.episode,
-        o = r.tracks,
+        o = rankTracks(r.tracks),
         i = parseInt(t.trackIndex, 10);
       (i >= 0 && i < o.length) || (i = 0);
       for (var l = o[i], u = [], d = 0; d < o.length; d++)
         u.push(trackSummary(o[d]));
       var c = trim(
-        (l.licenseList && l.licenseList[0] && l.licenseList[0].license) || "",
+        (l.licenseList && l.licenseList[0] && l.licenseList[0].license) || ""
       );
       if (!c)
         return n(new Error("el portal no devolvió licencia de reproducción"));
@@ -1398,7 +1481,7 @@ function resolve(e, r, t, n) {
           codec: E,
           quality: trim(l.quality),
           duration: durationSeconds(
-            l.duration || a.duration || (s && s.duration),
+            l.duration || a.duration || (s && s.duration)
           ),
           selectedTrack: trackSummary(l),
           availableTracks: u,
@@ -1445,7 +1528,7 @@ for (
         ? (5 * iG + 1) % 16
         : iG < 48
           ? (3 * iG + 5) % 16
-          : (7 * iG) % 16,
+          : (7 * iG) % 16
   );
 var LIVE_SALT = bufFrom([
   115, 97, 108, 116, 51, 51, 51, 51, 61, 52, 152, 13, 10, 21, 50, 201, 195, 130,
@@ -1503,7 +1586,7 @@ function liveDigestHex(e) {
 function signO3(e, r) {
   var t = bufFrom(
     "token=" + e + "&sign2_method=sign_o3&instance=0&start_moment=" + r,
-    "utf8",
+    "utf8"
   );
   return liveDigestHex(Buffer.concat([t, LIVE_SALT]));
 }
@@ -1566,7 +1649,7 @@ function getLiveChannels(e, r, t, n) {
             }
           }
           n(null, a, s.length >= t);
-        },
+        }
       );
     }));
 }
@@ -1593,13 +1676,13 @@ function getLiveCategories(e) {
             s.push({
               id: o.columnId,
               name: text(
-                o.name || o.title || o.alias || "Categoría " + (a + 1),
+                o.name || o.title || o.alias || "Categoría " + (a + 1)
               ),
               code: o.code || "",
             });
         }
         ((liveCategoriesCache = s), e(null, s));
-      },
+      }
     );
   });
 }
@@ -1763,7 +1846,7 @@ function resolveLive(e, r) {
           if ((!o && a[0] && (o = a[0]), !o || !o.license))
             return t(new Error("el portal no devolvió licencia para el canal"));
           t(null, o);
-        },
+        }
       );
     })(function (t, n) {
       if (t) return r(t);
@@ -1817,7 +1900,7 @@ function resolveLive(e, r) {
                   (liveChannelCache[e] &&
                     liveChannelCache[e].channel &&
                     liveChannelCache[e].channel.name) ||
-                  e,
+                  e
               ),
             };
             ((liveResolveCache[e] = { at: Date.now(), stream: v }), r(null, v));

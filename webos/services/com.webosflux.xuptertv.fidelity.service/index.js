@@ -45,7 +45,7 @@ var service = new Service(pkg.name);
 try {
   process.exit = function (e) {
     console.log(
-      "[xuper-service] blocked process.exit(" + e + ") to keep streaming alive",
+      "[xuper-service] blocked process.exit(" + e + ") to keep streaming alive"
     );
   };
 } catch (e) {}
@@ -57,7 +57,7 @@ if (service.activityManager)
       }));
   } catch (e) {
     console.log(
-      "[xuper-service] activityManager init note: " + (e && e.message),
+      "[xuper-service] activityManager init note: " + (e && e.message)
     );
   }
 function fail(e, r, a) {
@@ -93,8 +93,8 @@ function needModule(e, r, a) {
         "módulo " +
           a +
           " no cargó en esta TV: " +
-          (loadErrors[a] || "desconocido"),
-      ),
+          (loadErrors[a] || "desconocido")
+      )
     ),
     !1)
   );
@@ -111,6 +111,34 @@ function attachSubtitles(e) {
       e)
     : e;
 }
+function audioPreferenceKind(e) {
+  var r = String(e || "").toLowerCase().replace(/^\s+|\s+$/g, "");
+  return /^(?:es|spa|esp)(?:[-_ ]?(?:419|lat|latam|la|mx|us|co|ar|cl|pe|ve|ec|uy|py|bo|do|pr))\b/.test(r) ||
+    /(?:latino|latam|américa latina|america latina)/.test(r)
+    ? "es-lat"
+    : /^(?:es|spa|esp)(?:[-_ ]?(?:es|españa|espana|castellano))\b/.test(r) ||
+        /(?:españa|espana|castellano)/.test(r)
+      ? "es-es"
+      : /^(?:es|spa|esp)\b/.test(r)
+        ? "es"
+        : /^(?:pt|por)\b/.test(r)
+          ? "pt"
+          : /^(?:en|eng|ing)\b/.test(r)
+            ? "en"
+            : r;
+}
+function preferredAudioTrack(e, r, a) {
+  var s = String(e || "").split(/[,\/]/),
+    t = String(r || ""),
+    n = 0;
+  if (!t) return a;
+  for (n = 0; n < s.length; n++)
+    if (audioPreferenceKind(s[n]) === t) return n;
+  if ("es-lat" === t)
+    for (n = 0; n < s.length; n++)
+      if ("es" === audioPreferenceKind(s[n])) return n;
+  return a;
+}
 function resolveStream(e, r) {
   if (
     needModule(e, magis, "./magis") &&
@@ -119,7 +147,12 @@ function resolveStream(e, r) {
     needModule(e, dnsx, "./dnsx")
   ) {
     var a = e.payload || {},
-      s = { trackIndex: a.trackIndex };
+      s = {
+        trackIndex: a.trackIndex,
+        quality: a.quality,
+        hevc: a.hevc,
+        uhd: a.uhd,
+      };
     magis.resolve(a.contentId, a.seriesContentId, s, function (s, t) {
       if (s) return fail(e, s);
       var n =
@@ -135,11 +168,15 @@ function resolveStream(e, r) {
         return fail(
           e,
           new Error(
-            "Modo Fluido no disponible: ffmpeg no es ejecutable en esta TV",
-          ),
+            "Modo Fluido no disponible: ffmpeg no es ejecutable en esta TV"
+          )
         );
       if (o) {
-        var i = Number(a.audioTrack) || 0;
+        var i = preferredAudioTrack(
+          t.audio,
+          a.audioPreference,
+          Number(a.audioTrack) || 0
+        );
         proxy.start(function (r) {
           if (r) return fail(e, r);
           var s = urlmod.parse(t.url || "").hostname || "";
@@ -147,7 +184,7 @@ function resolveStream(e, r) {
             var o = (s && s.ips && s.ips[0]) || "",
               l = proxy.add(t.url, t.headers, t.duration, o, t.backupUrls),
               u = proxy.baseUrl() + "/media/" + l + "/stream.ts",
-              d = legacyPlayerNode() || "ts" === a.container ? "ts" : "mp4",
+              d = "ts" === a.container ? "ts" : "mp4",
               c = relay.register(t, {
                 hevc: n,
                 audio: i,
@@ -158,7 +195,7 @@ function resolveStream(e, r) {
               "[xuper-service] routing stream via ffmpeg relay (" +
                 d +
                 ", proxy local + fallback directo): " +
-                c,
+                c
             ),
               (t.proxyPath = c),
               (t.mime = "ts" === d ? "video/mp2t" : "video/mp4"),
@@ -189,6 +226,117 @@ function resolveStream(e, r) {
       }
     });
   }
+}
+/* ---------------------------------------------------------------------------
+ * API HTTP local (127.0.0.1:8910).
+ *
+ * En algunas versiones de webOS (3.x) ls-hubd deniega las llamadas Luna a los
+ * comandos declarados con "public": false, aunque la app sea del mismo paquete:
+ * la TV responde "Denied method call ... for category /". El servicio Node sí
+ * arranca y funciona, así que se expone el mismo contrato por HTTP en loopback
+ * y la app lo usa como respaldo automático cuando Luna deniega. En webOS 4+
+ * (donde Luna sí funciona) este servidor queda ahí sin usarse.
+ * ------------------------------------------------------------------------- */
+var httpMethods = {},
+  httpApiStarted = !1;
+var lunaRegister = service.register;
+service.register = function (e, r) {
+  httpMethods[String(e)] = r;
+  return lunaRegister.apply(service, arguments);
+};
+function startHttpApi() {
+  if (httpApiStarted) return;
+  httpApiStarted = !0;
+  var http = require("http"),
+    PORT = 8910;
+  var srv = http.createServer(function (req, res) {
+    function send(e, r) {
+      var a;
+      try {
+        a = JSON.stringify(r);
+      } catch (e) {
+        ((e = {}), (a = '{"returnValue":false,"errorText":"respuesta no serializable"}'));
+      }
+      try {
+        res.writeHead(e, {
+          "Content-Type": "application/json;charset=utf-8",
+          "Content-Length": Buffer.byteLength(a),
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Headers": "*",
+          "Cache-Control": "no-store",
+        });
+        res.end(a);
+      } catch (e) {}
+    }
+    if ("OPTIONS" === req.method)
+      return (
+        res.writeHead(200, {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Headers": "*",
+          "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+        }),
+        void res.end("")
+      );
+    var u;
+    try {
+      u = urlmod.parse(req.url, !0);
+    } catch (e) {
+      return send(400, { returnValue: !1, errorText: "url invalida" });
+    }
+    var name = String((u && u.pathname) || "")
+        .replace(/^\/+/, "")
+        .replace(/\/+$/, ""),
+      payload = {};
+    if (u && u.query && u.query.q)
+      try {
+        payload = JSON.parse(String(u.query.q)) || {};
+      } catch (e) {
+        payload = {};
+      }
+    var fn = httpMethods[name];
+    if (!fn)
+      return send(404, {
+        returnValue: !1,
+        errorText: 'Unknown method "' + name + '"',
+      });
+    var finished = !1,
+      timer = setTimeout(function () {
+        finished ||
+          ((finished = !0),
+          send(504, {
+            returnValue: !1,
+            errorText: "el servicio no respondió a " + name + " a tiempo",
+          }));
+      }, 3e4);
+    var msg = {
+      payload: payload,
+      isSubscription: !1,
+      subscribe: function () {},
+      respond: function (e) {
+        if (!finished) {
+          ((finished = !0), clearTimeout(timer));
+          send(200, e && "object" == typeof e ? e : { returnValue: !0, value: e });
+        }
+      },
+    };
+    try {
+      fn(msg);
+    } catch (e) {
+      if (!finished) {
+        ((finished = !0), clearTimeout(timer));
+        send(500, {
+          returnValue: !1,
+          errorText: (e && e.message) || String(e),
+        });
+      }
+    }
+  });
+  srv.on("error", function (e) {
+    console.log("[xuper-service] api local: " + ((e && e.message) || e));
+  });
+  srv.listen(PORT, "127.0.0.1", function () {
+    console.log("[xuper-service] api local escuchando en 127.0.0.1:" + PORT);
+  });
 }
 (service.register("ping", function (e) {
   e.respond({
@@ -235,8 +383,8 @@ function resolveStream(e, r) {
         return fail(
           e,
           new Error(
-            "Dirección de proxy inválida. Usa http://usuario:clave@host:puerto",
-          ),
+            "Dirección de proxy inválida. Usa http://usuario:clave@host:puerto"
+          )
         );
       upstream.configure(a);
       try {
@@ -249,7 +397,7 @@ function resolveStream(e, r) {
               upstream.describe().host +
               ":" +
               upstream.describe().port
-            : "cleared"),
+            : "cleared")
       ),
         e.respond({ returnValue: !0, proxy: upstream.describe() }));
     }
@@ -324,7 +472,7 @@ function resolveStream(e, r) {
             pageNum: Math.max(1, parseInt(r.pageNum, 10) || 1),
             hasMore: !!t,
           });
-        },
+        }
       );
     }
   }),
@@ -525,8 +673,18 @@ function resolveStream(e, r) {
         function (r, a) {
           if (r) return fail(e, r);
           respond(e, null, { success: !0, finished: !0 });
-        },
+        }
       );
     }
   }),
   console.log("[xuper-service] started " + pkg.name + " v" + pkg.version));
+
+/* API local de respaldo: se arranca después de registrar todos los métodos. */
+try {
+  startHttpApi();
+} catch (e) {
+  console.log(
+    "[xuper-service] no se pudo arrancar la api local: " +
+      ((e && e.message) || e)
+  );
+}

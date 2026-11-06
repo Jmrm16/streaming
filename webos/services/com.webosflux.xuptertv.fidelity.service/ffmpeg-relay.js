@@ -29,7 +29,7 @@ function setExecState(e, t) {
         ((execError = t || "") ? ": " + execError : "") +
         " (" +
         FFMPEG +
-        ")",
+        ")"
     ));
 }
 function verifyExecutable(e, t) {
@@ -58,15 +58,56 @@ function verifyExecutable(e, t) {
     }));
 }
 function copyExecutable(e) {
-  try {
-    (fs.copyFileSync
-      ? fs.copyFileSync(FFMPEG_SRC, FFMPEG_TMP)
-      : fs.writeFileSync(FFMPEG_TMP, fs.readFileSync(FFMPEG_SRC)),
-      fs.chmodSync(FFMPEG_TMP, parseInt("755", 8)),
-      e(""));
-  } catch (t) {
-    e(t.message);
+  /* Copia asíncrona (streams): un copyFileSync de 31 MB bloquea el event loop
+     del servicio en TVs de 1 GB y hace que la primera reproducción expire. */
+  var t = !1;
+  function done(r) {
+    t || ((t = !0), e(r || ""));
   }
+  var r, o;
+  try {
+    ((r = fs.createReadStream(FFMPEG_SRC)),
+      (o = fs.createWriteStream(FFMPEG_TMP)));
+  } catch (n) {
+    return done(n.message);
+  }
+  (r.on("error", function (e) {
+    try {
+      o.destroy();
+    } catch (e) {}
+    done(e.message);
+  }),
+    o.on("error", function (e) {
+      try {
+        r.destroy();
+      } catch (e) {}
+      done(e.message);
+    }),
+    o.on("finish", function () {
+      try {
+        (fs.chmodSync(FFMPEG_TMP, parseInt("755", 8)), done(""));
+      } catch (e) {
+        done(e.message);
+      }
+    }),
+    r.pipe(o));
+}
+function useTmpExecutable(e) {
+  /* Si ya copiamos ffmpeg a /tmp en un arranque anterior, reutilizarlo evita
+     volver a copiar 31 MB en cada inicio del servicio. */
+  verifyExecutable(FFMPEG_TMP, function (t) {
+    return t
+      ? ((FFMPEG = FFMPEG_TMP), setExecState("ok", "tmp"), e(!0, ""))
+      : copyExecutable(function (t) {
+          if (t) return (setExecState("noexec", t), e(!1, execError));
+          verifyExecutable(FFMPEG_TMP, function (t, r) {
+            return t
+              ? ((FFMPEG = FFMPEG_TMP), setExecState("ok", "tmp"), e(!0, ""))
+              : (setExecState("noexec", r || t || "no ejecutable"),
+                e(!1, execError));
+          });
+        });
+  });
 }
 function ensureExecutable(e, t) {
   return (
@@ -80,27 +121,10 @@ function ensureExecutable(e, t) {
             try {
               fs.chmodSync(FFMPEG_SRC, parseInt("755", 8));
             } catch (e) {}
-            verifyExecutable(FFMPEG_SRC, function (t, r) {
-              if (t)
-                return (
-                  (FFMPEG = FFMPEG_SRC),
-                  setExecState("ok", ""),
-                  e(!0, "")
-                );
-              copyExecutable(function (t) {
-                if (t)
-                  return (setExecState("noexec", r || t), e(!1, execError));
-                verifyExecutable(FFMPEG_TMP, function (t, o) {
-                  if (t)
-                    return (
-                      (FFMPEG = FFMPEG_TMP),
-                      setExecState("ok", "tmp"),
-                      e(!0, "")
-                    );
-                  (setExecState("noexec", o || r || "no ejecutable"),
-                    e(!1, execError));
-                });
-              });
+            verifyExecutable(FFMPEG_SRC, function (t) {
+              return t
+                ? ((FFMPEG = FFMPEG_SRC), setExecState("ok", ""), e(!0, ""))
+                : useTmpExecutable(e);
             });
           })
         : e(!1, execError)
@@ -189,7 +213,7 @@ function buildArgs(e, t, r, o, n) {
           "-b:a",
           "160k",
           "-ar",
-          "48000",
+          "48000"
         )
       : (u.push("-map", audioMap(r, !r), "-c", "copy"),
         a || !1 === o.bsf || u.push("-bsf:a", "aac_adtstoasc"),
@@ -202,7 +226,7 @@ function buildArgs(e, t, r, o, n) {
           "frag_keyframe+empty_moov+default_base_moof",
           "-f",
           "mp4",
-          "pipe:1",
+          "pipe:1"
         ),
     u
   );
@@ -234,7 +258,7 @@ function resolveForFfmpeg(e, t) {
             ") para ffmpeg: " +
             r.hostname +
             " -> " +
-            s,
+            s
         ),
         t({ url: urlmod.format(r), headers: c, audio: e.audio, hevc: e.hevc })
       );
@@ -244,7 +268,7 @@ function resolveForFfmpeg(e, t) {
         r.hostname +
         " (" +
         (o && o.message) +
-        "), probando DNS nativo...",
+        "), probando DNS nativo..."
     );
     try {
       a = spawn("/usr/bin/getent", ["ahostsv4", r.hostname]);
@@ -356,7 +380,7 @@ var server = http.createServer(function (e, t) {
                           (r + 1) +
                           "/" +
                           l.length +
-                          "; probando el siguiente",
+                          "; probando el siguiente"
                       );
                       try {
                         i.kill("SIGKILL");
@@ -408,7 +432,7 @@ var server = http.createServer(function (e, t) {
                             o +
                             "); reintentando audio=" +
                             l[r + 1].audio +
-                            (l[r + 1].aac ? " AAC" : ""),
+                            (l[r + 1].aac ? " AAC" : "")
                         ),
                         e(r + 1)
                       );
@@ -427,7 +451,7 @@ var server = http.createServer(function (e, t) {
                     } catch (e) {}
                   }));
               }
-            },
+            }
           );
         else if (
           (log("no se puede ejecutar ffmpeg en esta TV:", u), !t.finished)
@@ -459,7 +483,7 @@ var server = http.createServer(function (e, t) {
           return (
             fs.accessSync(
               FFMPEG,
-              (fs.constants && fs.constants.X_OK) || fs.X_OK || 1,
+              (fs.constants && fs.constants.X_OK) || fs.X_OK || 1
             ),
             !0
           );
