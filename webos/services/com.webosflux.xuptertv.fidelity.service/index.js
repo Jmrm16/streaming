@@ -11,7 +11,7 @@ function loadModule(e) {
     loadErrors[e] = (r && r.message) || String(r);
     try {
       console.error(
-        "[xuper-service] no se pudo cargar " + e + ": " + loadErrors[e],
+        "[xuper-service] no se pudo cargar " + e + ": " + loadErrors[e]
       );
     } catch (e) {}
     return null;
@@ -504,7 +504,7 @@ function resolveStream(e, r) {
   }),
   service.register("checkUpdate", function (e) {
     if (needModule(e, updater, "./updater")) {
-      var r = (e.payload || {}).currentVersion || pkg.version;
+      var r = pkg.version;
       updater.checkUpdate(r, function (r, a) {
         if (r) return fail(e, r);
         respond(e, null, a);

@@ -1120,6 +1120,9 @@
     $e = null,
     Ge = null,
     Qe = null,
+    catalogFilterDialog = null,
+    catalogFilterReturn = null,
+    liveFavoritePrompt = null,
     Je = "",
     Ke = 48,
     Ye = !1,
@@ -1133,6 +1136,8 @@
     if (t.width < 1 || t.height < 1) return !1;
     if (X.episodeBrowserOpen) return !!n(e, "#player-episodes");
     if (X.categoryPickerOpen) return !!n(e, "#player-categories");
+    if (catalogFilterDialog) return !!n(e, ".catalog-filter-dialog");
+    if (liveFavoritePrompt) return !!n(e, ".pc-favorite-confirm");
     if (ji) return !!n(e, "#dialog-playsettings");
     if (Ut) return !!n(e, "#dialog-update");
     if (zi) return !!n(e, "#player-playsetting-view");
@@ -1288,6 +1293,8 @@
       if (((dt = e), "welcome" !== X.screen))
         if (ji) tr();
         else {
+          if (catalogFilterDialog) return void closeCatalogFilter();
+          if (liveFavoritePrompt) return void closeLiveFavoriteConfirm();
           if ("player" === X.screen)
             return Ye
               ? void Ur(!1)
@@ -1428,7 +1435,15 @@
           ? (zn(),
             e.preventDefault && e.preventDefault(),
             void (e.stopPropagation && e.stopPropagation()))
-          : Ut
+        : catalogFilterDialog
+          ? (closeCatalogFilter(),
+            e.preventDefault && e.preventDefault(),
+            void (e.stopPropagation && e.stopPropagation()))
+          : liveFavoritePrompt
+            ? (closeLiveFavoriteConfirm(),
+              e.preventDefault && e.preventDefault(),
+              void (e.stopPropagation && e.stopPropagation()))
+        : Ut
             ? ((dt = Date.now()),
               zt || ea(),
               e.preventDefault && e.preventDefault(),
@@ -1489,6 +1504,17 @@
               : (i = !1);
       i && e.preventDefault && e.preventDefault();
     } else {
+      var isYellowKey = (405 === t || "ColorF2Yellow" === a || "Yellow" === a);
+      if (isYellowKey) {
+        if (X.focus && void 0 !== X.focus._channel) {
+          toggleChannelFavoriteDirect(X.focus._channel, X.focus);
+          return void (e.preventDefault && e.preventDefault());
+        }
+        if ("player" === X.screen && "live" === X.playerMode) {
+          toggleChannelFavoriteDirect(X.channel, null);
+          return void (e.preventDefault && e.preventDefault());
+        }
+      }
       var d = 415 === t || "MediaPlay" === a || "Play" === a,
         c = 19 === t || "MediaPause" === a || "Pause" === a,
         p = 10252 === t || "MediaPlayPause" === a,
@@ -1744,14 +1770,66 @@
           r = e("div", "live-arrow-down");
         (t.appendChild(n),
           t.appendChild(r),
+          (function () {
+            var a = e("div", "live-fast"),
+              i = e("button", "fast-btn f-srch focusable"),
+              n = e("button", "fast-btn f-fav focusable"),
+              r = e("button", "fast-btn f-all focusable");
+            (i.setAttribute("aria-label", "Buscar canal"),
+              n.setAttribute("aria-label", "Canales favoritos"),
+              r.setAttribute("aria-label", "Filtrar categorías"),
+              (i.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="13" cy="13" r="8" fill="none" stroke="currentColor" stroke-width="3"/><path d="M19 19l8 8" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg><span>Buscar</span>'),
+              (n.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3l4 8 9 1-6.5 6 1.7 9L16 22.5 7.8 27l1.7-9L3 12l9-1z" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/></svg><span>Favoritos</span>'),
+              (r.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 8h22M5 16h22M5 24h22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="11" cy="8" r="3" fill="currentColor"/><circle cx="22" cy="16" r="3" fill="currentColor"/><circle cx="15" cy="24" r="3" fill="currentColor"/></svg><span>Categorías</span>'),
+              n.classList.toggle("is-active", liveFavoritesOnly),
+              (i._activate = function () {
+                Yr("live");
+                no();
+                openLiveChannelSearch(i);
+              }),
+              (n._activate = function () {
+                liveFavoritesOnly = !liveFavoritesOnly;
+                n.classList.toggle("is-active", liveFavoritesOnly);
+                Qt(!1);
+                Yt(liveFavoritesOnly ? "★ Mostrando canales favoritos" : "Mostrando todos los canales");
+                rt(n);
+              }),
+              (r._activate = function () {
+                pr(r);
+              }),
+              (i._onMove = function (e) {
+                if ("right" === e) return rt(n), !0;
+                if ("up" === e) return (Fe.length ? rt(Fe[Fe.length - 1]) : ne && rt(ne), !0);
+                if ("left" === e) return (ne ? rt(ne) : Ue[0] && rt(Ue[0]), !0);
+                return !1;
+              }),
+              (n._onMove = function (e) {
+                if ("left" === e) return rt(i), !0;
+                if ("right" === e) return rt(r), !0;
+                if ("up" === e) return (Fe.length ? rt(Fe[Fe.length - 1]) : ne && rt(ne), !0);
+                return !1;
+              }),
+              (r._onMove = function (e) {
+                if ("left" === e) return rt(n), !0;
+                if ("right" === e) return (ne ? rt(ne) : !0);
+                if ("up" === e) return (Fe.length ? rt(Fe[Fe.length - 1]) : ne && rt(ne), !0);
+                return !1;
+              }),
+              a.appendChild(i),
+              a.appendChild(n),
+              a.appendChild(r),
+              t.appendChild(a));
+          })(),
           (re = e("div", "live-list scrollable")),
           t.appendChild(re),
           Qt(!1),
           Gt(),
           ((ne = e("div", "live-focus focusable"))._onMove = function (e) {
             if ("up" === e) return (X.channel > 0 && Kt(X.channel - 1), !0);
-            if ("down" === e)
-              return (X.channel < F.length - 1 && Kt(X.channel + 1), !0);
+            if ("down" === e) {
+              var a = t.querySelector(".live-fast .f-srch");
+              return a ? (rt(a), !0) : (X.channel < F.length - 1 && Kt(X.channel + 1), !0);
+            }
             if ("right" === e) {
               var t = Fe.filter(function (e) {
                 return e._channel === X.channel;
@@ -2046,7 +2124,22 @@
                 ? (r._activate = function () {
                     La();
                   })
-                : (r._activate = function () {}),
+                : (r._activate = function () {
+                    openCatalogFilter(r);
+                  }),
+            (r._onMove = (function (e) {
+              return function (t) {
+                if ("left" === t && e > 0) return (rt(te.querySelectorAll(".notify-item")[e - 1]), !0);
+                if ("right" === t && e < 2) return (rt(te.querySelectorAll(".notify-item")[e + 1]), !0);
+                if ("down" === t && 0 === X.tab) {
+                  var a = Fe.filter(function (e) {
+                    return e._channel === X.channel;
+                  })[0] || Fe[0];
+                  return a ? (rt(a), !0) : !0;
+                }
+                return "up" === t;
+              };
+            })(i)),
             te.appendChild(r));
         }
         var s = e("div", "notify-divider");
@@ -2245,8 +2338,49 @@
       localStorage.setItem("xuper_m3u_addons", JSON.stringify(e || []));
     } catch (e) {}
   }
-  var Lt = [],
-    Mt = null,
+  var DEFAULT_LIVE_CATEGORIES = [
+    { id: 76182, name: 'Todos', code: 'ba397e42-b664-11ed-8c55-768dd7bc60d3' },
+    { id: 76206, name: 'Deportes', code: 'dc520f12-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 87034, name: 'Vivo gratis', code: '77EA75EF523AB44B01D707781892485E' },
+    { id: 76205, name: 'Cine y Series', code: 'db7b71dc-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 77970, name: 'Más popular', code: '78C5EC9959371B7FEFE6E14AF48A1904' },
+    { id: 77690, name: 'Venezuela', code: '235F792997A0A714FCD96778BCF05172' },
+    { id: 76188, name: 'Colombia', code: 'd463893e-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76190, name: 'Ecuador', code: 'd66e9124-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76207, name: 'Chile', code: 'dd9600fe-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76197, name: 'México', code: 'd908f618-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76187, name: 'Perú', code: 'd425d4d6-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76202, name: 'Bolivia', code: 'daa53324-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76201, name: 'Uruguay', code: 'da865fe4-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 77688, name: 'Paraguay', code: 'CE922BD5FE46DFBDE587348E82E4F239' },
+    { id: 77689, name: 'Panamá', code: '313CC1DF490076FB3F72EA0086645764' },
+    { id: 77988, name: 'Puerto Rico', code: 'E07E20F2A12DB9436DCCB6F3B9B5024B' },
+    { id: 76191, name: 'España', code: 'd6962ea0-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 77691, name: 'Costa Rica', code: '30CBEC64059510DC85E03A61AEEE431A' },
+    { id: 76194, name: 'Estados Unidos', code: 'd862ef98-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 79127, name: 'Centroamérica', code: '427FC371C2D4A520799642758D171591' },
+    { id: 79134, name: 'Honduras', code: '983EFE77932E9378816362F80E7DD93E' },
+    { id: 79145, name: 'El Salvador', code: '5AA6C7CDB005B41F1E13BE66088FB351' },
+    { id: 79147, name: 'República Dominicana', code: 'EDB4CA7F458A2553ACBE9A607DD02934' },
+    { id: 76193, name: 'Noticias', code: 'd8332ccc-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 77977, name: 'Full HD', code: 'C4088392E9152F9E5C7D1671005951A2' },
+    { id: 76204, name: 'HD+(265)', code: 'db2f3830-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76198, name: 'PlayBack', code: 'd9fc1c26-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76186, name: 'NFL PASS', code: 'd3d9d2ca-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76184, name: 'NBA PASS', code: 'd36df230-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76195, name: 'MLB PASS', code: 'd881fb4a-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76196, name: 'Cultura', code: 'd89d00a2-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76183, name: 'Música', code: 'd314839e-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 79146, name: 'Infantil', code: '64334F25B2394B11A1FF1B060D6B377C' },
+    { id: 79148, name: 'Religioso', code: 'E75C698363490CE8F2441F43FB96E752' },
+    { id: 76192, name: '☆ Desde Internet', code: 'd69d9f50-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76200, name: 'EVENTOS PPV', code: 'da7619a4-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76189, name: '24/7', code: 'd51b21ac-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 76208, name: '18+', code: 'ddc200aa-b664-11ed-8b54-768dd7bc60d3' },
+    { id: 'addons', name: '➕ Addons M3U', isAddon: true }
+  ];
+  var Lt = DEFAULT_LIVE_CATEGORIES.slice(),
+    Mt = DEFAULT_LIVE_CATEGORIES[0],
     It = !1,
     Et = !1,
     At = !1,
@@ -2266,6 +2400,28 @@
     liveSearchText = "",
     liveSearchOpen = !1,
     liveSearchInput = null;
+  function updatePlayerCatBadge() {
+    if (Se) {
+      var b = Se.querySelector('.pc-cat-badge');
+      if (b && Mt) { b.textContent = Mt.name; }
+    }
+  }
+  function toggleChannelFavoriteDirect(channelIndex, rowElem) {
+    var ch = F[channelIndex];
+    if (!ch) return;
+    var isFav = toggleLiveFavorite(ch);
+    ch.fav = isFav;
+    Yt(isFav ? "★ Canal añadido a favoritos" : "☆ Canal quitado de favoritos");
+    if (rowElem) {
+      var star = rowElem.querySelector(".channel-star");
+      if (star) { star.textContent = isFav ? "★" : ""; }
+    }
+    if ("player" === X.screen) {
+      hr(channelIndex);
+    } else if ("home" === X.screen) {
+      Qt(!1);
+    }
+  }
   function jt() {
     if (
       (Nt++,
@@ -2356,16 +2512,16 @@
       }, 220)));
   }
   function Xt(e, t) {
-    e &&
-      ((Mt = e),
-      dr(),
-      e.isAddon
-        ? $t(function () {
-            t && t();
-          })
-        : Gt(e.id, function () {
-            t && t();
-          }));
+    if (e) {
+      Mt = e;
+      dr();
+      updatePlayerCatBadge();
+      if (e.isAddon) {
+        $t(function () { t && t(); });
+      } else {
+        Gt(e.id, function () { t && t(); }, !0);
+      }
+    }
   }
   function $t(e) {
     var t = _t();
@@ -2393,9 +2549,9 @@
         });
       })(t[n]);
   }
-  function Gt(e, t) {
+  function Gt(e, t, force) {
     var a = e || 76182;
-    if (!At || Pt !== a) {
+    if (force || !At || Pt !== a) {
       var i = ++Dt;
       ((Pt = a),
         (At = !0),
@@ -2452,14 +2608,7 @@
                                   }));
                               }
                             else
-                              i = [
-                                { id: 76182, name: "Todos" },
-                                { id: 76206, name: "Deportes" },
-                                { id: 76205, name: "Cine y Series" },
-                                { id: 76188, name: "Colombia" },
-                                { id: 76191, name: "España" },
-                                { id: 76197, name: "México" },
-                              ];
+                              i = DEFAULT_LIVE_CATEGORIES.slice();
                             (i.push({
                               id: "addons",
                               name: "➕ Addons M3U",
@@ -2502,10 +2651,13 @@
               (r.style.backgroundRepeat = "no-repeat"),
               (r.style.backgroundPosition = "center"));
             var o = e("div", "row-play"),
-              s = e("div", "row-name", F[i].name);
+              s = e("div", "row-name", F[i].name),
+              isFav = !!(X.liveFavorites[liveChannelKey(F[i])] || F[i].fav),
+              star = e("div", "channel-star", isFav ? "★" : "");
             (n.appendChild(r),
               n.appendChild(o),
               n.appendChild(s),
+              n.appendChild(star),
               i === X.channel && n.classList.add("is-current"),
               (n._activate = (function (e) {
                 return function () {
@@ -2514,12 +2666,18 @@
               })(i)),
               (n._onMove = (function (e) {
                 return function (t) {
-                  return "left" === t
-                    ? (ne ? rt(ne) : Ue[0] && rt(Ue[0]), !0)
-                    : "up" === t
-                      ? (e > 0 && Fe[e - 1] && rt(Fe[e - 1]), !0)
-                      : "down" === t &&
-                        (e < Fe.length - 1 && Fe[e + 1] && rt(Fe[e + 1]), !0);
+                  if ("left" === t) return (ne ? rt(ne) : Ue[0] && rt(Ue[0]), !0);
+                  if ("up" === t) {
+                    var idx = Fe.indexOf(this);
+                    return idx > 0 ? (rt(Fe[idx - 1]), !0) : (te && te.querySelector(".notify-item.search") && (rt(te.querySelector(".notify-item.search")), !0));
+                  }
+                  if ("down" === t) {
+                    var idx = Fe.indexOf(this);
+                    if (idx < Fe.length - 1) return (rt(Fe[idx + 1]), !0);
+                    var fastBtn = document.querySelector(".live-fast .fast-btn");
+                    return fastBtn ? (rt(fastBtn), !0) : !0;
+                  }
+                  return !1;
                 };
               })(i)),
               re.appendChild(n),
@@ -2828,7 +2986,7 @@
     });
   }
   function oa(e, t) {
-    var a = "2.2.60";
+    var a = "2.2.62";
     function i(i) {
       (t && t(null, i),
         i && i.updateAvailable
@@ -3101,9 +3259,50 @@
     var o = n || 860,
       s = e("div", "kids-subtitle", r || "Catálogo");
     (i(s, 192, o, 1400, 40), t.appendChild(s), (o += 50));
-    for (var l = Math.min(a.length, 6), d = 0; d < l; d++) {
-      var c = 192 + 276 * d;
-      t.appendChild(xt(a[d], c, o, 250, 360, { gold: !0 }));
+    var l = e("div", "catalog-rail scrollable"),
+      d,
+      c;
+    i(l, 192, o, 1656, 360);
+    t.appendChild(l);
+    l.style.width = "1656px";
+    l.style.height = "360px";
+    l.style.position = "absolute";
+    l.style.overflowX = "auto";
+    l.style.overflowY = "hidden";
+    l.style.whiteSpace = "nowrap";
+    l.style.scrollbarWidth = "none";
+    l.style.webkitOverflowScrolling = "touch";
+    l.classList.add("catalog-rail");
+    l.style.minWidth = "1656px";
+    d = Math.min(a.length, 50);
+    for (c = 0; c < d; c++) {
+      var poster = xt(a[c], 276 * c, 0, 250, 360, { gold: !0 });
+      poster._onMove = (function (rail, idx, total) {
+        return function (dir) {
+          if ("right" === dir) {
+            if (idx < total - 1 && rail.children[idx + 1]) {
+              rt(rail.children[idx + 1]);
+              return !0;
+            }
+            if (rail.children[0]) {
+              rail.scrollLeft = 0;
+              rt(rail.children[0]);
+              return !0;
+            }
+          } else if ("left" === dir) {
+            if (idx > 0 && rail.children[idx - 1]) {
+              rt(rail.children[idx - 1]);
+              return !0;
+            }
+            if (Ue && Ue[X.tab]) {
+              rt(Ue[X.tab]);
+              return !0;
+            }
+          }
+          return !1;
+        };
+      })(l, c, d);
+      l.appendChild(poster);
     }
     return o + 360 + 35;
   }
@@ -3130,9 +3329,9 @@
           return (parseFloat(t && t.score) || 0) - a;
         }),
         h = [];
-      for (r = 0; r < f.length && h.length < 6; r++) {
+      for (r = 0; r < f.length && h.length < 30; r++) {
         var m = f[r];
-        m && m.id && !v[String(m.id)] && (h.push(m), (v[String(m.id)] = !0));
+        m && m.id && (h.push(m));
       }
       h.length && (u = ga(e, h, u, i.popularTitle));
     }
@@ -3204,15 +3403,14 @@
       var x = y[s],
         T = g[x];
       if (T && T.length) {
-        var _ = [],
-          k = [];
-        for (l = 0; l < T.length; l++) v[String(T[l].id)] || k.push(T[l]);
-        for (d = 0; d < k.length && _.length < 6; d++)
-          (_.push(k[d]), (v[String(k[d].id)] = !0));
-        if (_.length < 6 && T.length >= 6)
-          for (c = 0; c < T.length && _.length < 6; c++)
-            -1 === _.indexOf(T[c]) && _.push(T[c]);
-        if (_.length) ((u = ga(e, _, u, w[x] || x)), (S = !0));
+        var _ = [];
+        for (d = 0; d < T.length && _.length < 40; d++) {
+          _.push(T[d]);
+        }
+        if (_.length) {
+          u = ga(e, _, u, w[x] || x);
+          S = !0;
+        }
       }
     }
     var L = [];
@@ -3687,6 +3885,84 @@
       n.appendChild(e("div", "s-name", t.title)),
       n
     );
+  }
+  function closeCatalogFilter() {
+    var e = catalogFilterDialog;
+    ((catalogFilterDialog = null),
+      e && e.parentNode && e.parentNode.removeChild(e),
+      catalogFilterReturn && at(catalogFilterReturn) && rt(catalogFilterReturn),
+      (catalogFilterReturn = null));
+  }
+  function applyCatalogFilter(e) {
+    var t = [],
+      a = "";
+    for (var i = 0; i < l.length; i++) {
+      var n = l[i],
+        r = o((n.kind || "") + " " + (n.category || "") + " " + (n.genres || []).join(" ")),
+        s = x(n);
+      ("movies" === e
+        ? !s
+        : "series" === e
+          ? s
+          : "anime" === e
+            ? -1 !== r.indexOf("anime") || -1 !== r.indexOf("animacion")
+            : "novels" === e
+              ? -1 !== r.indexOf("novela") || -1 !== r.indexOf("telenovela")
+              : !0) && t.push(n);
+    }
+    ("movies" === e
+      ? (a = "Películas")
+      : "series" === e
+        ? (a = "Series")
+        : "anime" === e
+          ? (a = "Anime")
+          : "novels" === e && (a = "Novelas"),
+      closeCatalogFilter(),
+      (X.searchQuery = "Filtro: " + (a || "Todo el catálogo")),
+      Ea(),
+      qa(t),
+      lt("search"),
+      Yt(t.length ? t.length + " títulos en " + (a || "el catálogo") : "No hay títulos en este filtro"));
+  }
+  function openCatalogFilter(returnFocus) {
+    if (catalogFilterDialog) return void closeCatalogFilter();
+    var a = e("div", "catalog-filter-dialog"),
+      i = e("div", "catalog-filter-card"),
+      n = e("div", "catalog-filter-title", "Filtrar catálogo"),
+      r = e("div", "catalog-filter-sub", "Elige qué deseas ver"),
+      o = [
+        { id: "all", label: "Todo" },
+        { id: "movies", label: "Películas" },
+        { id: "series", label: "Series" },
+        { id: "anime", label: "Anime" },
+        { id: "novels", label: "Novelas" },
+      ],
+      s = [];
+    ((catalogFilterReturn = returnFocus || X.focus),
+      a.appendChild(i),
+      i.appendChild(n),
+      i.appendChild(r));
+    for (var l = 0; l < o.length; l++)
+      (function (t, n) {
+        var r = e("button", "catalog-filter-option focusable", t.label);
+        ((r._activate = function () {
+          applyCatalogFilter(t.id);
+        }),
+          (r._onMove = function (e) {
+            return "left" === e && n > 0
+              ? (rt(s[n - 1]), !0)
+              : "right" === e && n < s.length - 1
+                ? (rt(s[n + 1]), !0)
+                : "up" === e || "down" === e
+                  ? !0
+                  : !1;
+          }),
+          i.appendChild(r),
+          s.push(r));
+      })(o[l], l);
+    ((catalogFilterDialog = a),
+      (t("app") || document.body).appendChild(a),
+      s[0] && rt(s[0]));
   }
   function La() {
     (ce || _a(), lt("search"), X.searchQuery || Ia(), rt(me));
@@ -4374,7 +4650,7 @@
           e(
             "div",
             "sp-about-update-desc",
-            "Versión instalada: v2.2.60. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.",
+            "Versión instalada: v2.2.62. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC.",
           ),
         ));
       var s = e("div", "sp-about-update-row"),
@@ -4398,7 +4674,7 @@
                         "¡Nueva versión disponible: v" + t.latestVersion + "!"),
                       (d.style.color = "#22c55e"))
                     : ((d.textContent =
-                        "Tienes la versión más reciente (v2.2.60)."),
+                        "Tienes la versión más reciente (v2.2.62)."),
                       (d.style.color = "#38bdf8")));
             }));
         }),
@@ -4581,7 +4857,7 @@
     (s.appendChild(e("span", null, String(r.length))), t.appendChild(s));
     var d = e("div", "history-grid");
     if (r.length)
-      for (var c = 0; c < r.length && c < 15; c++)
+      for (var c = 0; c < r.length && c < 30; c++)
         (function (t) {
           var a = e("div", "history-card focusable"),
             i = document.createElement("img");
@@ -6481,24 +6757,60 @@
       }
     }
     we.appendChild(v);
-    var y = e("div", "pc-header");
-    y.appendChild(e("div", "pc-title", "Canales de TV"));
-    var channelTools = e("div", "pc-tools"),
-      channelSearch = e("button", "pc-search focusable", "Buscar"),
-      channelFavorites = e("button", "pc-favorites focusable", "Favoritos");
-    ((channelSearch._activate = function () {
-      openLiveChannelSearch(channelSearch);
-    }),
-      (channelFavorites._activate = function () {
-        ((liveFavoritesOnly = !liveFavoritesOnly),
-          channelFavorites.classList.toggle("is-selected", liveFavoritesOnly),
-          hr(X.channel),
-          Yt(liveFavoritesOnly ? "Mostrando tus canales favoritos" : "Mostrando todos los canales"),
-          rt(channelFavorites));
+    var y = e("div", "pc-header"),
+      titleRow = e("div", "pc-title-row"),
+      titleText = e("div", "pc-title", "Canales de TV"),
+      catBadge = e("span", "pc-cat-badge", Mt ? Mt.name : "Todos"),
+      toolbar = e("div", "pc-toolbar"),
+      channelSearch = e("button", "pc-toolbar-btn pc-btn-search focusable"),
+      channelFavorites = e("button", "pc-toolbar-btn pc-btn-fav focusable"),
+      channelFilter = e("button", "pc-toolbar-btn pc-btn-filter focusable");
+
+    titleRow.appendChild(titleText);
+    titleRow.appendChild(catBadge);
+    y.appendChild(titleRow);
+
+    (channelSearch.setAttribute("aria-label", "Buscar canales"),
+      (channelSearch.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="13" cy="13" r="8" fill="none" stroke="currentColor" stroke-width="3"/><path d="M19 19l8 8" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg><span>Buscar</span>'),
+      channelFavorites.setAttribute("aria-label", "Canales favoritos"),
+      (channelFavorites.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3l4 8 9 1-6.5 6 1.7 9L16 22.5 7.8 27l1.7-9L3 12l9-1z" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/></svg><span>Favoritos</span>'),
+      channelFavorites.classList.toggle("is-active", liveFavoritesOnly),
+      channelFilter.setAttribute("aria-label", "Filtrar categorías"),
+      (channelFilter.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 8h22M5 16h22M5 24h22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="11" cy="8" r="3" fill="currentColor"/><circle cx="22" cy="16" r="3" fill="currentColor"/><circle cx="15" cy="24" r="3" fill="currentColor"/></svg><span>Filtrar</span>'),
+      (channelSearch._activate = function () {
+        openLiveChannelSearch(channelSearch);
       }),
-      channelTools.appendChild(channelSearch),
-      channelTools.appendChild(channelFavorites),
-      y.appendChild(channelTools),
+      (channelFavorites._activate = function () {
+        liveFavoritesOnly = !liveFavoritesOnly;
+        channelFavorites.classList.toggle("is-active", liveFavoritesOnly);
+        hr(X.channel);
+        Yt(liveFavoritesOnly ? "★ Mostrando canales favoritos" : "Mostrando todos los canales");
+        rt(channelFavorites);
+      }),
+      (channelFilter._activate = function () {
+        pr(channelFilter);
+      }),
+      (channelSearch._onMove = function (e) {
+        if ("right" === e) return rt(channelFavorites), !0;
+        if ("down" === e) return (F.length && fr(X.channel), !0);
+        return !1;
+      }),
+      (channelFavorites._onMove = function (e) {
+        if ("left" === e) return rt(channelSearch), !0;
+        if ("right" === e) return rt(channelFilter), !0;
+        if ("down" === e) return (F.length && fr(X.channel), !0);
+        return !1;
+      }),
+      (channelFilter._onMove = function (e) {
+        if ("left" === e) return rt(channelFavorites), !0;
+        if ("right" === e) return (rt(Ce), !0);
+        if ("down" === e) return (F.length && fr(X.channel), !0);
+        return !1;
+      }),
+      toolbar.appendChild(channelSearch),
+      toolbar.appendChild(channelFavorites),
+      toolbar.appendChild(channelFilter),
+      y.appendChild(toolbar),
       Se.appendChild(y));
     var b = e("div", "pc-categories scrollable");
     ((b.id = "pc-categories"),
@@ -6650,7 +6962,9 @@
       e && t && vr(e, t);
     }
   }
-  function pr() {
+  var categoryPickerReturnFocus = null;
+  function pr(returnFocus) {
+    categoryPickerReturnFocus = returnFocus || X.focus;
     if (
       ($e ||
         (($e = t("player-categories")),
@@ -6663,7 +6977,7 @@
         ui(),
         (function () {
           if (!Ge) return;
-          var t = Lt && Lt.length ? Lt : [];
+          var t = Lt && Lt.length ? Lt : DEFAULT_LIVE_CATEGORIES.slice();
           X.adultEnabled ||
             (t = t.filter(function (e) {
               return !!(e && (e.isAddon || !isAdultLiveChannel(e)));
@@ -6671,7 +6985,7 @@
           (a(Ge),
             Qe &&
               (Qe.textContent = t.length
-                ? t.length + " categorías · elige una para filtrar los canales"
+                ? t.length + " categorías · selecciona para ver canales"
                 : "Cargando categorías…"));
           for (var i = 0; i < t.length; i++)
             (function (t) {
@@ -6680,11 +6994,31 @@
                 Mt && Mt.id === t.id && a.classList.add("is-selected"),
                 (a._cat = t),
                 (a._activate = function () {
-                  (Xt(t), ur(!0));
-                  var e = Se
-                    ? Se.querySelector(".pc-cat-pill.is-selected")
-                    : null;
-                  e ? (rt(e), cr()) : ro();
+                  Xt(t);
+                  ur(!0);
+                  Yt("Categoría: " + t.name);
+                  if ("home" === X.screen) {
+                    Qt(!1);
+                  } else if ("player" === X.screen) {
+                    hr(0);
+                  }
+                  if (categoryPickerReturnFocus && at(categoryPickerReturnFocus)) {
+                    rt(categoryPickerReturnFocus);
+                  } else {
+                    var ret = Se ? Se.querySelector(".pc-btn-filter") : null;
+                    if (ret && at(ret)) {
+                      rt(ret);
+                    } else if ("player" === X.screen && Ce) {
+                      rt(Ce);
+                    } else if ("home" === X.screen) {
+                      var homeFast = document.querySelector(".live-fast .f-all");
+                      if (homeFast && at(homeFast)) {
+                        rt(homeFast);
+                      } else if (Fe[0] && at(Fe[0])) {
+                        rt(Fe[0]);
+                      }
+                    }
+                  }
                 }),
                 Ge.appendChild(a));
             })(t[i]);
@@ -6699,8 +7033,23 @@
       X.categoryPickerOpen &&
       ((X.categoryPickerOpen = !1), $e.classList.remove("is-active"), !e)
     ) {
-      var t = Se ? Se.querySelector(".pc-cat-pill.is-selected") : null;
-      t ? (rt(t), cr()) : "player" === X.screen && Ce && rt(Ce);
+      if (categoryPickerReturnFocus && at(categoryPickerReturnFocus)) {
+        rt(categoryPickerReturnFocus);
+      } else {
+        var t = Se ? Se.querySelector(".pc-btn-filter") : null;
+        if (t && at(t)) {
+          rt(t);
+        } else if ("player" === X.screen && Ce) {
+          rt(Ce);
+        } else if ("home" === X.screen) {
+          var homeFast = document.querySelector(".live-fast .f-all");
+          if (homeFast && at(homeFast)) {
+            rt(homeFast);
+          } else if (Fe[0] && at(Fe[0])) {
+            rt(Fe[0]);
+          }
+        }
+      }
     }
   }
   function vr(e, t) {
@@ -6719,6 +7068,12 @@
       ((e = Math.max(0, Math.min(F.length - 1, Number(e) || 0))),
       Xe[e] || hr(e),
       Xe[e] && rt(Xe[e]));
+  }
+  function closeLiveFavoriteConfirm(returnFocus) {
+    var e = liveFavoritePrompt;
+    ((liveFavoritePrompt = null),
+      e && e.parentNode && e.parentNode.removeChild(e),
+      returnFocus && at(returnFocus) && rt(returnFocus));
   }
   function hr(t) {
     if (Se) {
@@ -6804,11 +7159,19 @@
             channelIndex === X.channel && p.classList.add("is-current"),
             (p._activate = (function (e) {
               return function () {
-                (Kt(e, !0), ro(), rt(Ce));
+                e === X.channel
+                  ? showLiveFavoriteConfirm(e, this)
+                  : (Kt(e, !0),
+                    rt(this),
+                    Yt("Pulsa OK otra vez para agregar este canal a favoritos"));
               };
             })(channelIndex)),
             (p._onMove = (function (e) {
               return function (t) {
+                if ("left" === t) {
+                  var a = Se.querySelector(".pc-search");
+                  return (a && rt(a), !0);
+                }
                 if ("right" === t) return (rt(Ce), !0);
                 if ("up" === t) {
                   if (e > 0) fr(visible[e - 1]);
@@ -6816,9 +7179,7 @@
                     var a = Se.querySelector(".pc-row-addon-promo");
                     if (a) rt(a);
                     else {
-                      var i =
-                        Se.querySelector(".pc-cat-pill.is-selected") ||
-                        Se.querySelector(".pc-cat-pill");
+                      var i = Se.querySelector(".pc-filter");
                       i && rt(i);
                     }
                   }
@@ -7729,7 +8090,7 @@
   }
   function ro() {
     ((X.channelsOpen = !1),
-      Se.classList.remove("is-active"),
+      Se && Se.classList.remove("is-active"),
       "player" === X.screen && rt(Ce));
   }
   function oo() {
