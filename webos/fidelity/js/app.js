@@ -446,7 +446,8 @@
               (e.classList.add("is-expanded"),
                 e.classList.remove("is-collapsed"));
               var c = document.querySelector(".home-sidebar-bg");
-              c && c.classList.add("is-on");
+              c &&
+                (c.classList.add("is-on"), c.classList.remove("is-collapsed"));
             }
           }
         }
@@ -895,6 +896,12 @@
         group: "Aplicación",
       },
       {
+        id: "display",
+        label: "Pantalla y compatibilidad",
+        desc: "Ajuste para TVs con imagen recortada",
+        group: "Aplicación",
+      },
+      {
         id: "netdiag",
         label: "Diagnóstico",
         desc: "Pruebas de red y streaming",
@@ -924,6 +931,8 @@
         '<svg viewBox="0 0 32 32"><circle cx="8" cy="16" r="3"/><circle cx="24" cy="7" r="3"/><circle cx="24" cy="25" r="3"/><path d="M10.6 14.5l10.8-6M10.6 17.5l10.8 6"/></svg>',
       parent:
         '<svg viewBox="0 0 32 32"><rect x="7" y="14" width="18" height="14" rx="2"/><path d="M11 14V10a5 5 0 0 1 10 0v4"/><path d="M16 19v4"/></svg>',
+      display:
+        '<svg viewBox="0 0 32 32"><rect x="4" y="6" width="24" height="18" rx="2"/><path d="M10 28h12M16 24v4"/><path d="M8 10h16v10H8z"/></svg>',
       playback:
         '<svg viewBox="0 0 32 32"><rect x="4" y="6" width="24" height="20" rx="3"/><path d="M13 11l8 5-8 5z"/></svg>',
       netdiag:
@@ -972,6 +981,8 @@
       },
       crOn: !1,
       favs: {},
+      adultEnabled: !1,
+      liveFavorites: {},
     },
     $ = "xuper_local_profile_v1",
     G = "xuper_global_playback_v1",
@@ -1003,6 +1014,42 @@
       a
     );
   }
+  function liveChannelKey(e) {
+    return e
+      ? String(e.channelCode || e.streamUrl || e.id || e.index || e.name || "")
+      : "";
+  }
+  function isAdultLiveChannel(e) {
+    var t = e || {},
+      a = [
+        t.name || "",
+        t.category || "",
+        t.group || "",
+        t.groupTitle || "",
+        t.tags || "",
+      ].join(" ");
+    return /(^|[^a-z])(xxx|adult|porno|porn|sex|erotic|onlyfans|18\+|\+18)([^a-z]|$)/i.test(a);
+  }
+  function isVisibleLiveChannel(e) {
+    var t = String(liveSearchText || "").replace(/^\s+|\s+$/g, "");
+    return !!(
+      e &&
+      (X.adultEnabled || !isAdultLiveChannel(e)) &&
+      (!liveFavoritesOnly || !!X.liveFavorites[liveChannelKey(e)]) &&
+      (!t || o((e.name || "") + " " + (e.category || "")).indexOf(o(t)) >= 0)
+    );
+  }
+  function toggleLiveFavorite(e) {
+    var t = liveChannelKey(e);
+    if (!t) return !1;
+    var a = !X.liveFavorites[t];
+    return (
+      a ? (X.liveFavorites[t] = !0) : delete X.liveFavorites[t],
+      (Q.liveFavorites = X.liveFavorites),
+      K($, Q),
+      a
+    );
+  }
   !(function () {
     var e = J(G, null);
     if (e)
@@ -1017,7 +1064,11 @@
         (Q.createdAt = Date.now()),
         K($, Q)),
       Q.favs || (Q.favs = {}),
-      (X.favs = Q.favs));
+      Q.liveFavorites || (Q.liveFavorites = {}),
+      Q.uiScaleMode || (Q.uiScaleMode = "auto"),
+      (X.favs = Q.favs),
+      (X.liveFavorites = Q.liveFavorites),
+      (X.adultEnabled = !0 === Q.adultEnabled));
   })();
   var ee,
     te,
@@ -1135,7 +1186,9 @@
           (i.classList.toggle("is-expanded", !!r),
             i.classList.toggle("is-collapsed", !r));
           var o = document.querySelector(".home-sidebar-bg");
-          o && o.classList.toggle("is-on", !!r);
+          o &&
+            (o.classList.toggle("is-on", !!r),
+            o.classList.toggle("is-collapsed", !r));
           var s = t("screen-home");
           s && s.classList.toggle("is-rail-open", !!r);
         }
@@ -1238,6 +1291,8 @@
           if ("player" === X.screen)
             return Ye
               ? void Ur(!1)
+              : liveSearchOpen
+                ? void closeLiveChannelSearch()
               : X.categoryPickerOpen
                 ? ((dt = Date.now()), void ur())
                 : X.episodeBrowserOpen
@@ -1534,6 +1589,7 @@
                 void (e.preventDefault && e.preventDefault())
               );
             if (38 === t) {
+              var visible = visibleLiveIndexes();
               if (
                 0 ===
                 (y =
@@ -1547,7 +1603,8 @@
                   : null;
                 g && rt(g);
               } else {
-                fr(y - 1);
+                var previous = visible.indexOf(y);
+                previous > 0 ? fr(visible[previous - 1]) : fr(visible[0]);
               }
               return void (e.preventDefault && e.preventDefault());
             }
@@ -1556,8 +1613,10 @@
                 X.focus && void 0 !== X.focus._channel
                   ? X.focus._channel
                   : X.channel;
+              var visible = visibleLiveIndexes(),
+                next = visible.indexOf(y);
               return (
-                fr(Math.min(F.length - 1, y + 1)),
+                next >= 0 && next < visible.length - 1 && fr(visible[next + 1]),
                 void (e.preventDefault && e.preventDefault())
               );
             }
@@ -1650,7 +1709,7 @@
       var i = t("home-tabs");
       i && (i.classList.add("is-expanded"), i.classList.remove("is-collapsed"));
       var n = document.querySelector(".home-sidebar-bg");
-      n && n.classList.add("is-on");
+      n && (n.classList.add("is-on"), n.classList.remove("is-collapsed"));
       var r = t("screen-home");
       r && r.classList.add("is-rail-open");
     } catch (e) {}
@@ -2202,7 +2261,11 @@
     Ut = !1,
     Ft = null,
     Bt = !1,
-    zt = !1;
+    zt = !1,
+    liveFavoritesOnly = !1,
+    liveSearchText = "",
+    liveSearchOpen = !1,
+    liveSearchInput = null;
   function jt() {
     if (
       (Nt++,
@@ -2429,7 +2492,7 @@
     if (re)
       if ((a(re), (Fe = []), F.length)) {
         for (var i = 0; i < F.length; i++)
-          if (!t || F[i].fav) {
+          if ((!t || X.liveFavorites[liveChannelKey(F[i])]) && isVisibleLiveChannel(F[i])) {
             var n = e("div", "live-row focusable");
             n._channel = i;
             var r = e("div", "row-icon");
@@ -2500,6 +2563,11 @@
           })(),
           "live" === X.playerMode && to(F[e], !!t))
         : "home" === X.screen && 0 === X.tab && Wt(F[e]));
+  }
+  function visibleLiveIndexes() {
+    for (var e = [], t = 0; t < F.length; t++)
+      isVisibleLiveChannel(F[t]) && e.push(t);
+    return e;
   }
   function Yt(a) {
     var i = t("app-toast");
@@ -4168,25 +4236,88 @@
     (ze.parent = (function () {
       var t = e("div", "settings-panel");
       (t.appendChild(
-        e("div", "pl-title", "Configuraciones del Control Parental"),
+        e("div", "pl-title", "Contenido para adultos (+18)"),
       ),
         t.appendChild(
           e(
             "div",
             "pl-tip",
-            "Ingrese la contraseña de cuatro dígitos e ingrese viendo el programa de bloqueo.",
+            "Elige si deseas mostrar contenido y canales clasificados para mayores de edad en este televisor.",
           ),
         ),
-        t.appendChild(e("div", "pl-label", "Contraseña inicial:")));
-      for (var a = e("div", "pl-boxes"), i = 0; i < 4; i++) {
-        var n = e("div", "pl-box focusable");
-        ((n._activate = function () {}),
-          a.appendChild(n),
-          i < 3 && a.appendChild(e("div", "pl-sep")));
-      }
-      (t.appendChild(a), t.appendChild(e("div", "pl-note", "")));
-      var r = e("div", "pl-ok focusable", "OK");
-      return ((r._activate = function () {}), t.appendChild(r), t);
+        t.appendChild(e("div", "pl-label", "Contenido +18")));
+      var a = e(
+          "div",
+          "sp-switch focusable " + (X.adultEnabled ? "on" : "off"),
+        ),
+        i = e(
+          "div",
+          "pl-note",
+          X.adultEnabled
+            ? "Activo: se mostrarán categorías y canales +18."
+            : "Desactivado: se ocultarán categorías y canales +18.",
+        );
+      return (
+        (a._activate = function () {
+          ((X.adultEnabled = !X.adultEnabled),
+            (Q.adultEnabled = X.adultEnabled),
+            K($, Q),
+            (a.className =
+              "sp-switch focusable " + (X.adultEnabled ? "on" : "off")),
+            (i.textContent = X.adultEnabled
+              ? "Activo: se mostrarán categorías y canales +18."
+              : "Desactivado: se ocultarán categorías y canales +18."),
+            Qt(!1),
+            hr(X.channel),
+            Yt(X.adultEnabled ? "Contenido +18 habilitado" : "Contenido +18 oculto"),
+            rt(a));
+        }),
+        t.appendChild(a),
+        t.appendChild(i),
+        t
+      );
+    })()),
+    (ze.display = (function () {
+      var t = Fa("Pantalla y compatibilidad"),
+        a = e(
+          "div",
+          "sp-global-note",
+          "Si la interfaz se ve recortada, prueba Compatibilidad HD. Se aplica solo a este televisor y no cambia la calidad del vídeo.",
+        ),
+        i = e("div", "pb-row"),
+        n = [
+          { id: "auto", label: "Automático" },
+          { id: "hd", label: "Compatibilidad HD" },
+        ];
+      (t.appendChild(a),
+        (i.style.top = "210px"),
+        i.appendChild(e("div", "pb-label", "Tamaño de interfaz")));
+      for (var r = 0; r < n.length; r++)
+        (function (a) {
+          var r = e(
+            "div",
+            "pb-opt focusable" +
+              (Q.uiScaleMode === a.id ? " is-checked" : ""),
+          );
+          ((r.style.marginLeft = 0 === a.index ? 0 : 28 + "px"),
+            r.appendChild(e("div", "radio")),
+            r.appendChild(e("span", null, a.label)),
+            (r._activate = function () {
+              ((Q.uiScaleMode = a.id),
+                K($, Q),
+                oo(),
+                Yt(
+                  "hd" === a.id
+                    ? "Compatibilidad HD activada"
+                    : "Tamaño automático restaurado",
+                ));
+              for (var e = i.querySelectorAll(".pb-opt"), t = 0; t < e.length; t++)
+                e[t].classList.toggle("is-checked", e[t] === r);
+              rt(r);
+            }),
+            i.appendChild(r));
+        })({ id: n[r].id, label: n[r].label, index: r });
+      return (t.appendChild(i), t);
     })()),
     (ze.feedback = (function () {
       var t = e("div", "settings-panel");
@@ -6335,7 +6466,14 @@
                   io());
               } else if ("Favorito" === e) {
                 var a = F[X.channel];
-                a.fav = !a.fav;
+                a &&
+                  (toggleLiveFavorite(a),
+                  hr(X.channel),
+                  Yt(
+                    X.liveFavorites[liveChannelKey(a)]
+                      ? "Canal agregado a favoritos"
+                      : "Canal quitado de favoritos",
+                  ));
               }
             };
           })(m.label)),
@@ -6344,7 +6482,24 @@
     }
     we.appendChild(v);
     var y = e("div", "pc-header");
-    (y.appendChild(e("div", "pc-title", "Canales de TV")), Se.appendChild(y));
+    y.appendChild(e("div", "pc-title", "Canales de TV"));
+    var channelTools = e("div", "pc-tools"),
+      channelSearch = e("button", "pc-search focusable", "Buscar"),
+      channelFavorites = e("button", "pc-favorites focusable", "Favoritos");
+    ((channelSearch._activate = function () {
+      openLiveChannelSearch(channelSearch);
+    }),
+      (channelFavorites._activate = function () {
+        ((liveFavoritesOnly = !liveFavoritesOnly),
+          channelFavorites.classList.toggle("is-selected", liveFavoritesOnly),
+          hr(X.channel),
+          Yt(liveFavoritesOnly ? "Mostrando tus canales favoritos" : "Mostrando todos los canales"),
+          rt(channelFavorites));
+      }),
+      channelTools.appendChild(channelSearch),
+      channelTools.appendChild(channelFavorites),
+      y.appendChild(channelTools),
+      Se.appendChild(y));
     var b = e("div", "pc-categories scrollable");
     ((b.id = "pc-categories"),
       Se.appendChild(b),
@@ -6357,28 +6512,78 @@
       w.appendChild(e("div", "l2", "(Arriba: Categorías · OK: Filtrar)")),
       Se.appendChild(w));
   }
+  function closeLiveChannelSearch(returnFocus) {
+    var e = Se && Se.querySelector(".pc-search-box");
+    ((liveSearchOpen = !1),
+      liveSearchInput && liveSearchInput.blur && liveSearchInput.blur(),
+      (liveSearchInput = null),
+      e && e.parentNode && e.parentNode.removeChild(e),
+      hr(X.channel),
+      returnFocus && rt(returnFocus));
+  }
+  function openLiveChannelSearch(returnFocus) {
+    if (!Se) return;
+    if (liveSearchOpen) return void closeLiveChannelSearch(returnFocus);
+    liveSearchOpen = !0;
+    var box = e("div", "pc-search-box"),
+      label = e("label", "pc-search-label", "Buscar canal"),
+      input = document.createElement("input"),
+      clear = e("button", "pc-search-clear focusable", "Limpiar");
+    ((input.type = "search"),
+      (input.className = "pc-search-input focusable"),
+      (input.placeholder = "Escribe el nombre del canal"),
+      (input.value = liveSearchText),
+      (input._onMove = function (e) {
+        return "left" === e || "up" === e
+          ? (closeLiveChannelSearch(returnFocus), !0)
+          : "down" === e && (fr(X.channel), !0);
+      }),
+      (input._activate = function () {
+        hr(X.channel);
+      }),
+      input.addEventListener("input", function () {
+        ((liveSearchText = input.value || ""), hr(X.channel));
+      }),
+      (clear._activate = function () {
+        ((input.value = ""), (liveSearchText = ""), hr(X.channel), rt(input));
+      }),
+      (clear._onMove = function (e) {
+        return "left" === e ? (rt(input), !0) : !1;
+      }),
+      label.appendChild(input),
+      box.appendChild(label),
+      box.appendChild(clear),
+      Se.appendChild(box),
+      (liveSearchInput = input),
+      hr(X.channel),
+      rt(input),
+      setTimeout(function () {
+        try {
+          input.focus();
+        } catch (e) {}
+      }, 0));
+  }
   function dr() {
     if (Se) {
       var t = Se.querySelector(".pc-categories");
       if (t) {
-        for (
-          var i =
-              Lt && Lt.length
-                ? Lt
-                : [
-                    { id: 76182, name: "Todos" },
-                    { id: 76206, name: "Deportes" },
-                    { id: 76205, name: "Cine y Series" },
-                    { id: 76188, name: "Colombia" },
-                    { id: 76191, name: "España" },
-                    { id: 76197, name: "México" },
-                    { id: "addons", name: "➕ Addons M3U", isAddon: !0 },
-                  ],
-            n = "",
-            r = 0;
-          r < i.length;
-          r++
-        )
+        var i =
+            Lt && Lt.length
+              ? Lt
+              : [
+                  { id: 76182, name: "Todos" },
+                  { id: 76206, name: "Deportes" },
+                  { id: 76205, name: "Cine y Series" },
+                  { id: 76188, name: "Colombia" },
+                  { id: 76191, name: "España" },
+                  { id: 76197, name: "México" },
+                  { id: "addons", name: "➕ Addons M3U", isAddon: !0 },
+                ];
+        X.adultEnabled ||
+          (i = i.filter(function (e) {
+            return !!(e && (e.isAddon || !isAdultLiveChannel(e)));
+          }));
+        for (var n = "", r = 0; r < i.length; r++)
           n += i[r].id + "|";
         var o = X.focus && X.focus._cat ? X.focus._cat : null;
         if (n !== Je) {
@@ -6459,6 +6664,10 @@
         (function () {
           if (!Ge) return;
           var t = Lt && Lt.length ? Lt : [];
+          X.adultEnabled ||
+            (t = t.filter(function (e) {
+              return !!(e && (e.isAddon || !isAdultLiveChannel(e)));
+            }));
           (a(Ge),
             Qe &&
               (Qe.textContent = t.length
@@ -6546,11 +6755,16 @@
             }),
             i.appendChild(n));
         }
-        if (!F.length) {
+        var visible = visibleLiveIndexes();
+        if (!visible.length) {
           var s = e(
             "div",
             "pc-empty-channels",
-            "No hay canales disponibles en esta categoría",
+            liveSearchText
+              ? "No hay canales que coincidan con la búsqueda"
+              : liveFavoritesOnly
+                ? "Aún no tienes canales favoritos en esta categoría"
+                : "No hay canales disponibles en esta categoría",
           );
           return (
             (s.style.padding = "30px"),
@@ -6562,39 +6776,42 @@
         ((t = Number(t)),
           isFinite(t) || (t = X.channel),
           (t = Math.max(0, Math.min(F.length - 1, t || 0))));
+        var currentPosition = visible.indexOf(t);
+        currentPosition < 0 && (currentPosition = 0);
         for (
-          var l = Math.max(0, t - Math.floor(Ke / 2)),
-            d = Math.min(F.length, l + Ke),
+          var l = Math.max(0, currentPosition - Math.floor(Ke / 2)),
+            d = Math.min(visible.length, l + Ke),
             c = (l = Math.max(0, d - Ke));
           c < d;
           c++
         ) {
+          var channelIndex = visible[c];
           var p = e("div", "pc-row focusable");
-          p._channel = c;
+          p._channel = channelIndex;
           var u = e("div", "ic");
-          F[c].logo &&
-            ((u.style.backgroundImage = "url(" + F[c].logo + ")"),
+          F[channelIndex].logo &&
+            ((u.style.backgroundImage = "url(" + F[channelIndex].logo + ")"),
             (u.style.backgroundSize = "contain"),
             (u.style.backgroundRepeat = "no-repeat"),
             (u.style.backgroundPosition = "center"));
-          var v = e("div", "num", r(F[c].index || c + 1)),
-            f = e("div", "nm", F[c].name),
-            h = e("div", "epg", F[c].now || "En vivo");
+          var v = e("div", "num", r(F[channelIndex].index || channelIndex + 1)),
+            f = e("div", "nm", F[channelIndex].name),
+            h = e("div", "epg", F[channelIndex].now || "En vivo");
           (p.appendChild(u),
             p.appendChild(v),
             p.appendChild(f),
             p.appendChild(h),
-            c === X.channel && p.classList.add("is-current"),
+            channelIndex === X.channel && p.classList.add("is-current"),
             (p._activate = (function (e) {
               return function () {
                 (Kt(e, !0), ro(), rt(Ce));
               };
-            })(c)),
+            })(channelIndex)),
             (p._onMove = (function (e) {
               return function (t) {
                 if ("right" === t) return (rt(Ce), !0);
                 if ("up" === t) {
-                  if (e > 0) fr(e - 1);
+                  if (e > 0) fr(visible[e - 1]);
                   else if (0 === e) {
                     var a = Se.querySelector(".pc-row-addon-promo");
                     if (a) rt(a);
@@ -6607,11 +6824,12 @@
                   }
                   return !0;
                 }
-                return "down" === t && (e < F.length - 1 && fr(e + 1), !0);
+                return "down" === t &&
+                  (e < visible.length - 1 && fr(visible[e + 1]), !0);
               };
             })(c)),
             i.appendChild(p),
-            (Xe[c] = p));
+            (Xe[channelIndex] = p));
         }
       }
     }
@@ -7544,7 +7762,9 @@
         })(),
         i = a.w,
         n = a.h,
-        r = Math.min(i / 1920, n / 1080);
+        r = Math.min(i / 1920, n / 1080),
+        displayScale = Q && Q.uiScaleMode === "hd" ? 2 / 3 : 1;
+      r *= displayScale;
       ((!isFinite(r) || r <= 0) && (r = 1), (r = Math.round(1e4 * r) / 1e4));
       var o = Math.max(0, Math.round((i - 1920 * r) / 2)),
         s = Math.max(0, Math.round((n - 1080 * r) / 2));
@@ -7556,6 +7776,7 @@
           w: i,
           h: n,
           scale: r,
+          uiScaleMode: Q && Q.uiScaleMode ? Q.uiScaleMode : "auto",
           panelW: a.panel ? a.panel.w : 0,
           panelH: a.panel ? a.panel.h : 0,
         }));
