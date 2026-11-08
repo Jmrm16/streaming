@@ -1,5 +1,6 @@
 !(function () {
   "use strict";
+  var APP_VERSION = "2.2.87";
   function e(e, t, a) {
     var i = document.createElement(e);
     return (t && (i.className = t), null != a && (i.textContent = a), i);
@@ -8,6 +9,9 @@
     return document.getElementById(e);
   }
   function a(e) {
+    if (e) for (; e.firstChild;) e.removeChild(e.firstChild);
+  }
+  function clearChildren(e) {
     if (e) for (; e.firstChild;) e.removeChild(e.firstChild);
   }
   function i(e, t, a, i, n) {
@@ -1023,7 +1027,7 @@
       categoryPickerOpen: !1,
       browserSeason: 0,
       episodeBrowserPage: 0,
-      audioPreferenceCode: "",
+      audioPreferenceCode: "es-lat",
       resumePosition: 0,
       streamError: "",
       streamMode: "normal",
@@ -1182,6 +1186,7 @@
     je = [],
     We = "history",
     Xe = {},
+    homeRows = {},
     $e = null,
     Ge = null,
     Qe = null,
@@ -1195,10 +1200,9 @@
     et = null,
     tt = null;
   function at(e) {
-    if (!e || !e.getBoundingClientRect) return !1;
+    if (!e) return !1;
+    if (e.offsetWidth < 1 || e.offsetHeight < 1) return !1;
     if (null === e.offsetParent) return !1;
-    var t = e.getBoundingClientRect();
-    if (t.width < 1 || t.height < 1) return !1;
     if (X.episodeBrowserOpen) return !!n(e, "#player-episodes");
     if (X.categoryPickerOpen) return !!n(e, "#player-categories");
     if (catalogFilterDialog) return !!n(e, ".catalog-filter-dialog");
@@ -1206,6 +1210,7 @@
     if (ji) return !!n(e, "#dialog-playsettings");
     if (Ut) return !!n(e, "#dialog-update");
     if (zi) return !!n(e, "#player-playsetting-view");
+    if (xa) return !!n(e, ".season-popup");
     var a = n(e, ".home-page");
     if (a && !a.classList.contains("is-current")) return !1;
     var i = n(e, ".settings-panel");
@@ -1220,13 +1225,40 @@
     return !(l && !l.classList.contains("is-active"));
   }
   function it() {
-    for (
-      var e = document.querySelectorAll(".focusable"), t = [], a = 0;
-      a < e.length;
-      a++
-    )
-      at(e[a]) && t.push(e[a]);
-    return t;
+    var root = null;
+    if (catalogFilterDialog) root = catalogFilterDialog;
+    else if (liveFavoritePrompt) root = liveFavoritePrompt;
+    else if (ji) root = t("dialog-playsettings");
+    else if (Ut) root = t("dialog-update");
+    else if (zi) root = t("player-playsetting-view");
+    else if (xa) root = xa;
+    else if (X.episodeBrowserOpen) root = t("player-episodes");
+    else if (X.categoryPickerOpen) root = t("player-categories");
+    else if ("detail" === X.screen) root = t("screen-detail");
+    else if ("search" === X.screen) root = t("screen-search");
+    else if ("settings" === X.screen) root = t("screen-settings");
+    else if ("player" === X.screen) root = t("screen-player");
+    else if ("home" === X.screen) {
+      var curPage = document.querySelector(".home-page.is-current");
+      var tList = [];
+      var addN = function (nl) {
+        if (!nl) return;
+        for (var idx = 0; idx < nl.length; idx++) {
+          if (at(nl[idx])) tList.push(nl[idx]);
+        }
+      };
+      addN(document.querySelectorAll(".home-tabs .focusable"));
+      addN(document.querySelectorAll("#home-notify .focusable"));
+      if (curPage) addN(curPage.querySelectorAll(".focusable"));
+      addN(document.querySelectorAll(".live-fast .focusable"));
+      return tList;
+    }
+    root = root || document;
+    var raw = root.querySelectorAll(".focusable"), tRes = [];
+    for (var a = 0; a < raw.length; a++) {
+      if (at(raw[a])) tRes.push(raw[a]);
+    }
+    return tRes;
   }
   function nt(e) {
     for (var t = n(e, ".scrollable"); t;) {
@@ -1478,6 +1510,34 @@
   function pt() {
     X.focus && X.focus._activate && X.focus._activate();
   }
+  /* El Magic Remote entrega un click de puntero, no la tecla OK. Mantener el
+     foco lógico sincronizado evita que el siguiente uso de las flechas salte
+     a otra parte de la interfaz. */
+  function bindMagicActivate(e, a) {
+    if (!e) return;
+    e.onclick = function (t) {
+      return (
+        t && t.preventDefault && t.preventDefault(),
+        t && t.stopPropagation && t.stopPropagation(),
+        rt(e),
+        a ? a.call(e, t) : e._activate && e._activate(),
+        !1
+      );
+    };
+  }
+  function bindMagicTextInput(e) {
+    if (!e) return;
+    e._activate = function () {
+      rt(e);
+      try {
+        e.focus();
+        e.setSelectionRange && e.setSelectionRange(e.value.length, e.value.length);
+      } catch (t) {}
+    };
+    e.onclick = function () {
+      return (e._activate(), !0);
+    };
+  }
   function ut(e) {
     var t = e.keyCode || e.which,
       a = e.key || "",
@@ -1547,26 +1607,12 @@
         void (i && e.preventDefault && e.preventDefault())
       );
     if (X.episodeBrowserOpen) {
-      var r = n(X.focus, "#pe-seasons"),
-        o = n(X.focus, "#pe-episodes");
-      if (37 === t) {
-        if (o && Ei && "none" !== Ei.style.display) {
-          var s = Ii ? Ii.children[X.browserSeason] || ot(Ii) : null;
-          s && rt(s);
-        }
-      } else if (39 === t) {
-        if (r) {
-          var l = Ai ? Ai.querySelector(".pe-ep.is-current") || ot(Ai) : null;
-          l && rt(l);
-        }
-      } else
-        38 === t
-          ? st("up")
-          : 40 === t
-            ? st("down")
-            : 13 === t || 32 === t
-              ? pt()
-              : (i = !1);
+      if (37 === t) st("left");
+      else if (38 === t) st("up");
+      else if (39 === t) st("right");
+      else if (40 === t) st("down");
+      else if (13 === t || 32 === t) pt();
+      else i = !1;
       i && e.preventDefault && e.preventDefault();
     } else {
       var isYellowKey = (405 === t || "ColorF2Yellow" === a || "Yellow" === a);
@@ -1577,6 +1623,15 @@
         }
         if ("player" === X.screen && "live" === X.playerMode) {
           toggleChannelFavoriteDirect(X.channel, null);
+          return void (e.preventDefault && e.preventDefault());
+        }
+      }
+      var isChannelUp = (427 === t || 33 === t || "ChannelUp" === a || "PageUp" === a);
+      var isChannelDown = (428 === t || 34 === t || "ChannelDown" === a || "PageDown" === a);
+      if (isChannelUp || isChannelDown) {
+        var canSwitch = ("player" === X.screen && "live" === X.playerMode) || ("home" === X.screen && 0 === X.tab);
+        if (canSwitch) {
+          stepLiveChannel(isChannelUp ? 1 : -1);
           return void (e.preventDefault && e.preventDefault());
         }
       }
@@ -1830,6 +1885,93 @@
       r && r.classList.add("is-rail-open");
     } catch (e) {}
   }
+  function baseSeriesTitle(t) {
+    if (!t) return "";
+    var s = String(t).toLowerCase();
+    if (s.normalize) s = s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    s = s.replace(/[\(\[\{][^\)\]\}]*[\)\]\}]/g, " ");
+    s = s.replace(/\b(?:temp(?:orada)?|season|t|s|part(?:e)?|vol(?:umen)?|cap(?:itulo)?)\s*[-_.]?\s*\d+\b.*$/i, "");
+    s = s.replace(/\b(?:latino|castellano|sub(?:titulado)?|dual|audio|hd|4k|1080p|720p)\b.*$/i, "");
+    s = s.replace(/[^a-z0-9]+/g, " ").trim();
+    return s;
+  }
+  function selectHeroItems(items, count) {
+    count = count || 6;
+    if (!items || !items.length) return [];
+    var valid = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (it && it.id && (it.landscape || it.backdrop || it.poster)) {
+        valid.push(it);
+      }
+    }
+    if (!valid.length) valid = items.slice();
+
+    var scored = [];
+    for (var j = 0; j < valid.length; j++) {
+      var itm = valid[j];
+      var row = String(itm.row || "").toLowerCase();
+      var pScore = 0;
+      if (/top|clasificad/i.test(row)) pScore += 140;
+      if (/estreno|teatral|cartelera|novedad/i.test(row)) pScore += 120;
+      if (/2026/.test(row) || "2026" === String(itm.year)) pScore += 90;
+      if (/2025/.test(row) || "2025" === String(itm.year)) pScore += 60;
+      if (/netflix|hbo|disney|prime|apple|paramount/i.test(row)) pScore += 40;
+      var numScore = parseFloat(itm.score) || 0;
+      pScore += numScore * 6;
+      var y = parseInt(itm.year, 10) || 0;
+      if (y > 2000) pScore += (y - 2000) * 2;
+      scored.push({ item: itm, score: pScore });
+    }
+
+    scored.sort(function (a, b) {
+      return b.score - a.score;
+    });
+
+    // Deduplicate scored items by base title, keeping only the most popular (highest scored)
+    var pool = [];
+    var seenBaseInPool = {};
+    for (var k = 0; k < scored.length; k++) {
+      var candItem = scored[k].item;
+      var bTitle = baseSeriesTitle(candItem.title || candItem.name || candItem.alias);
+      if (bTitle && !seenBaseInPool[bTitle]) {
+        seenBaseInPool[bTitle] = !0;
+        pool.push(candItem);
+        if (pool.length >= 24) break;
+      }
+    }
+
+    // 24-hour rotation: updates once every 24 hours (1000 * 3600 * 24), not every 3 hours
+    var rot = Math.floor(Date.now() / (1000 * 3600 * 24)) % Math.max(1, pool.length);
+    var picked = [];
+    var seenBase = {};
+    var seenId = {};
+    var tryPush = function (candidate) {
+      if (!candidate || !candidate.id || seenId[candidate.id]) return !1;
+      var key = baseSeriesTitle(candidate.title || candidate.name || candidate.alias);
+      if (key && seenBase[key]) return !1;
+      if (key) seenBase[key] = !0;
+      seenId[candidate.id] = !0;
+      picked.push(candidate);
+      return !0;
+    };
+
+    for (var m = 0; m < pool.length && picked.length < count; m++) {
+      var cIdx = (rot + m) % pool.length;
+      tryPush(pool[cIdx]);
+    }
+    if (picked.length < count) {
+      for (var pIdx = 0; pIdx < pool.length && picked.length < count; pIdx++) {
+        tryPush(pool[pIdx]);
+      }
+    }
+    if (picked.length < count) {
+      for (var qIdx = 0; qIdx < items.length && picked.length < count; qIdx++) {
+        tryPush(items[qIdx]);
+      }
+    }
+    return picked.length ? picked : items.slice(0, count);
+  }
   var ft = [
       function (t) {
         ((ie = e("div", "live-main")),
@@ -1863,15 +2005,12 @@
           (function () {
             var a = e("div", "live-fast"),
               i = e("button", "fast-btn f-srch focusable"),
-              n = e("button", "fast-btn f-filter focusable"),
               r = e("button", "fast-btn f-fav focusable"),
               o = e("button", "fast-btn f-all focusable");
             (i.setAttribute("aria-label", "Buscar canal"),
-              n.setAttribute("aria-label", "Filtrar categorías"),
               r.setAttribute("aria-label", "Canales favoritos"),
               o.setAttribute("aria-label", "Todos los canales"),
               (i.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="13" cy="13" r="8" fill="none" stroke="currentColor" stroke-width="3"/><path d="M19 19l8 8" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg><span>Buscar</span>'),
-              (n.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 8h22M5 16h22M5 24h22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="11" cy="8" r="3" fill="currentColor"/><circle cx="22" cy="16" r="3" fill="currentColor"/><circle cx="15" cy="24" r="3" fill="currentColor"/></svg><span>Filtrar</span>'),
               (r.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3l4 8 9 1-6.5 6 1.7 9L16 22.5 7.8 27l1.7-9L3 12l9-1z" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/></svg><span>Favoritos</span>'),
               (o.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7 16h18M16 7v18" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2"/></svg><span>Todos</span>'),
               r.classList.toggle("is-active", liveFavoritesOnly),
@@ -1879,9 +2018,6 @@
                 Yr("live");
                 no();
                 openLiveChannelSearch(i);
-              }),
-              (n._activate = function () {
-                pr(n);
               }),
               (r._activate = function () {
                 liveFavoritesOnly = !liveFavoritesOnly;
@@ -1894,8 +2030,11 @@
                 selectAllLiveChannels(o);
               }),
               (i._onMove = function (e) {
-                if ("right" === e) return rt(n), !0;
-                if ("up" === e) return !0;
+                if ("right" === e) return (rt(r), !0);
+                if ("up" === e) {
+                  var sTarget = te ? (te.querySelector(".notify-item.search") || te.querySelector(".notify-item")) : null;
+                  return sTarget ? (rt(sTarget), !0) : !0;
+                }
                 if ("left" === e) return (ne ? rt(ne) : Ue[0] && rt(Ue[0]), !0);
                 if ("down" === e) {
                   var t = Fe.filter(function (e) {
@@ -1905,22 +2044,13 @@
                 }
                 return !1;
               }),
-              (n._onMove = function (e) {
-                if ("left" === e) return rt(i), !0;
-                if ("right" === e) return rt(r), !0;
-                if ("up" === e) return !0;
-                if ("down" === e) {
-                  var t = Fe.filter(function (e) {
-                    return e._channel === X.channel;
-                  })[0];
-                  return (t ? rt(t) : Fe[0] && rt(Fe[0]), !0);
-                }
-                return !1;
-              }),
               (r._onMove = function (e) {
-                if ("left" === e) return rt(n), !0;
-                if ("right" === e) return rt(o), !0;
-                if ("up" === e) return !0;
+                if ("left" === e) return (rt(i), !0);
+                if ("right" === e) return (rt(o), !0);
+                if ("up" === e) {
+                  var fTarget = te ? (te.querySelector(".notify-item.filter") || te.querySelector(".notify-item.search") || te.querySelector(".notify-item")) : null;
+                  return fTarget ? (rt(fTarget), !0) : !0;
+                }
                 if ("down" === e) {
                   var t = Fe.filter(function (e) {
                     return e._channel === X.channel;
@@ -1930,8 +2060,12 @@
                 return !1;
               }),
               (o._onMove = function (e) {
-                if ("left" === e) return rt(r), !0;
-                if ("right" === e || "up" === e) return !0;
+                if ("left" === e) return (rt(r), !0);
+                if ("right" === e) return !0;
+                if ("up" === e) {
+                  var pTarget = te ? (te.querySelector(".notify-item.personal") || te.querySelector(".notify-item")) : null;
+                  return pTarget ? (rt(pTarget), !0) : !0;
+                }
                 if ("down" === e) {
                   var t = Fe.filter(function (e) {
                     return e._channel === X.channel;
@@ -1940,8 +2074,10 @@
                 }
                 return !1;
               }),
+              bindMagicActivate(i),
+              bindMagicActivate(r),
+              bindMagicActivate(o),
               a.appendChild(i),
-              a.appendChild(n),
               a.appendChild(r),
               a.appendChild(o),
               t.appendChild(a));
@@ -1977,10 +2113,13 @@
       },
       function (e) {
         var t = ha("destacado"),
-          a = t.slice(0, 6),
+          a = selectHeroItems(t, 6),
           i = !(!a[0] || !a[0]._portal);
         fa(e, a, { titles: i, dots: i ? 4 : 0, shade: i });
-        var n = t.slice(6);
+        var n = t.filter(function (it) {
+          for (var k = 0; k < a.length; k++) if (a[k] && a[k].id === it.id) return false;
+          return true;
+        });
         n.length &&
           ya(e, n, 860, {
             popularTitle: "Títulos más vistos",
@@ -1990,10 +2129,13 @@
       },
       function (e) {
         var t = ha("pelicula"),
-          a = t.slice(0, 6),
+          a = selectHeroItems(t, 6),
           i = !(!a[0] || !a[0]._portal);
         fa(e, a, { titles: i, dots: i ? 4 : 0, shade: i });
-        var n = t.slice(6);
+        var n = t.filter(function (it) {
+          for (var k = 0; k < a.length; k++) if (a[k] && a[k].id === it.id) return false;
+          return true;
+        });
         n.length &&
           ya(e, n, 860, {
             popularTitle: "Películas más populares",
@@ -2003,10 +2145,13 @@
       },
       function (e) {
         var t = ha("serie"),
-          a = t.slice(0, 6),
+          a = selectHeroItems(t, 6),
           i = !(!a[0] || !a[0]._portal);
         fa(e, a, { titles: i, dots: i ? 3 : 2, shade: i });
-        var n = t.slice(6);
+        var n = t.filter(function (it) {
+          for (var k = 0; k < a.length; k++) if (a[k] && a[k].id === it.id) return false;
+          return true;
+        });
         n.length &&
           ya(e, n, 860, {
             popularTitle: "Series más populares",
@@ -2014,66 +2159,31 @@
             fallbackRow: "Más series",
           });
       },
-      function (t) {
-        var a = (function (e, t, a) {
-          var i,
-            n = [];
-          if (e)
-            for (i = 0; i < l.length; i++)
-              -1 !==
-                o(l[i].category || "")
-                  .split(",")
-                  .indexOf(e) && n.push(l[i]);
-          if (
-            (n.length || (n = l.slice(a, a + t)),
-            n.length || (n = l.slice(0, t)),
-            n.length < t && l.length)
-          ) {
-            var r = {};
-            for (i = 0; i < n.length; i++) r[String(n[i].id)] = !0;
-            for (var s = 0; n.length < t && s < 2 * l.length;) {
-              var d = l[s % l.length];
-              (s++, r[String(d.id)] || (n.push(d), (r[String(d.id)] = !0)));
-            }
-          }
-          return n;
-        })("infantil", 12, 0);
-        a.length || (a = l);
-        var n = !(!a[0] || !a[0]._portal);
-        t.appendChild(ua(a[0], 192, 38.5, 831, 534, { shade: !0, title: n }));
-        for (
-          var r = [
-              [1029, 38.5],
-              [1446, 38.5],
-              [1029, 269.5],
-              [1446, 269.5],
-            ],
-            s = 0;
-          s < r.length;
-          s++
-        )
-          t.appendChild(
-            ua(a[(s + 1) % a.length], r[s][0], r[s][1], 413, 222, {})
-          );
-        if ((t.appendChild(va(833, 468.5, 4, 0)), a[0])) {
-          var d = e("div", "kids-subtitle", a[0].tagline || a[0].title);
-          (i(d, 192, 526.5, 1249, 40), t.appendChild(d));
-        }
-        var c = e("div", "poster-row");
-        i(c, 192, 578.5, 1920, 310);
-        for (var p = 0; p < 7; p++) {
-          var u = a[p % a.length];
-          if (!u) break;
-          c.appendChild(xt(u, 266 * p, 0, 266, 310, { gold: !0 }));
-        }
-        t.appendChild(c);
+      function (e) {
+        var t = ha("infantil"),
+          a = selectHeroItems(t, 6),
+          i = !(!a[0] || !a[0]._portal);
+        fa(e, a, { titles: i, dots: i ? 3 : 2, shade: i });
+        var n = t.filter(function (it) {
+          for (var k = 0; k < a.length; k++) if (a[k] && a[k].id === it.id) return false;
+          return true;
+        });
+        n.length &&
+          ya(e, n, 860, {
+            popularTitle: "Contenido infantil popular",
+            bentoItems: a,
+            fallbackRow: "Más infantil",
+          });
       },
       function (e) {
         var t = ha("anime"),
-          a = t.slice(0, 6),
+          a = selectHeroItems(t, 6),
           i = !(!a[0] || !a[0]._portal);
         fa(e, a, { titles: i, dots: i ? 3 : 2, shade: i });
-        var n = t.slice(6);
+        var n = t.filter(function (it) {
+          for (var k = 0; k < a.length; k++) if (a[k] && a[k].id === it.id) return false;
+          return true;
+        });
         n.length &&
           ya(e, n, 860, {
             popularTitle: "Anime más popular",
@@ -2082,31 +2192,21 @@
           });
       },
       function (t) {
-        var a = (function () {
-          for (var e = [], t = 0; t < l.length; t++) {
-            var a = l[t],
-              i = o(
-                [
-                  a.row || "",
-                  a.category || "",
-                  a.kind || "",
-                  a.title || "",
-                  a.alias || "",
-                  a.genres && a.genres.join
-                    ? a.genres.join(" ")
-                    : a.genres || "",
-                ].join(" ")
-              );
-            (-1 === i.indexOf("novela") && -1 === i.indexOf("telenovela")) ||
-              e.push(a);
-          }
-          return e;
-        })();
+        var a = ha("novela");
         if (a.length) {
-          var n = a.slice(0, 6),
-            r = !(!n[0] || !n[0]._portal);
-          (fa(t, n, { titles: r, dots: r ? 3 : 2, shade: r }),
-            ma(t, a, 860, "Más novelas"));
+          var hero = selectHeroItems(a, 6);
+          var hasPortal = !(!hero[0] || !hero[0]._portal);
+          fa(t, hero, { titles: hasPortal, dots: hasPortal ? 3 : 2, shade: hasPortal });
+          var remaining = a.filter(function (it) {
+            for (var k = 0; k < hero.length; k++) if (hero[k] && hero[k].id === it.id) return false;
+            return true;
+          });
+          remaining.length &&
+            ya(t, remaining, 860, {
+              popularTitle: "Novelas y Dramas más populares",
+              bentoItems: hero,
+              fallbackRow: "Más telenovelas y dramas",
+            });
         } else {
           var s = e(
             "div",
@@ -2264,6 +2364,8 @@
                 if ("left" === t && e > 0) return (rt(te.querySelectorAll(".notify-item")[e - 1]), !0);
                 if ("right" === t && e < 2) return (rt(te.querySelectorAll(".notify-item")[e + 1]), !0);
                 if ("down" === t && 0 === X.tab) {
+                  var fastSrch = document.querySelector(".live-fast .f-srch");
+                  if (fastSrch) return (rt(fastSrch), !0);
                   var a = Fe.filter(function (e) {
                     return e._channel === X.channel;
                   })[0] || Fe[0];
@@ -2302,6 +2404,13 @@
       X.tab = e;
       for (var n = 0; n < Ue.length; n++)
         Ue[n].classList.toggle("is-selected", n === e);
+
+      // Desalojar de memoria el contenido DOM de pestañas VOD inactivas para evitar OOM en webOS
+      if (i > 0 && i !== a.page && He[i]) {
+        clearChildren(He[i]);
+        ht[i] = !1;
+      }
+
       (a.page >= 0 && mt(a.page), 0 === a.page ? Wt(F[X.channel]) : jt());
       for (var r = 0; r < He.length; r++)
         (He[r].classList.remove("is-entering", "from-left", "from-right"),
@@ -2335,14 +2444,21 @@
       (Ct = setTimeout(function () {
         ((Ct = null),
           (function () {
-            for (
-              var e = document.querySelectorAll("img[data-poster-src]"),
-                t = window.innerWidth || 1920,
-                a = window.innerHeight || 1080,
-                i = 0;
-              i < e.length;
-              i++
-            ) {
+            var root = null;
+            if ("home" === X.screen) {
+              root = document.querySelector(".home-page.is-current");
+            } else if ("detail" === X.screen) {
+              root = t("screen-detail");
+            } else if ("search" === X.screen) {
+              root = t("screen-search");
+            } else {
+              root = document;
+            }
+            if (!root) return;
+            var e = root.querySelectorAll("img[data-poster-src]"),
+              tWin = window.innerWidth || 1920,
+              aWin = window.innerHeight || 1080;
+            for (var i = 0; i < e.length; i++) {
               var r = e[i],
                 o = n(r, ".poster, .bento"),
                 s =
@@ -2350,21 +2466,21 @@
                     ? o.getBoundingClientRect()
                     : null;
               if (
-                St(r) &&
                 s &&
-                s.bottom > -420 &&
-                s.top < a + 420 &&
-                s.right > -320 &&
-                s.left < t + 320
-              )
-                r.getAttribute("src") ||
-                  ((r.style.display = ""),
-                  (r.src = r.getAttribute("data-poster-src")));
-              else if (r.getAttribute("src")) {
+                s.bottom > -100 &&
+                s.top < aWin + 250 &&
+                s.right > -100 &&
+                s.left < tWin + 250
+              ) {
+                if (!r.getAttribute("src")) {
+                  r.style.display = "";
+                  r.src = r.getAttribute("data-poster-src");
+                }
+              } else if (r.getAttribute("src")) {
                 r.removeAttribute("src");
                 try {
                   r.src = "";
-                } catch (e) {}
+                } catch (err) {}
               }
             }
           })());
@@ -2433,33 +2549,109 @@
       desc: "320+ canales: La 1, La 2, Antena 3, Telecinco, laSexta, autonómicas",
     },
     {
+      id: "co_nat",
+      name: "Colombia - Canales Nacionales",
+      url: "https://iptv-org.github.io/iptv/countries/co.m3u",
+      desc: "Caracol, RCN, Señal Colombia, Teleantioquia, canales regionales",
+    },
+    {
+      id: "mx_nat",
+      name: "México - Televisión Abierta y Cable",
+      url: "https://iptv-org.github.io/iptv/countries/mx.m3u",
+      desc: "Las Estrellas, Azteca 7, Azteca Uno, Canal 5, Imagen TV",
+    },
+    {
+      id: "ar_nat",
+      name: "Argentina - Canales Nacionales",
+      url: "https://iptv-org.github.io/iptv/countries/ar.m3u",
+      desc: "Telefe, El Trece, TV Pública, América TV, El Nueve",
+    },
+    {
+      id: "cl_nat",
+      name: "Chile - Televisión Nacional",
+      url: "https://iptv-org.github.io/iptv/countries/cl.m3u",
+      desc: "TVN, Mega, Chilevisión, Canal 13, La Red",
+    },
+    {
+      id: "pe_nat",
+      name: "Perú - Canales Nacionales",
+      url: "https://iptv-org.github.io/iptv/countries/pe.m3u",
+      desc: "América TV, ATV, Latina Televisión, Panamericana, TV Perú",
+    },
+    {
       id: "latam_spa",
-      name: "Latinoamérica y Deportes (Hispano)",
+      name: "Latinoamérica e Hispanoamérica",
       url: "https://iptv-org.github.io/iptv/languages/spa.m3u",
-      desc: "Canales en español de Colombia, México, Argentina, Chile y Perú",
+      desc: "800+ canales en español de toda América Latina y el Caribe",
+    },
+    {
+      id: "movies_iptv",
+      name: "Cine y Películas 24/7",
+      url: "https://iptv-org.github.io/iptv/categories/movies.m3u",
+      desc: "Cine continuo, películas clásicas, acción, suspenso y comedia 24/7",
+    },
+    {
+      id: "series_iptv",
+      name: "Series y Maratones 24/7",
+      url: "https://iptv-org.github.io/iptv/categories/series.m3u",
+      desc: "Canales continuos de series de culto, sitcoms y drama",
     },
     {
       id: "sports_iptv",
       name: "Deportes Internacionales",
       url: "https://iptv-org.github.io/iptv/categories/sports.m3u",
-      desc: "Transmisiones deportivas y canales de competiciones",
+      desc: "Fútbol, baloncesto, automovilismo y eventos deportivos",
     },
     {
-      id: "movies_iptv",
-      name: "Cine y Series 24/7",
-      url: "https://iptv-org.github.io/iptv/categories/movies.m3u",
-      desc: "Cine clásico, cine de acción y canales continuos de series",
+      id: "animation_iptv",
+      name: "Animación y Caricaturas 24/7",
+      url: "https://iptv-org.github.io/iptv/categories/animation.m3u",
+      desc: "Canales continuos de animación infantil, caricaturas y anime",
+    },
+    {
+      id: "documentary_iptv",
+      name: "Documentales y Ciencia",
+      url: "https://iptv-org.github.io/iptv/categories/documentary.m3u",
+      desc: "Naturaleza, historia, ciencia, tecnología y cultura",
+    },
+    {
+      id: "music_iptv",
+      name: "Música y Conciertos",
+      url: "https://iptv-org.github.io/iptv/categories/music.m3u",
+      desc: "Canales musicales, conciertos en vivo, pop, rock, urbano y latino",
     },
   ];
   function _t() {
+    var stored = null;
     try {
       var e = localStorage.getItem("xuper_m3u_addons");
       if (e) {
         var t = JSON.parse(e);
-        if (Array.isArray(t) && t.length) return t;
+        if (Array.isArray(t) && t.length) stored = t;
       }
     } catch (e) {}
-    var a = [Tt[0]];
+    if (stored && stored.length) {
+      var map = {};
+      for (var s = 0; s < stored.length; s++) {
+        if (stored[s] && stored[s].id) map[stored[s].id] = !0;
+      }
+      var updated = stored.slice(),
+        added = !1;
+      for (var p = 0; p < Tt.length; p++) {
+        if (!map[Tt[p].id]) {
+          updated.push(Tt[p]);
+          map[Tt[p].id] = !0;
+          added = !0;
+        }
+      }
+      if (added) {
+        try {
+          localStorage.setItem("xuper_m3u_addons", JSON.stringify(updated));
+        } catch (e) {}
+      }
+      return updated;
+    }
+    var a = Tt.slice();
     try {
       localStorage.setItem("xuper_m3u_addons", JSON.stringify(a));
     } catch (e) {}
@@ -2742,14 +2934,17 @@
                     (u.channelCode && d[u.channelCode]) ||
                     (u.channelCode && (d[u.channelCode] = !0), F.push(u));
                 }
+                var isFirstPage = 1 === n,
+                  isLastPage = !(s && s.hasMore && l.length);
                 ((Et = !0),
-                  Qt(liveFavoritesOnly),
-                  hr(),
                   X.channel >= F.length && (X.channel = 0),
+                  (isFirstPage || isLastPage) &&
+                    (Qt(liveFavoritesOnly),
+                    "player" === X.screen && X.channelsOpen && hr()),
                   F[X.channel] && ae && (ae.textContent = F[X.channel].name),
                   "player" === X.screen && "live" === X.playerMode
                     ? ao()
-                    : Wt(F[X.channel]));
+                    : isFirstPage && Wt(F[X.channel]));
               }
               if (
                 (r ||
@@ -2803,7 +2998,16 @@
       })();
     }
   }
-  function Qt(t) {
+  /* Inicio sólo necesita las filas alrededor del canal seleccionado. Renderizar
+     todos los canales en cada página agotaba RAM en TVs webOS con 1 GB. */
+  function liveRowsWindow(e, t) {
+    var a = e.indexOf(t);
+    a < 0 && (a = 0);
+    var i = Math.max(0, a - Math.floor(Ke / 2)),
+      n = Math.min(e.length, i + Ke);
+    return e.slice(Math.max(0, n - Ke), n);
+  }
+  function Qt(t, currentChannel) {
     var previousFocus = X.focus,
       previousChannel =
         previousFocus && void 0 !== previousFocus._channel
@@ -2814,9 +3018,16 @@
         previousFocus.classList &&
         previousFocus.classList.contains("channel-star");
     if (re)
-      if ((a(re), (Fe = []), F.length)) {
-        for (var i = 0; i < F.length; i++)
-          if ((!t || X.liveFavorites[liveChannelKey(F[i])]) && isVisibleLiveChannel(F[i])) {
+      if ((a(re), (Fe = []), (homeRows = {}), F.length)) {
+        var visible = visibleLiveIndexes();
+        if (t)
+          visible = visible.filter(function (e) {
+            return !!X.liveFavorites[liveChannelKey(F[e])];
+          });
+        var currentFavorites = !!t,
+          rows = liveRowsWindow(visible, null == currentChannel ? X.channel : currentChannel);
+        for (var rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+          var i = rows[rowIndex];
             var n = e("div", "live-row focusable");
             n._channel = i;
             var r = e("div", "row-icon");
@@ -2847,16 +3058,26 @@
                 return function (t) {
                   if ("left" === t) return (ne ? rt(ne) : Ue[0] && rt(Ue[0]), !0);
                   if ("up" === t) {
-                    var idx = Fe.indexOf(this);
-                    if (idx > 0) return (rt(Fe[idx - 1]), !0);
+                    var channelPos = visible.indexOf(e),
+                      previousChannel = channelPos > 0 ? visible[channelPos - 1] : -1,
+                      previousRow = previousChannel >= 0 ? homeRows[previousChannel] : null;
+                    if (previousChannel >= 0) {
+                      previousRow || (Qt(!!currentFavorites, previousChannel), (previousRow = homeRows[previousChannel]));
+                      return previousRow ? (rt(previousRow), !0) : !0;
+                    }
                     var homeToolbar = document.querySelector(
                       ".live-fast .f-srch"
                     );
                     return homeToolbar ? (rt(homeToolbar), !0) : !0;
                   }
                   if ("down" === t) {
-                    var idx = Fe.indexOf(this);
-                    if (idx < Fe.length - 1) return (rt(Fe[idx + 1]), !0);
+                    var channelPos = visible.indexOf(e),
+                      nextChannel = channelPos < visible.length - 1 ? visible[channelPos + 1] : -1,
+                      nextRow = nextChannel >= 0 ? homeRows[nextChannel] : null;
+                    if (nextChannel >= 0) {
+                      nextRow || (Qt(!!currentFavorites, nextChannel), (nextRow = homeRows[nextChannel]));
+                      return nextRow ? (rt(nextRow), !0) : !0;
+                    }
                     var fastBtn = document.querySelector(".live-fast .fast-btn");
                     return fastBtn ? (rt(fastBtn), !0) : !0;
                   }
@@ -2865,11 +3086,11 @@
                 };
               })(i, star)),
               (star._channel = i),
-              (star._activate = (function (e, t) {
+              (star._activate = (function (channelIndex, t) {
                 return function () {
-                  (toggleChannelFavoriteDirect(e, null),
+                  (toggleChannelFavoriteDirect(channelIndex, null),
                     (t = Fe.filter(function (e) {
-                      return e._channel === X.channel;
+                      return e._channel === channelIndex;
                     })[0]),
                     t && rt(t.querySelector(".channel-star")));
                 };
@@ -2878,23 +3099,38 @@
                 return function (a) {
                   if ("left" === a) return (rt(t), !0);
                   if ("up" === a || "down" === a) {
-                    var i = Fe.indexOf(t),
+                    var i = visible.indexOf(e),
                       n = "up" === a ? i - 1 : i + 1,
-                      r = n >= 0 && n < Fe.length ? Fe[n] : null,
-                      o = r && r.querySelector(".channel-star");
-                    if (o) return (rt(o), !0);
-                    if ("up" === a) {
-                      var s = document.querySelector(".live-fast .f-srch");
+                      r = n >= 0 && n < visible.length ? visible[n] : -1,
+                      o = r >= 0 ? homeRows[r] : null,
+                      s = o && o.querySelector(".channel-star");
+                    if (r >= 0) {
+                      s || (Qt(currentFavorites, r), (o = homeRows[r]), (s = o && o.querySelector(".channel-star")));
                       return s ? (rt(s), !0) : !0;
+                    }
+                    if ("up" === a) {
+                      var l = document.querySelector(".live-fast .f-srch");
+                      return l ? (rt(l), !0) : !0;
                     }
                     return !0;
                   }
                   return "right" === a;
                 };
               })(i, n)),
+              /* En la previsualización el click del Magic Remote cambia el
+                 canal sin abrir el reproductor a pantalla completa. La tecla
+                 OK conserva su comportamiento normal (abrir TV en vivo). */
+              (n._magicActivate = (function (channelIndex) {
+                return function () {
+                  Kt(channelIndex, !0);
+                };
+              })(i)),
+              bindMagicActivate(n, n._magicActivate),
+              bindMagicActivate(star),
               re.appendChild(n),
-              Fe.push(n));
-          }
+            (homeRows[i] = n),
+            Fe.push(n));
+        }
         (F[X.channel] && ae && (ae.textContent = F[X.channel].name), Jt());
       /* Gt() vuelve a crear filas al terminar una página del catálogo. Sin
          esto X.focus apunta a una fila destruida y desaparece el naranja. */
@@ -2939,6 +3175,7 @@
   }
   function Kt(e, t) {
     (e < 0 && (e = 0), e > F.length - 1 && (e = F.length - 1), (X.channel = e));
+    "home" === X.screen && 0 === X.tab && Qt(liveFavoritesOnly, e);
     for (var a = 0; a < Fe.length; a++)
       Fe[a].classList.toggle("is-current", Fe[a]._channel === e);
     (F[e] && ae && (ae.textContent = F[e].name),
@@ -2955,6 +3192,26 @@
     for (var e = [], t = 0; t < F.length; t++)
       isVisibleLiveChannel(F[t]) && e.push(t);
     return e;
+  }
+  function stepLiveChannel(dir) {
+    var visible = visibleLiveIndexes();
+    if (!visible || !visible.length) {
+      visible = [];
+      for (var i = 0; i < F.length; i++) visible.push(i);
+    }
+    if (!visible.length) return;
+    var pos = visible.indexOf(X.channel);
+    if (pos === -1) pos = 0;
+    var nextPos = (pos + dir + visible.length) % visible.length;
+    var target = visible[nextPos];
+    Kt(target, !0);
+    if ("home" === X.screen && 0 === X.tab) {
+      var row = Fe.filter(function (e) { return e._channel === target; })[0];
+      if (row) {
+        rt(row);
+        Jt();
+      }
+    }
   }
   function Yt(a) {
     var i = t("app-toast");
@@ -3219,7 +3476,7 @@
     });
   }
   function oa(e, t) {
-    var a = "2.2.77";
+    var a = APP_VERSION;
     function i(i) {
       (t && t(null, i),
         i && i.updateAvailable
@@ -3303,6 +3560,7 @@
                   : (da(), Mt && Mt.isAddon && $t());
               }));
           }),
+            bindMagicActivate(s),
             a.appendChild(s),
             i.appendChild(a));
         })(Tt[l]);
@@ -3324,6 +3582,7 @@
             ((d._activate = function () {
               (r.splice(a, 1), kt(r), da(), Mt && Mt.isAddon && $t());
             }),
+              bindMagicActivate(d),
               i.appendChild(d),
               n.appendChild(i));
           })(r[d], d);
@@ -3336,8 +3595,8 @@
           )
         );
     var c = t("da-btn-add-custom");
-    c &&
-      (c._activate = function () {
+    if (c) {
+      c._activate = function () {
         var e = t("da-custom-url"),
           a = e ? (e.value || "").trim() : "";
         a && /^https?:\/\//i.test(a)
@@ -3356,12 +3615,19 @@
               }
             ))
           : alert("Por favor introduce una URL válida (http:// o https://)");
-      });
+      };
+      bindMagicActivate(c);
+    }
+    /* Al pulsar este campo con el Magic Remote se abre el teclado virtual de
+       webOS. También se puede activar con OK sin perder la navegación D-pad. */
+    bindMagicTextInput(t("da-custom-url"));
     var p = t("da-btn-exit");
-    p &&
-      (p._activate = function () {
+    if (p) {
+      p._activate = function () {
         la();
-      });
+      };
+      bindMagicActivate(p);
+    }
   }
   function ca(e, t) {
     P("fetchM3u", { url: e.url }, function (a, i) {
@@ -3461,18 +3727,179 @@
       a.dots && e.appendChild(va(848, 535.5, a.dots, 0));
     }
   }
+  function isNovelaItem(item) {
+    if (!item) return false;
+    var row = o(item.row || "");
+    var title = o(item.title || item.alias || "");
+    var g = o((item.genres || []).join(" "));
+    return (
+      row.indexOf("novela") !== -1 ||
+      row.indexOf("telenovela") !== -1 ||
+      row.indexOf("turquia") !== -1 ||
+      row.indexOf("turca") !== -1 ||
+      row.indexOf("corean") !== -1 ||
+      row.indexOf("korea") !== -1 ||
+      row.indexOf("vida familiar") !== -1 ||
+      row.indexOf("romantico") !== -1 ||
+      g.indexOf("telenovela") !== -1 ||
+      g.indexOf("soap") !== -1 ||
+      title.indexOf("betty") !== -1 ||
+      title.indexOf("gavilanes") !== -1 ||
+      title.indexOf("senorita polvora") !== -1 ||
+      title.indexOf("la promesa") !== -1 ||
+      title.indexOf("valle salvaje") !== -1 ||
+      title.indexOf("diomedes") !== -1
+    );
+  }
+  var ANIME_TITLE_REGEX = /naruto|boruto|shippuden|dragon ball|one piece|bleach|shingeki|titan|kimetsu|demon slayer|jujutsu|kaisen|hero academia|boku no hero|death note|hunter x hunter|chainsaw|evangelion|evangerion|spy x family|solo leveling|frieren|dan da dan|dandadan|kaiju|pokemon|digimon|sailor moon|inuyasha|haikyuu|sword art|slime|doraemon|saint seiya|seinto seiya|caballeros del zodiaco|yu-gi-oh|fullmetal|kaguya|fairy tail|black clover|tokyo ghoul|tokyo revengers|re:zero|dr. stone|vinland|helluva|hasbin|gurren|kusuriya|kuroshitsuji|ao no hako|tensei|sasaki|hyouken|hotel inhumans|tsuihou|link click|overgeared|youjo senk|smiling friends|dinosaucers|jayce|centurions|gen: lock|shin seiki/i;
+  function isAnimeItem(item) {
+    if (!item) return false;
+    var title = o(item.title || item.alias || "");
+    if (
+      title.indexOf("sirenita") !== -1 ||
+      title.indexOf("spider-man") !== -1 ||
+      title.indexOf("tadeo") !== -1
+    )
+      return false;
+    var cat = o(item.category || "");
+    var row = o(item.row || "");
+    var g = o((item.genres || []).join(" "));
+    if (
+      cat.indexOf("anime") !== -1 ||
+      row.indexOf("anime") !== -1 ||
+      row.indexOf("dragon ball") !== -1 ||
+      g.indexOf("anime") !== -1
+    )
+      return true;
+    if (ANIME_TITLE_REGEX.test(title)) return true;
+    return false;
+  }
+  var KIDS_TITLE_REGEX = /bebefinn|cocomelon|dbillions|cancion|infantil|nursery|pocoyo|plim plim|masha|baby|diana and roma|blippi|chuchu|paw patrol|patrulla canina|bluey|dora la exploradora|cleo y cuquin|cantajuego|toy cantando|gallina pintadita|pj masks|heroes en pijamas|thomas|looney tunes|scooby|mickey|supergatinhos|supergatitos|puppy dog pals|star vs|bob esponja|duggee|ninjago|gumball|fresh beat|tiro loco|mision disfraz|pingu|ozzy|princesa valiente|capitan calzoncillos|hotel transilvania|paranorman|coraline|los invencibles|tadeo|spidey|peppa/i;
+  function isKidsItem(item) {
+    if (!item) return false;
+    if (isAnimeItem(item)) return false;
+    var cat = o(item.category || "");
+    var row = o(item.row || "");
+    var g = o((item.genres || []).join(" "));
+    var title = o(item.title || item.alias || "");
+    if (
+      cat.indexOf("infantil") !== -1 ||
+      row.indexOf("kids") !== -1 ||
+      row.indexOf("mickey") !== -1 ||
+      row.indexOf("ninos") !== -1 ||
+      row.indexOf("animacion clasica") !== -1 ||
+      row.indexOf("pelicula de animacion") !== -1 ||
+      row.indexOf("serie de animacion") !== -1 ||
+      row.indexOf("en familia") !== -1
+    )
+      return true;
+    if (g.indexOf("cartoon") !== -1) return true;
+    if (g.indexOf("family") !== -1 && g.indexOf("animation") !== -1) return true;
+    if (KIDS_TITLE_REGEX.test(title)) return true;
+    return false;
+  }
+  function isPureSeriesItem(item) {
+    if (!item) return false;
+    var cat = o(item.category || "");
+    var kind = o(item.kind || "");
+    var type = o(item.type || "");
+    var row = o(item.row || "");
+    var title = o(item.title || item.alias || "");
+    var isEpisodic =
+      cat.indexOf("serie") !== -1 ||
+      kind === "serie" ||
+      type === "teleplay" ||
+      Boolean(item.seasons && item.seasons.length);
+    if (!isEpisodic) return false;
+    if (isNovelaItem(item)) return false;
+    if (isAnimeItem(item)) return false;
+    var isPlatformSeries =
+      row.indexOf("disney") !== -1 ||
+      row.indexOf("netflix") !== -1 ||
+      row.indexOf("hbo") !== -1 ||
+      row.indexOf("prime") !== -1 ||
+      row.indexOf("apple") !== -1 ||
+      row.indexOf("paramount") !== -1;
+    if (!isPlatformSeries) {
+      if (isKidsItem(item)) return false;
+      var g = o((item.genres || []).join(" "));
+      if (g.indexOf("animation") !== -1 || g.indexOf("cartoon") !== -1) return false;
+    } else {
+      if (/bebefinn|cocomelon|dbillions|cancion|nursery/i.test(title)) return false;
+    }
+    return true;
+  }
   function ha(e) {
     var t,
-      a = [];
-    if (e)
+      a = [],
+      seen = {};
+    if (!e) return l;
+    var target = o(e);
+    if ("serie" === target || "series" === target) {
       for (t = 0; t < l.length; t++) {
-        (-1 !==
-          o(l[t].category || "")
-            .split(",")
-            .indexOf(e) ||
-          (l[t].kind && -1 !== o(l[t].kind).indexOf(e))) &&
+        if (l[t] && l[t].id && !seen[l[t].id] && isPureSeriesItem(l[t])) {
+          seen[l[t].id] = !0;
           a.push(l[t]);
+        }
       }
+      return a.length ? a : l;
+    }
+    if ("infantil" === target || "kids" === target) {
+      for (t = 0; t < l.length; t++) {
+        if (l[t] && l[t].id && !seen[l[t].id] && isKidsItem(l[t])) {
+          seen[l[t].id] = !0;
+          a.push(l[t]);
+        }
+      }
+      return a.length ? a : l;
+    }
+    if ("anime" === target) {
+      for (t = 0; t < l.length; t++) {
+        if (l[t] && l[t].id && !seen[l[t].id] && isAnimeItem(l[t])) {
+          seen[l[t].id] = !0;
+          a.push(l[t]);
+        }
+      }
+      return a.length ? a : l;
+    }
+    if ("novela" === target || "novelas" === target || "telenovela" === target) {
+      for (t = 0; t < l.length; t++) {
+        if (l[t] && l[t].id && !seen[l[t].id] && isNovelaItem(l[t])) {
+          seen[l[t].id] = !0;
+          a.push(l[t]);
+        }
+      }
+      return a.length ? a : l;
+    }
+    if ("pelicula" === target || "peliculas" === target || "movie" === target) {
+      for (t = 0; t < l.length; t++) {
+        if (l[t] && l[t].id && !seen[l[t].id]) {
+          var c = o(l[t].category || "");
+          var k = o(l[t].kind || "");
+          var typ = o(l[t].type || "");
+          if (
+            (c.indexOf("pelicula") !== -1 || k === "pelicula" || typ === "movie") &&
+            !isNovelaItem(l[t])
+          ) {
+            seen[l[t].id] = !0;
+            a.push(l[t]);
+          }
+        }
+      }
+      return a.length ? a : l;
+    }
+    for (t = 0; t < l.length; t++) {
+      if (
+        l[t] &&
+        l[t].id &&
+        !seen[l[t].id] &&
+        (-1 !== o(l[t].category || "").split(",").indexOf(target) ||
+          (l[t].kind && -1 !== o(l[t].kind).indexOf(target)))
+      ) {
+        seen[l[t].id] = !0;
+        a.push(l[t]);
+      }
+    }
     return a.length ? a : l;
   }
   function ma(t, a, n, r) {
@@ -3480,7 +3907,7 @@
     var o = n || 860,
       s = e("div", "kids-subtitle", r || "Catálogo");
     (i(s, 192, o, 1249, 40), t.appendChild(s), (o += 50));
-    for (var l = Math.min(a.length, 60), d = 0; d < l; d++) {
+    for (var l = Math.min(a.length, 120), d = 0; d < l; d++) {
       var c = 192 + 276 * (d % 6),
         p = o + 390 * Math.floor(d / 6);
       t.appendChild(xt(a[d], c, p, 250, 360, { gold: !0 }));
@@ -3562,7 +3989,7 @@
           return (parseFloat(t && t.score) || 0) - a;
         }),
         h = [];
-      for (r = 0; r < f.length && h.length < 30; r++) {
+      for (r = 0; r < f.length && h.length < 15; r++) {
         var m = f[r];
         m && m.id && (h.push(m));
       }
@@ -3585,9 +4012,15 @@
         g[C] || ((g[C] = []), y.push(C)),
         g[C].push(b));
     }
+    // Ordenar categorías por mayor cantidad de títulos
+    y.sort(function (aCat, bCat) {
+      return (g[bCat] ? g[bCat].length : 0) - (g[aCat] ? g[aCat].length : 0);
+    });
     var w = {
         "2026 Peliculas teatrales": "Estrenos en cartelera",
         2026: "Novedades 2026",
+        "Novedades 2025": "Novedades y estrenos 2025",
+        "Estrenos en cartelera": "Estrenos en cartelera",
         "Máscara perfecta": "Máscara perfecta (Especial)",
         "Asesino en serie": "Suspense y asesinos en serie",
         "Películas TOP15 clasificadas": "Películas TOP 15",
@@ -3607,6 +4040,7 @@
         "Paramount + Series": "Series Paramount+",
         "Hulu Series": "Series Hulu",
         "TV Series": "Series de televisión",
+        "Series de televisión": "Series de televisión",
         "Serie Turquía": "Series turcas",
         "Drama Coreano": "Dramas coreanos (K-Drama)",
         Telenovelas: "Telenovelas populares",
@@ -3614,6 +4048,9 @@
         Acción: "Acción y aventura",
         Comedia: "Comedias destacadas",
         Horror: "Terror y horror",
+        Drama: "Dramas y romance",
+        Dramas: "Dramas destacados",
+        Aventuras: "Aventura y acción",
         "Ciencia ficción": "Ciencia ficción y fantasía",
         Suspenso: "Suspense y misterio",
         Crimen: "Crimen y policíaco",
@@ -3632,28 +4069,42 @@
         "Serie de Anime": "Series de anime",
       },
       S = !1;
-    for (s = 0; s < y.length; s++) {
+    var maxRails = 12;
+    var railsCount = 0;
+    var fallbackList = [];
+    for (s = 0; s < y.length && railsCount < maxRails; s++) {
       var x = y[s],
         T = g[x];
       if (T && T.length) {
-        var _ = [];
-        for (d = 0; d < T.length && _.length < 40; d++) {
-          _.push(T[d]);
-        }
-        if (_.length) {
-          u = ga(e, _, u, w[x] || x);
-          S = !0;
+        if (T.length < 3) {
+          for (d = 0; d < T.length; d++) fallbackList.push(T[d]);
+        } else {
+          var _ = [];
+          for (d = 0; d < T.length && _.length < 15; d++) {
+            _.push(T[d]);
+          }
+          if (_.length) {
+            u = ga(e, _, u, w[x] || x);
+            S = !0;
+            railsCount++;
+          }
         }
       }
     }
-    var L = [];
-    for (p = 0; p < t.length; p++) v[String(t[p].id)] || L.push(t[p]);
-    return (
-      L.length
-        ? (u = ma(e, L, u, i.fallbackRow || "Más títulos del catálogo"))
-        : S || ma(e, t, u, i.defaultTitle || "Catálogo"),
-      u
-    );
+    if (fallbackList.length && railsCount < maxRails) {
+      var fallbackRail = [];
+      for (d = 0; d < fallbackList.length && fallbackRail.length < 15; d++) {
+        fallbackRail.push(fallbackList[d]);
+      }
+      if (fallbackRail.length) {
+        u = ga(e, fallbackRail, u, i.fallbackRow || "Más títulos del catálogo");
+        S = !0;
+      }
+    }
+    if (!S) {
+      u = ma(e, t, u, i.defaultTitle || "Catálogo");
+    }
+    return u;
   }
   function ba(e) {
     if (
@@ -3692,6 +4143,93 @@
               (dn(e), Jr(e, X.detailEpisode));
           })));
   }
+  function getBaseSeriesTitle(t) {
+    if (!t) return "";
+    return t.replace(/\s*(?:T\d+|S\d+|Temporada\s*\d+|Season\s*\d+).*$/i, "").trim().toLowerCase();
+  }
+  function getRelatedItems(target, catalog, limit) {
+    limit = limit || 10;
+    if (!target || !catalog || !catalog.length) return [];
+    var baseT = getBaseSeriesTitle(target.title || "");
+    var targetGenres = [];
+    if (target.genres && target.genres.length) {
+      for (var i = 0; i < target.genres.length; i++) {
+        targetGenres.push(String(target.genres[i]).toLowerCase());
+      }
+    }
+    var isAnime = (target.category && target.category.indexOf("anime") >= 0) || (targetGenres.indexOf("anime") >= 0);
+    var isMovie = target.kind === "pelicula" || target.type === "movie";
+    var isSeries = target.kind === "serie" || target.type === "teleplay";
+
+    var scored = [];
+    for (var j = 0; j < catalog.length; j++) {
+      var item = catalog[j];
+      if (!item || item.id === target.id) continue;
+      if (baseT && getBaseSeriesTitle(item.title || "") === baseT) continue;
+
+      var score = 0;
+      var cat = (item.category || "").toLowerCase();
+      var itemGenres = [];
+      if (item.genres && item.genres.length) {
+        for (var k = 0; k < item.genres.length; k++) {
+          itemGenres.push(String(item.genres[k]).toLowerCase());
+        }
+      }
+
+      if (isAnime) {
+        if (cat.indexOf("anime") >= 0 || itemGenres.indexOf("anime") >= 0) {
+          score += 300;
+        } else {
+          score -= 150;
+        }
+      } else if (isMovie) {
+        if (item.kind === "pelicula" || item.type === "movie") score += 100;
+        else score -= 100;
+      } else if (isSeries) {
+        if (item.kind === "serie" || item.type === "teleplay") score += 100;
+        else score -= 100;
+      }
+
+      for (var g = 0; g < itemGenres.length; g++) {
+        if (targetGenres.indexOf(itemGenres[g]) >= 0) {
+          score += 50;
+        }
+      }
+
+      var r = parseFloat(item.score) || 0;
+      score += r * 5;
+
+      if (score > 0) {
+        scored.push({ item: item, score: score });
+      }
+    }
+
+    scored.sort(function (a, b) { return b.score - a.score; });
+    var results = [];
+    for (var m = 0; m < scored.length && results.length < limit; m++) {
+      results.push(scored[m].item);
+    }
+    if (results.length < limit) {
+      for (var fb = 0; fb < catalog.length && results.length < limit; fb++) {
+        var fallbackItem = catalog[fb];
+        if (fallbackItem && fallbackItem.id !== target.id && results.indexOf(fallbackItem) === -1) {
+          results.push(fallbackItem);
+        }
+      }
+    }
+    return results;
+  }
+  function hasDetailCredit(value) {
+    var text = String(value || "").replace(/^\s+|\s+$/g, ""),
+      normalized = o(text);
+    return !!(
+      text &&
+      "—" !== text &&
+      "-" !== text &&
+      "n/a" !== normalized &&
+      "sin datos" !== normalized
+    );
+  }
   function Ca(n) {
     ((oe = t("detail-left")),
       (se = t("detail-player")),
@@ -3701,6 +4239,8 @@
       a(le),
       a(de));
     var r,
+      hasDirector = hasDetailCredit(n.director),
+      hasActors = hasDetailCredit(n.actors),
       o = e("div", "detail-titlewrap");
     if (
       (o.appendChild(e("div", "detail-title", n.title)),
@@ -3742,14 +4282,20 @@
       f.appendChild(m);
     }
     oe.appendChild(f);
-    var g = e("div", "detail-row");
-    g.appendChild(document.createTextNode("Director : "));
-    var y = e("span", "val", n.director);
-    (g.appendChild(y), oe.appendChild(g));
-    var b = e("div", "detail-row");
-    b.appendChild(document.createTextNode("Actors : "));
-    var C = e("span", "val", n.actors);
-    (b.appendChild(C), oe.appendChild(b));
+    (oe.classList.toggle("has-credits", hasDirector || hasActors),
+      oe.classList.toggle("no-credits", !hasDirector && !hasActors));
+    if (hasDirector) {
+      var g = e("div", "detail-row");
+      g.appendChild(document.createTextNode("Director : "));
+      var y = e("span", "val", n.director);
+      (g.appendChild(y), oe.appendChild(g));
+    }
+    if (hasActors) {
+      var b = e("div", "detail-row");
+      b.appendChild(document.createTextNode("Actors : "));
+      var C = e("span", "val", n.actors);
+      (b.appendChild(C), oe.appendChild(b));
+    }
     var w = e("div", "detail-synopsis");
     (w.appendChild(e("span", "label", "Sinopsis : ")),
       w.appendChild(e("div", "text", n.synopsis)));
@@ -3816,7 +4362,7 @@
         })(T[_].kind, n)),
         le.appendChild(k));
     }
-    var M = e("div", "detail-btn focusable"),
+    var M = e("div", "detail-btn detail-smooth-toggle focusable"),
       I = e("img");
     ((I.src = "assets/original/vod/icon_detail_quality.png"),
       (I.alt = ""),
@@ -3838,172 +4384,280 @@
           n = a.length > 0,
           r = wa(a.length);
         X.detailRange >= r.length && (X.detailRange = 0);
+        var hasMultiSeasons = x(t) && t.seasons && t.seasons.length > 1;
+        var seasonsRail = null;
         if (x(t)) {
-          var o = e("div", "detail-season focusable");
-          (i(o, 80, 42, 280, 53),
-            o.appendChild(
-              e(
-                "span",
-                "season-text",
-                (function (e) {
-                  var t = 0;
-                  if (e.seasons && e.seasons.length > 0) {
-                    var a = e.seasons[X.detailSeason] || e.seasons[0];
-                    t = a && a.number ? a.number : X.detailSeason + 1;
+          if (hasMultiSeasons) {
+            seasonsRail = e("div", "detail-seasons-rail scrollable");
+            for (var sIdx = 0; sIdx < t.seasons.length; sIdx++) {
+              (function (sNum) {
+                var sItem = t.seasons[sNum];
+                var sBtn = e(
+                  "div",
+                  "detail-season-btn focusable" +
+                    (sNum === X.detailSeason ? " is-selected" : ""),
+                  "Temporada " + (sItem.number || sNum + 1)
+                );
+                sBtn._seasonIdx = sNum;
+                sBtn._onFocus = function () {
+                  var targetScroll = sBtn.offsetLeft - (seasonsRail.clientWidth / 2) + (sBtn.clientWidth / 2);
+                  seasonsRail.scrollLeft = Math.max(0, targetScroll);
+                };
+                sBtn._activate = function () {
+                  if (X.detailSeason !== sNum) {
+                    X.detailSeason = sNum;
+                    X.detailRange = 0;
+                    X.detailEpisode = null;
+                    jr("Cargando temporada…");
+                    P("detail", { contentId: sItem.id }, function (err, res) {
+                      if (!err && res && !1 !== res.returnValue) {
+                        res.item && H(t, res.item);
+                        t.episodes = res.episodes || [];
+                        t.seasonId = sItem.id;
+                        sItem._episodes = t.episodes;
+                        X.detailEpisode = t.episodes[0] || null;
+                      }
+                      Ca(t);
+                      X.detailEpisode && Jr(t, X.detailEpisode);
+                      var newRail = de ? de.querySelector(".detail-seasons-rail") : null;
+                      var newBtn = newRail ? newRail.children[sNum] : null;
+                      newBtn && rt(newBtn);
+                    });
                   }
-                  if (!t) {
-                    var i =
-                      /S(\d+)/i.exec(e.alias || "") ||
-                      /T(\d+)/i.exec(e.title || "");
-                    i && (t = parseInt(i[1], 10) || 0);
+                };
+                sBtn._onMove = function (dir) {
+                  if ("left" === dir) {
+                    if (sNum > 0 && seasonsRail.children[sNum - 1]) {
+                      rt(seasonsRail.children[sNum - 1]);
+                      return !0;
+                    }
+                    return !0;
                   }
-                  return "Temporada " + (t || 1);
-                })(t)
-              )
-            ));
-          var s = e("img", "season-arrow");
-          ((s.src = "assets/original/vod/ic_down_icon.png"),
-            (s.alt = "▼"),
-            o.appendChild(s),
-            (o._activate = function () {
-              !t.seasons ||
-                t.seasons.length < 2 ||
-                (function (t, a) {
-                  if (xa) return void Ta();
-                  if (!a.seasons || a.seasons.length < 2) return;
-                  var n = t.querySelector(".season-arrow");
-                  n && n.classList.add("is-open");
-                  i(
-                    (xa = e("div", "season-popup")),
-                    80,
-                    100,
-                    280,
-                    Math.min(320, 54 * a.seasons.length)
-                  );
-                  for (var r = 0; r < a.seasons.length; r++)
-                    (function (t) {
-                      var i = a.seasons[t],
-                        n = e(
-                          "div",
-                          "season-popup-item focusable" +
-                            (t === X.detailSeason ? " is-selected" : "")
-                        ),
-                        r = "Temporada " + (i.number || t + 1);
-                      n.appendChild(e("span", "season-item-text", r));
-                      var o = e("img", "season-item-check");
-                      ((o.src = "assets/original/vod/icon_nation_selected.png"),
-                        (o.alt = ""),
-                        n.appendChild(o),
-                        (n._activate = function () {
-                          if ((Ta(), X.detailSeason !== t)) {
-                            ((X.detailSeason = t),
-                              (X.detailRange = 0),
-                              (X.detailEpisode = null));
-                            var e = a.seasons[t];
-                            e &&
-                              e.id &&
-                              (jr("Cargando temporada…"),
-                              P("detail", { contentId: e.id }, function (t, i) {
-                                (!t &&
-                                  i &&
-                                  !1 !== i.returnValue &&
-                                  (i.item && H(a, i.item),
-                                  (a.episodes = i.episodes || []),
-                                  (a.seasonId = e.id),
-                                  (e._episodes = a.episodes),
-                                  (X.detailEpisode = a.episodes[0] || null)),
-                                  Ca(a),
-                                  X.detailEpisode && Jr(a, X.detailEpisode));
-                                var n = de
-                                  ? de.querySelector(".detail-season")
-                                  : null;
-                                n && rt(n);
-                              }));
-                          } else {
-                            var i = de
-                              ? de.querySelector(".detail-season")
-                              : null;
-                            i && rt(i);
-                          }
-                        }),
-                        xa.appendChild(n));
-                    })(r);
-                  de.appendChild(xa);
-                  var o = xa.children[X.detailSeason] || xa.children[0];
-                  o && rt(o);
-                })(o, t);
-            }),
-            de.appendChild(o));
+                  if ("right" === dir) {
+                    if (sNum < t.seasons.length - 1 && seasonsRail.children[sNum + 1]) {
+                      rt(seasonsRail.children[sNum + 1]);
+                      return !0;
+                    }
+                    var rCont = de ? de.querySelector(".detail-ranges") : null;
+                    var firstR = rCont ? rCont.children[0] : null;
+                    if (firstR) return (rt(firstR), !0);
+                    return !0;
+                  }
+                  if ("down" === dir) {
+                    var ep = de ? (de.querySelector(".detail-episode.is-playing") || de.querySelector(".detail-episode")) : null;
+                    return ep ? (rt(ep), !0) : !0;
+                  }
+                  if ("up" === dir) {
+                    var dBtn = le ? le.querySelector(".detail-btn") : null;
+                    return dBtn ? (rt(dBtn), !0) : !0;
+                  }
+                  return !1;
+                };
+                seasonsRail.appendChild(sBtn);
+              })(sIdx);
+            }
+            de.appendChild(seasonsRail);
+          } else {
+            var o = e("div", "detail-season");
+            o.appendChild(e("span", "season-text", "Temporada 1"));
+            de.appendChild(o);
+          }
         }
+        var rangesCont = null;
         if (n && a.length > 20) {
-          var d = e("div", "detail-ranges");
-          i(d, 398, 51, 1522, 46);
+          rangesCont = e("div", "detail-ranges scrollable");
+          if (!hasMultiSeasons && !x(t)) {
+            rangesCont.classList.add("no-seasons");
+          } else if (!hasMultiSeasons) {
+            rangesCont.style.left = "280px";
+          } else {
+            rangesCont.style.left = "480px";
+          }
           for (var c = 0; c < r.length; c++)
-            (function (a) {
-              var n = e(
+            (function (rangeIdx) {
+              var rangeBtn = e(
                 "div",
                 "detail-range focusable" +
-                  (a === X.detailRange ? " is-selected" : ""),
-                r[a].start + 1 + "-" + r[a].end
+                  (rangeIdx === X.detailRange ? " is-selected" : ""),
+                r[rangeIdx].start + 1 + "-" + r[rangeIdx].end
               );
-              (i(n, 160 * a, 0, 150, 46),
-                (n._activate = function () {
-                  Sa(a, t);
-                }),
-                d.appendChild(n));
+              rangeBtn._onFocus = function () {
+                var targetScroll = rangeBtn.offsetLeft - (rangesCont.clientWidth / 2) + (rangeBtn.clientWidth / 2);
+                rangesCont.scrollLeft = Math.max(0, targetScroll);
+              };
+              rangeBtn._activate = function () {
+                Sa(rangeIdx, t);
+              };
+              rangeBtn._onMove = function (dir) {
+                if ("left" === dir) {
+                  if (rangeIdx > 0 && rangesCont.children[rangeIdx - 1]) {
+                    rt(rangesCont.children[rangeIdx - 1]);
+                    return !0;
+                  }
+                  if (hasMultiSeasons && seasonsRail && seasonsRail.children.length) {
+                    var lastSeason = seasonsRail.children[seasonsRail.children.length - 1];
+                    if (lastSeason) return (rt(lastSeason), !0);
+                  }
+                  return !0;
+                }
+                if ("right" === dir) {
+                  if (rangeIdx < r.length - 1 && rangesCont.children[rangeIdx + 1]) {
+                    rt(rangesCont.children[rangeIdx + 1]);
+                    return !0;
+                  }
+                  return !0;
+                }
+                if ("up" === dir) {
+                  var dBtn = le ? le.querySelector(".detail-btn") : null;
+                  return dBtn ? (rt(dBtn), !0) : !0;
+                }
+                if ("down" === dir) {
+                  var ep = de ? (de.querySelector(".detail-episode.is-playing") || de.querySelector(".detail-episode")) : null;
+                  return ep ? (rt(ep), !0) : !0;
+                }
+                return !1;
+              };
+              rangesCont.appendChild(rangeBtn);
             })(c);
-          de.appendChild(d);
+          de.appendChild(rangesCont);
         }
         if (n) {
           var p = r[X.detailRange] || { start: 0, end: a.length },
             u = e("div", "detail-episodes scrollable");
-          i(u, 80, 149, 1840, 65);
           for (var v = p.start; v < p.end; v++)
-            (function (a, n) {
-              var r = e(
+            (function (epData, epRelIdx, epAbsIdx) {
+              var isPlaying = X.detailEpisode && (X.detailEpisode.id === epData.id || X.detailEpisode === epData);
+              var epTile = e(
                 "div",
-                "detail-episode focusable" +
-                  (X.detailEpisode &&
-                  (X.detailEpisode.id === a.id || X.detailEpisode === a)
-                    ? " is-playing"
-                    : "")
+                "detail-episode focusable" + (isPlaying ? " is-playing" : "")
               );
-              i(r, 160 * n, 0, 150, 65);
-              var o =
-                void 0 !== a.number && null !== a.number
-                  ? String(a.number)
-                  : String(v + 1);
-              (r.appendChild(e("span", "ep-num", o)),
-                (r._ep = a),
-                (r._activate = function () {
-                  $n(t, a);
-                }),
-                u.appendChild(r));
-            })(a[v], v - p.start);
+              var epNum =
+                void 0 !== epData.number && null !== epData.number
+                  ? String(epData.number)
+                  : String(epAbsIdx + 1);
+              epTile.appendChild(e("span", "ep-num", epNum));
+              epTile._ep = epData;
+              epTile._activate = function () {
+                $n(t, epData);
+              };
+              epTile._onFocus = function () {
+                var targetScroll = epTile.offsetLeft - (u.clientWidth / 2) + (epTile.clientWidth / 2);
+                u.scrollLeft = Math.max(0, targetScroll);
+              };
+              epTile._onMove = function (dir) {
+                if ("left" === dir) {
+                  if (epRelIdx > 0 && u.children[epRelIdx - 1]) {
+                    rt(u.children[epRelIdx - 1]);
+                    return !0;
+                  }
+                  if (X.detailRange > 0) {
+                    Sa(X.detailRange - 1, t);
+                    var prevU = de ? de.querySelector(".detail-episodes") : null;
+                    var lastChild = prevU ? prevU.children[prevU.children.length - 1] : null;
+                    if (lastChild) rt(lastChild);
+                    return !0;
+                  }
+                  return !0;
+                }
+                if ("right" === dir) {
+                  if (epRelIdx < (p.end - p.start - 1) && u.children[epRelIdx + 1]) {
+                    rt(u.children[epRelIdx + 1]);
+                    return !0;
+                  }
+                  if (X.detailRange + 1 < r.length) {
+                    Sa(X.detailRange + 1, t);
+                    var nextU = de ? de.querySelector(".detail-episodes") : null;
+                    var firstChild = nextU ? nextU.children[0] : null;
+                    if (firstChild) rt(firstChild);
+                    return !0;
+                  }
+                  return !0;
+                }
+                if ("up" === dir) {
+                  var rCont = de ? de.querySelector(".detail-ranges") : null;
+                  var curRange = rCont ? (rCont.querySelector(".detail-range.is-selected") || rCont.children[X.detailRange] || rCont.children[0]) : null;
+                  if (curRange) return (rt(curRange), !0);
+                  var seasonBtn = de ? (de.querySelector(".detail-season-btn.is-selected") || de.querySelector(".detail-season-btn")) : null;
+                  if (seasonBtn) return (rt(seasonBtn), !0);
+                  var dBtn = le ? le.querySelector(".detail-btn") : null;
+                  return dBtn ? (rt(dBtn), !0) : !0;
+                }
+                if ("down" === dir) {
+                  var relGrid = de ? de.querySelector(".detail-grid") : null;
+                  var firstRel = relGrid ? (relGrid.querySelector(".poster") || ot(relGrid)) : null;
+                  return firstRel ? (rt(firstRel), !0) : !0;
+                }
+                return !1;
+              };
+              u.appendChild(epTile);
+            })(a[v], v - p.start, v);
           de.appendChild(u);
         }
-        var f = n ? 240 : 25,
-          h = n ? 290 : 91,
-          m = e("div", "detail-related", "Quizás te guste");
-        (i(m, 80, f, 400, 44), de.appendChild(m));
+        var m = e("div", "detail-related", "Quizás te guste");
+        m.style.top = n ? "154px" : "18px";
+        m.style.fontSize = n ? "28px" : "34px";
+        m.style.height = n ? "38px" : "44px";
+        de.appendChild(m);
+
         var g = e("div", "detail-grid scrollable");
-        i(g, 80, h, 1750, n ? 180 : 380);
-        var y = parseInt(t.id, 10);
-        if (isNaN(y)) {
-          y = 0;
-          for (var b = 0; b < l.length; b++)
-            if (l[b] === t) {
-              y = b;
-              break;
-            }
-        }
-        for (var C = (3 * y) % Math.max(1, l.length - 6), w = 0; w < 8; w++) {
-          var S = l[(C + w) % l.length];
+        g.style.top = n ? "202px" : "72px";
+        g.style.height = n ? "340px" : "470px";
+
+        var pWidth = n ? 195 : 260;
+        var pHeight = n ? 275 : 365;
+        var cellH = n ? 324 : 415;
+
+        var relList = getRelatedItems(t, l, 10);
+        for (var w = 0; w < relList.length; w++) {
+          var S = relList[w];
           if (S) {
-            var T = e("div", "cell");
-            (T.appendChild(xt(S, 0, 0, 210, 308, { gold: !0 })),
-              T.appendChild(e("div", "d-name", S.title)),
-              g.appendChild(T));
+            (function (relItem, relIdx) {
+              var T = e("div", "cell");
+              T.style.width = pWidth + "px";
+              T.style.height = cellH + "px";
+              var cardPoster = xt(relItem, 0, 0, pWidth, pHeight, { gold: !0 });
+              cardPoster._onFocus = function () {
+                var targetScroll = T.offsetLeft - (g.clientWidth / 2) + (pWidth / 2);
+                g.scrollLeft = Math.max(0, targetScroll);
+              };
+              cardPoster._onMove = function (dir) {
+                if ("up" === dir) {
+                  if (n) {
+                    var ep = de ? (de.querySelector(".detail-episode.is-playing") || de.querySelector(".detail-episode")) : null;
+                    if (ep) return (rt(ep), !0);
+                  } else {
+                    var dBtn = le ? (le.querySelector(".detail-btn.is-focused") || le.querySelector(".detail-btn")) : null;
+                    if (dBtn) return (rt(dBtn), !0);
+                  }
+                  return !0;
+                }
+                if ("down" === dir) {
+                  return !0;
+                }
+                if ("left" === dir) {
+                  if (relIdx > 0 && g.children[relIdx - 1]) {
+                    var prevP = g.children[relIdx - 1].querySelector(".poster");
+                    if (prevP) return (rt(prevP), !0);
+                  }
+                  return !0;
+                }
+                if ("right" === dir) {
+                  if (relIdx < relList.length - 1 && g.children[relIdx + 1]) {
+                    var nextP = g.children[relIdx + 1].querySelector(".poster");
+                    if (nextP) return (rt(nextP), !0);
+                  }
+                  return !0;
+                }
+                return !1;
+              };
+              T.appendChild(cardPoster);
+              var dName = e("div", "d-name", relItem.title);
+              dName.style.top = (pHeight + 6) + "px";
+              dName.style.height = n ? "34px" : "42px";
+              dName.style.fontSize = n ? "22px" : "26px";
+              T.appendChild(dName);
+              g.appendChild(T);
+            })(S, w);
           }
         }
         de.appendChild(g);
@@ -4848,7 +5502,11 @@
           )
         ));
       var a = e("div", "fb-qr");
-      t.appendChild(a);
+      var img = e("img", "fb-qr-img");
+      ((img.src = "assets/original/settings/qr_telegram.png"),
+        (img.alt = "WebOs PortXuper Chat"),
+        a.appendChild(img),
+        t.appendChild(a));
       var i = e("div", "fb-help focusable", "Ayuda");
       return ((i._activate = function () {}), t.appendChild(i), t);
     })()),
@@ -4884,7 +5542,7 @@
           e(
             "div",
             "sp-about-update-desc",
-            "Versión instalada: v2.2.77. Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC."
+            "Versión instalada: v" + APP_VERSION + ". Puedes actualizar la app directamente desde tu televisor sin necesidad de usar un PC."
           )
         ));
       var s = e("div", "sp-about-update-row"),
@@ -4908,7 +5566,7 @@
                         "¡Nueva versión disponible: v" + t.latestVersion + "!"),
                       (d.style.color = "#22c55e"))
                     : ((d.textContent =
-                        "Tienes la versión más reciente (v2.2.77)."),
+                        "Tienes la versión más reciente (v" + APP_VERSION + ")."),
                       (d.style.color = "#38bdf8")));
             }));
         }),
@@ -5919,7 +6577,7 @@
   }
   function yn(e) {
     if (Bi)
-      if (Ji && pn && pn.length) {
+      if ("player" === X.screen && Ji && pn && pn.length) {
         for (var t = null, a = 0; a < pn.length; a++)
           if (e >= pn[a].start && e <= pn[a].end) {
             t = pn[a];
@@ -5963,7 +6621,7 @@
     ((wn = ""),
       (Xi = 0),
       ($i = !1),
-      (X.audioPreferenceCode = ""),
+      (X.audioPreferenceCode = X.audioPreferenceCode || "es-lat"),
       (X.episodeBrowserPage = 0),
       (Qi = null),
       (Ji = !1),
@@ -6247,6 +6905,28 @@
                   var e = yi.querySelector(".psv-ep-btn");
                   e && rt(e);
                 }),
+                  (i._onFocus = function () {
+                    vr(u, i);
+                  }),
+                  (i._onMove = (function (rangeIndex, rangeButton) {
+                    return function (direction) {
+                      if ("left" === direction) {
+                        if (rangeIndex > 0 && u.children[rangeIndex - 1])
+                          return (rt(u.children[rangeIndex - 1]), !0);
+                        return !0;
+                      }
+                      if ("right" === direction) {
+                        if (rangeIndex + 1 < u.children.length && u.children[rangeIndex + 1])
+                          return (rt(u.children[rangeIndex + 1]), !0);
+                        return !0;
+                      }
+                      if ("up" === direction) {
+                        var episodeButton = yi.querySelector(".psv-ep-btn.is-selected") || yi.querySelector(".psv-ep-btn");
+                        return episodeButton ? (rt(episodeButton), !0) : !0;
+                      }
+                      return "down" === direction ? !0 : !1;
+                    };
+                  })(t, i)),
                   u.appendChild(i));
               })(v, l[v]);
             yi.appendChild(u);
@@ -6375,14 +7055,32 @@
                 );
                 (t === X.browserSeason && a.classList.add("is-selected"),
                   (a._onFocus = function () {
+                    if (Ii) {
+                      var targetScroll = a.offsetLeft - (Ii.clientWidth / 2) + (a.clientWidth / 2);
+                      Ii.scrollLeft = Math.max(0, targetScroll);
+                    }
                     X.browserSeason !== t && Wn(t, !1);
                   }),
                   (a._onMove = function (e) {
+                    if ("left" === e) {
+                      if (t > 0 && Ii && Ii.children[t - 1]) {
+                        rt(Ii.children[t - 1]);
+                        return !0;
+                      }
+                      return !0;
+                    }
                     if ("right" === e) {
-                      var t =
+                      if (t < i.length - 1 && Ii && Ii.children[t + 1]) {
+                        rt(Ii.children[t + 1]);
+                        return !0;
+                      }
+                      return !0;
+                    }
+                    if ("down" === e) {
+                      var tEp =
                         (Ai && Ai.querySelector(".pe-ep.is-current")) ||
                         (Ai && ot(Ai));
-                      return t && rt(t), !0;
+                      return tEp ? (rt(tEp), !0) : !0;
                     }
                     return !1;
                   }),
@@ -6565,7 +7263,7 @@
         jr("Cambiando capítulo…"),
         (X.episodeSwitchTimer = setTimeout(function () {
           ((X.episodeSwitchTimer = null),
-            a === X.episodeSwitchSeq && "player" === X.screen && Jr(e, t));
+            a === X.episodeSwitchSeq && ("player" === X.screen || "detail" === X.screen) && Jr(e, t));
         }, 600)));
     }
   }
@@ -7686,6 +8384,9 @@
                     n = "up" === a ? i - 1 : i + 1,
                     r = n >= 0 && n < visible.length ? Xe[visible[n]] : null,
                     o = r && r.querySelector(".pc-channel-fav");
+                  r ||
+                    (n >= 0 && n < visible.length &&
+                      (hr(visible[n]), (r = Xe[visible[n]]), (o = r && r.querySelector(".pc-channel-fav"))));
                   return o && rt(o), !0;
                 }
                 return !1;
@@ -7917,6 +8618,7 @@
         !0
       );
     ((X.streamError = ""),
+      clearLiveStallWatch(),
       Dr(),
       jr(""),
       si("none"),
@@ -7962,6 +8664,7 @@
       xe.removeAttribute("src");
       try {
         xe.src = "";
+        xe.load();
       } catch (e) {}
       for (; xe.firstChild;) xe.removeChild(xe.firstChild);
       (xe.classList.remove("is-active"),
@@ -8172,16 +8875,32 @@
           }
         }),
         (xe.onplaying = function () {
-          (Lr(), Gn(), v());
+          (clearLiveStallWatch(),
+            "live" === X.playerMode &&
+              (liveStallLastTime = Number(xe.currentTime) || 0),
+            Lr(),
+            Gn(),
+            v());
         }),
         (xe.onended = function () {
           "vod" === X.playerMode && Qn();
         }),
         (xe.ontimeupdate = function () {
           if (
-            (!X.streamError &&
+            ("live" === X.playerMode &&
+              (function () {
+                var liveTime = Number(xe.currentTime) || 0;
+                if (liveTime > liveStallLastTime + 0.25) {
+                  liveStallLastTime = liveTime;
+                  liveStallStableSince || (liveStallStableSince = Date.now());
+                  liveStallRetries &&
+                    Date.now() - liveStallStableSince >= 3e4 &&
+                    (liveStallRetries = 0);
+                }
+              })(),
+            !X.streamError &&
               (xe.currentTime > 0 || xe.readyState >= 2) &&
-              v(),
+              (clearLiveStallWatch(), v()),
             "vod" === X.playerMode)
           ) {
             var e = br ? Cr + (xe.currentTime || 0) : xe.currentTime || 0,
@@ -8247,10 +8966,10 @@
             }, 500)));
         }),
         (xe.onwaiting = function () {
-          Pr("Cargando vídeo…");
+          (Pr("Cargando vídeo…"), watchLiveStall());
         }),
         (xe.onstalled = function () {
-          Pr("Conectando…");
+          (Pr("Conectando…"), watchLiveStall());
         }));
       for (
         var l = {
@@ -8509,13 +9228,62 @@
       : Kr(t, a);
   }
   var Zr = 0,
-    eo = null;
+    eo = null,
+    liveStallTimer = null,
+    liveStallChannel = -1,
+    liveStallRetries = 0,
+    liveStallLastTime = -1,
+    liveStallStableSince = 0;
+  function clearLiveStallWatch() {
+    liveStallTimer && (clearTimeout(liveStallTimer), (liveStallTimer = null));
+  }
+  function watchLiveStall() {
+    if (
+      liveStallTimer ||
+      "live" !== X.playerMode ||
+      "player" !== X.screen ||
+      !xe ||
+      xe.paused
+    )
+      return;
+    var e = X.channel,
+      t = Zr,
+      startTime = Number(xe.currentTime) || 0;
+    liveStallTimer = setTimeout(function () {
+      ((liveStallTimer = null),
+        "live" === X.playerMode &&
+          "player" === X.screen &&
+          X.channel === e &&
+          Zr === t &&
+          xe &&
+          !xe.paused &&
+          (function () {
+            var currentTime = Number(xe.currentTime) || 0;
+            if (currentTime > startTime + 0.25) {
+              liveStallStableSince = Date.now();
+              return !1;
+            }
+            return currentTime <= startTime + 0.25;
+          })() &&
+          liveStallRetries < 1 &&
+          ((liveStallRetries += 1),
+          (liveStallStableSince = 0),
+          jr("Reconectando señal…"),
+          to(F[e], !0)));
+    }, 12000);
+  }
   function to(e, t) {
     if (
       (eo && (clearTimeout(eo), (eo = null)),
       e || (e = F[X.channel]),
       e && (e.channelCode || e.streamUrl))
     ) {
+      liveStallChannel !== X.channel &&
+        ((liveStallChannel = X.channel),
+        (liveStallRetries = 0),
+        (liveStallLastTime = -1),
+        (liveStallStableSince = 0));
+      clearLiveStallWatch();
       var a = function () {
         var t = ++Zr;
         (jr("Cargando señal " + (e.name || "") + "…"),
@@ -8705,6 +9473,9 @@
     }
   }
   function so() {
+    var welcomeVersion = t("screen-welcome");
+    welcomeVersion = welcomeVersion && welcomeVersion.querySelector(".welcome-version");
+    welcomeVersion && (welcomeVersion.textContent = "v" + APP_VERSION);
     (oo(),
       window.addEventListener("resize", oo, !1),
       window.addEventListener("orientationchange", oo, !1),

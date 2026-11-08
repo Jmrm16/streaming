@@ -1,9 +1,9 @@
 {
-  "version": "2.2.77",
+  "version": "2.2.87",
   "name": "XuperTV",
   "minWebos": "1.0.0",
-  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.77/com.webosflux.xuptertv.fidelity_2.2.77_all.ipk",
-  "sha256": "B176C8EBA4B401C5123BE49BFD174692D0889615B4F9A69B2AC65B4432349848",
-  "changelog": "Corrige el validador de versión en actualización OTA para permitir la instalación directa desde la app.",
-  "releaseDate": "2026-11-06"
+  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.87/com.webosflux.xuptertv.fidelity_2.2.87_all.ipk",
+  "sha256": "E2D40F6C8C37F51042E1AFED39C09859491F20E4C7AED77FD98CCB227B7166DC",
+  "changelog": "Soporte para Magic Remote: pulsa un canal de la grilla de previsualización para cambiarlo sin salir de Inicio. Addons ahora abre el teclado virtual al seleccionar su campo de URL.",
+  "releaseDate": "2026-11-07"
 }

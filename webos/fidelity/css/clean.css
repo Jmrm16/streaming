@@ -151,22 +151,23 @@
 /* Compact episode picker shown over the detail mini-player.  Keep the row
    light enough for webOS 3/4 while making the selected chapter unmistakable. */
 .detail-episode {
-  background: rgba(53, 59, 70, .92);
-  border: 1px solid rgba(255, 255, 255, .13);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
   box-sizing: border-box;
 }
 .detail-episode .ep-num {
-  font-size: 32px;
-  font-weight: 600;
+  font-size: 24px;
+  font-weight: 700;
 }
 .detail-episode.is-playing {
-  background: #d21525;
-  border-color: #ffffff;
+  background: linear-gradient(135deg, #e4a434 0%, #b60707 100%);
+  border-color: #e4a434;
 }
 .detail-episode.is-focused {
-  background: #ffffff;
-  border-color: #ffffff;
-  box-shadow: 0 0 0 3px rgba(255,255,255,.82);
+  background: #e4a434;
+  border-color: #e4a434;
+  box-shadow: 0 0 0 2px rgba(228, 164, 52, .85);
 }
 .detail-episode.is-focused .ep-num {
   color: #000000;
@@ -459,8 +460,8 @@
 .detail-episode .ep-num {
   display: block;
   width: 100%;
-  font-size: 34px;
-  line-height: 65px;
+  font-size: 24px;
+  line-height: 46px;
   font-weight: 700;
   letter-spacing: 0.5px;
   color: #ffffff;
@@ -803,7 +804,7 @@
 .live-fast,
 #screen-home.is-rail-open .live-fast {
   left: auto;
-  right: 40px;
+  right: 18px;
   top: 16px;
   bottom: auto;
   width: 506px;
@@ -955,5 +956,123 @@
   -ms-overflow-style: none;
 }
 
-
+/* Riel horizontal de temporadas y desplazamiento de capítulos en detalle */
+.detail-seasons-rail {
+  position: absolute;
+  left: 80px; top: 8px;
+  max-width: 600px; height: 44px;
+  display: -webkit-box;
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+}
+/* La selección de capítulos ocupa mejor la mitad inferior: evita que los
+   episodios queden pegados a los controles y deja visibles las etiquetas de
+   las recomendaciones en el espacio que antes quedaba vacío. */
+.detail-seasons-rail,
+.detail-ranges {
+  top: 16px;
+}
+.detail-episodes {
+  top: 72px;
+  height: 62px;
+}
+.detail-episode {
+  width: 104px;
+  height: 56px;
+}
+.detail-episode .ep-num {
+  line-height: 54px;
+  font-size: 27px;
+}
+/* El selector permanece disponible desde Ajustes globales, pero no ocupa
+   espacio en la previsualización de la ficha. */
+.detail-smooth-toggle {
+  display: none;
+}
+/* Botones de ficha: legibles desde el sofá y sin invadir el selector de
+   episodios que empieza en la franja inferior. */
+.detail-buttons {
+  top: 452px;
+  height: 60px;
+}
+.detail-btn {
+  min-width: 195px;
+  height: 60px;
+  padding: 0 22px;
+  margin-right: 16px;
+}
+.detail-btn img {
+  width: 32px;
+  height: 32px;
+  margin-right: 12px;
+}
+.detail-btn span {
+  font-size: 25px;
+  line-height: 60px;
+}
+/* Los títulos sin créditos (muy comunes en anime) reutilizan ese espacio para
+   una sinopsis completa. Con créditos, se reserva una línea clara antes de
+   los botones para que ninguna capa se superponga. */
+.detail-left.no-credits .detail-synopsis {
+  margin-top: 20px;
+  height: 128px;
+}
+.detail-left.no-credits .detail-synopsis .text {
+  max-height: 126px;
+}
+.detail-left.has-credits .detail-synopsis {
+  margin-top: 12px;
+  height: 46px;
+}
+.detail-left.has-credits .detail-synopsis .text {
+  max-height: 44px;
+}
+/* La barra tiene exactamente el mismo ancho y borde derecho de la grilla de
+   canales, por eso no queda flotando sobre la previsualización. */
+.live-fast,
+#screen-home.is-rail-open .live-fast {
+  right: 40px;
+  width: 388px;
+}
+.live-fast .fast-btn {
+  -webkit-box-flex: 1;
+  flex: 1 1 0;
+  width: auto;
+}
+.detail-seasons-rail::-webkit-scrollbar,
+.detail-ranges::-webkit-scrollbar,
+.detail-episodes::-webkit-scrollbar,
+.detail-grid::-webkit-scrollbar {
+  display: none;
+}
+.detail-season-btn {
+  display: inline-block;
+  height: 42px;
+  padding: 0 20px;
+  margin-right: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #e0e0e0;
+  font-size: 22px;
+  line-height: 40px;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.detail-season-btn.is-selected {
+  border-color: #e4a434;
+  color: #ffffff;
+  background: rgba(228, 164, 52, 0.22);
+  font-weight: bold;
+}
+.detail-season-btn.is-focused {
+  border-color: #e4a434;
+  outline: 2px solid #e4a434;
+  outline-offset: 1px;
+  background: #e4a434;
+  color: #000000;
+  font-weight: bold;
+}
 

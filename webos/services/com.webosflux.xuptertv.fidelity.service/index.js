@@ -119,25 +119,29 @@ function audioPreferenceKind(e) {
     : /^(?:es|spa|esp)(?:[-_ ]?(?:es|españa|espana|castellano))\b/.test(r) ||
         /(?:españa|espana|castellano)/.test(r)
       ? "es-es"
-      : /^(?:es|spa|esp)\b/.test(r)
+      : /^(?:es|spa|esp)\b|español|spanish/.test(r)
         ? "es"
-        : /^(?:pt|por)\b/.test(r)
+        : /^(?:pt|por|bra)\b|portugu[eé]s|brasil|brazil/.test(r)
           ? "pt"
-          : /^(?:en|eng|ing)\b/.test(r)
+          : /^(?:en|eng|ing)\b|english|ingl[eé]s/.test(r)
             ? "en"
             : r;
 }
 function preferredAudioTrack(e, r, a) {
   var s = String(e || "").split(/[,\/]/),
-    t = String(r || ""),
+    t = String(r || "es-lat"),
     n = 0;
-  if (!t) return a;
   for (n = 0; n < s.length; n++)
     if (audioPreferenceKind(s[n]) === t) return n;
-  if ("es-lat" === t)
+  if ("es-lat" === t) {
     for (n = 0; n < s.length; n++)
       if ("es" === audioPreferenceKind(s[n])) return n;
-  return a;
+    for (n = 0; n < s.length; n++)
+      if ("en" === audioPreferenceKind(s[n])) return n;
+    for (n = 0; n < s.length; n++)
+      if ("es-es" === audioPreferenceKind(s[n])) return n;
+  }
+  return (a >= 0 && a < s.length) ? a : 0;
 }
 function resolveStream(e, r) {
   if (
@@ -174,7 +178,7 @@ function resolveStream(e, r) {
       if (o) {
         var i = preferredAudioTrack(
           t.audio,
-          a.audioPreference,
+          a.audioPreference || "es-lat",
           Number(a.audioTrack) || 0
         );
         proxy.start(function (r) {
@@ -426,8 +430,9 @@ function startHttpApi() {
   }),
   service.register("search", function (e) {
     if (needModule(e, magis, "./magis")) {
-      var r = (e.payload && e.payload.value) || "";
-      magis.search(r, function (r, a) {
+      var r = (e.payload && e.payload.value) || "",
+        p = (e.payload && e.payload.pageNum) || 1;
+      magis.search(r, p, function (r, a) {
         respond(e, r, a);
       });
     }
