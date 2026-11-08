@@ -102,7 +102,7 @@ Antes de entregar cualquier cambio que afecte la app, comprobar:
 9. Que el autotest de `ffmpeg` siga diferido con `setTimeout` en `ffmpeg-relay.js`.
 10. Que `magis.js` conserve el rescate por semillas (`portal100024`) con pool, expiración y marcas de semilla muerta.
 11. Que ningún servicio declare una `function` dentro de un bloque (ver sección 5): webOS 3.x no carga el servicio.
-12. Que `version.json` y los tags/releases de GitHub se publiquen obligatoriamente con el IPK (ver sección 6).
+12. Que `version.json` y el IPK se generen siempre, entregando el IPK para prueba antes de confirmar la Release (ver sección 6).
 13. Que el modo fluido fMP4 se mantenga en todas las versiones con su watchdog anti-pantalla-negra.
 14. Que TV en vivo mantenga favoritos (`liveFavorites`), botones de cabecera (`f-fav`, `f-all`, `f-srch`), tecla amarilla y foco al primer canal visible (ver sección 7).
 15. Que el carrusel de catálogo mantenga rieles `.catalog-rail` y loop horizontal de retorno estilo Netflix (ver sección 7).
@@ -187,13 +187,12 @@ contestar, que es lo que produce "ping no respondió en 25 segundos".
 
 ---
 
-## 6. Publicación obligatoria de tags y releases en GitHub (Regla permanente)
+## 6. Empaquetado de IPK y Confirmación de Releases en GitHub (Regla permanente)
 
-Para que los usuarios puedan actualizar la app vía OTA desde sus televisores o descargar la última versión de GitHub:
-- Al incrementar la versión o compilar un release, es **OBLIGATORIO** actualizar `version.json` (versión, `ipkUrl`, sha256 del IPK generado, changelog y fecha), `currentVer` en `webos/fidelity/js/app.js`, y `appinfo.json`.
-- Crear el tag de Git localmente y subirlo al repositorio remoto (`git tag -a vX.X.XX -m "..." && git push origin vX.X.XX`).
-- Crear la Release en GitHub con el archivo `.ipk` compilado adjunto (`gh release create vX.X.XX dist/com.webosflux.xuptertv.fidelity_X.X.XX_all.ipk --title "..." --notes "..."`).
-- **Excepción única:** SOLO se omitirá la subida del tag y la creación del release si el usuario indica explícitamente: **"no la subas"** o **"no subas el tag"**.
+Para la entrega y publicación de versiones:
+- Al incrementar la versión o compilar, es **OBLIGATORIO** compilar el `.ipk`, actualizar `version.json` (versión, `ipkUrl`, sha256 del IPK generado, changelog y fecha), `currentVer` en `webos/fidelity/js/app.js`, y `appinfo.json`.
+- **Entrega obligatoria previa:** Siempre entregar el archivo `.ipk` compilado al usuario primero para que lo pruebe.
+- **Confirmación antes de Release:** **NO** subir el tag de git a GitHub ni crear la Release en GitHub automáticamente sin la confirmación explícita del usuario (*"siempre dame la ipk y luego yo te confirmo la release"*). Una vez que el usuario lo confirme explícitamente, se sube el tag (`git tag -a vX.X.XX ... && git push origin vX.X.XX`) y se crea la Release en GitHub (`gh release create ...`).
 
 ---
 

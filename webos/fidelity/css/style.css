@@ -1087,11 +1087,11 @@ div, section, span { outline: none; }
   display: none;
 }
 
-/* mLayoutButtons : 80px / 540px ; detail_button_style 276x68 */
+/* mLayoutButtons : 80px / 450px ; detail_button_style */
 .detail-buttons {
   position: absolute;
-  left: 80px; top: 540px;
-  height: 68px;
+  left: 80px; top: 450px;
+  height: 52px;
   white-space: nowrap;
 }
 .detail-btn {
@@ -1104,61 +1104,124 @@ div, section, span { outline: none; }
   -ms-flex-align: center;
   align-items: center;
   float: left;
-  width: 276px; height: 68px;
-  margin-right: 30px;
-  background: rgba(102,102,102,.8);   /* color_vod_btn_bg rgba(102,102,102,0.8) */
+  width: auto;
+  min-width: 170px;
+  height: 50px;
+  padding: 0 18px;
+  margin-right: 18px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  cursor: pointer;
+  box-sizing: border-box;
   vertical-align: top;
 }
 .detail-btn:last-child { margin-right: 0; }
 .detail-btn img {
-  margin-left: 47px;
-  margin-top: 13px;
-  margin-bottom: 12px;
-  margin-right: 8px;
-  width: auto; height: 43px;
+  margin-left: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  margin-right: 10px;
+  width: 26px; height: 26px;
 }
 .detail-btn span {
-  width: 160px;
+  width: auto;
   overflow: hidden;
-  text-align: center;
-  font-size: 26px;
-  line-height: 68px;
+  text-align: left;
+  font-size: 22px;
+  line-height: 50px;
   color: #ffffff;
   white-space: nowrap;
 }
 .detail-btn.is-focused {
   background: linear-gradient(135deg, #e4a434 0%, #b60707 100%);
+  border-color: #e4a434;
 }
-.detail-btn.is-selected { background: rgba(177, 20, 30, .92); }
+.detail-btn.is-selected {
+  background: rgba(177, 20, 30, .92);
+  border-color: #b60707;
+}
 
-/* VodDetailBottomScrollView : marginTop 610px */
+/* VodDetailBottomScrollView : starts at 515px */
 .detail-bottom {
   position: absolute;
-  left: 0; top: 610px;
-  width: 1920px; height: 470px;
+  left: 0; top: 515px;
+  width: 1920px; height: 555px;
   overflow: visible;
 }
-/* flChoose : 280x53 season dropdown, white 1px box. */
+.detail-seasons-rail {
+  position: absolute;
+  left: 80px; top: 8px;
+  max-width: 600px; height: 44px;
+  display: -webkit-box;
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+}
+.detail-seasons-rail::-webkit-scrollbar,
+.detail-ranges::-webkit-scrollbar,
+.detail-episodes::-webkit-scrollbar,
+.detail-grid::-webkit-scrollbar {
+  display: none;
+}
+.detail-season-btn {
+  display: inline-block;
+  height: 42px;
+  padding: 0 20px;
+  margin-right: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #e0e0e0;
+  font-size: 22px;
+  line-height: 40px;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.detail-season-btn.is-selected {
+  border-color: #e4a434;
+  color: #ffffff;
+  background: rgba(228, 164, 52, 0.22);
+  font-weight: bold;
+}
+.detail-season-btn.is-focused {
+  border-color: #e4a434;
+  outline: 2px solid #e4a434;
+  outline-offset: 1px;
+  background: #e4a434;
+  color: #000000;
+  font-weight: bold;
+}
+
+/* flChoose : season badge */
 .detail-season {
   position: absolute;
-  border: 1px solid #ffffff;
-  background: #000000;
+  left: 80px; top: 8px;
+  width: 180px; height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
   box-sizing: border-box;
+  display: -webkit-box;
+  display: flex;
+  -webkit-box-align: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  justify-content: center;
   cursor: pointer;
   z-index: 20;
 }
 .detail-season .season-text {
-  position: absolute;
-  left: 22px; top: 0;
-  height: 51px;
-  font-size: 28px;
-  line-height: 51px;
+  font-size: 22px;
+  line-height: 40px;
   color: #ffffff;
+  font-weight: 600;
 }
 .detail-season .season-arrow {
   position: absolute;
-  right: 18px; top: 16px;
-  width: 20px; height: 18px;
+  right: 14px; top: 12px;
+  width: 16px; height: 16px;
   transition: transform 0.25s ease;
 }
 .detail-season .season-arrow.is-open {
@@ -1167,13 +1230,13 @@ div, section, span { outline: none; }
 .detail-season.is-focused {
   border-color: #e4a434;
   outline: 2px solid #e4a434;
-  outline-offset: -2px;
+  outline-offset: -1px;
 }
 
 /* Season Popup (pop_select_season + item_select_season) */
 .season-popup {
   position: absolute;
-  left: 80px; top: 96px;
+  left: 80px; top: 54px;
   width: 280px;
   max-height: 330px;
   background: #ffffff;
@@ -1225,82 +1288,137 @@ div, section, span { outline: none; }
   font-weight: bold;
 }
 
-/* mSelectionView : range tabs 150x46, 10px gap. */
-.detail-range {
-  text-align: center;
-  font-size: 30px;
-  line-height: 46px;
-  color: #ffffff;
-}
-.detail-range.is-selected { color: #e4a434; font-weight: bold; }
-.detail-range.is-focused {
-  outline: 2px solid #e4a434;
-  outline-offset: -2px;
-}
-
-/* Episode tiles : 150x65, background #464b54. */
-.detail-episodes {
+/* mSelectionView : range tabs flex row */
+.detail-ranges {
+  position: absolute;
+  left: 280px; top: 8px;
+  right: 80px; height: 44px;
+  display: -webkit-box;
+  display: flex;
+  flex-direction: row;
   overflow-x: auto;
   overflow-y: hidden;
+  white-space: nowrap;
+}
+.detail-ranges.no-seasons {
+  left: 80px;
+}
+.detail-range {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  height: 42px;
+  padding: 0 16px;
+  margin-right: 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.45);
+  font-size: 22px;
+  line-height: 40px;
+  color: #e0e0e0;
+  cursor: pointer;
+  box-sizing: border-box;
+  text-align: center;
+}
+.detail-range.is-selected {
+  color: #ffaa00;
+  font-weight: bold;
+  border-color: #ffaa00;
+  background: rgba(255, 170, 0, 0.16);
+}
+.detail-range.is-focused {
+  outline: 2px solid #e4a434;
+  outline-offset: 1px;
+  background: #e4a434;
+  color: #000000;
+  font-weight: bold;
+}
+
+/* Episode tiles : flex row */
+.detail-episodes {
+  position: absolute;
+  left: 80px; top: 60px;
+  right: 80px; height: 50px;
+  display: -webkit-box;
+  display: flex;
+  flex-direction: row;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
 }
 .detail-episode {
-  background: #464b54;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 92px; height: 46px;
+  margin-right: 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   cursor: pointer;
-  border-radius: 2px;
+  box-sizing: border-box;
+  text-align: center;
 }
-.detail-episode .ep-num,
-.detail-episode .ep-play {
-  display: block;
-  font-size: 30px;
-  line-height: 65px;
+.detail-episode .ep-num {
+  font-size: 24px;
+  line-height: 46px;
+  font-weight: 700;
   color: #ffffff;
+  text-align: center;
+  width: 100%;
 }
 .detail-episode.is-playing {
   background: linear-gradient(135deg, #e4a434 0%, #b60707 100%);
+  border-color: #e4a434;
   color: #ffffff;
   font-weight: bold;
 }
 .detail-episode.is-focused {
-  outline: 3px solid #e4a434;
-  outline-offset: -3px;
+  outline: 2px solid #e4a434;
+  outline-offset: 1px;
+  background: #e4a434;
+}
+.detail-episode.is-focused .ep-num {
+  color: #000000;
+  font-weight: bold;
 }
 
 /* mTextRelated + mGridRelated. */
 .detail-related {
   position: absolute;
-  left: 80px; top: 25px;
-  height: 44px;
-  font-size: 36px;
-  line-height: 44px;
+  left: 80px;
+  font-size: 24px;
+  line-height: 32px;
   font-weight: bold;
   color: #ffffff;
 }
 .detail-grid {
   position: absolute;
-  left: 80px; top: 91px;
-  right: 90px;
-  height: 380px;
+  left: 80px;
+  right: 80px;
+  display: -webkit-box;
+  display: flex;
+  flex-direction: row;
+  overflow-x: auto;
+  overflow-y: hidden;
   white-space: nowrap;
 }
 .detail-grid .cell {
   position: relative;
   display: inline-block;
-  width: 210px; height: 380px;
-  margin-right: 40px;               /* horizontalMargin 40px */
+  flex-shrink: 0;
+  margin-right: 20px;
   vertical-align: top;
 }
 .detail-grid .cell .poster {
   position: absolute;
   left: 0; top: 0;
-  width: 210px; height: 308px;
 }
 .detail-grid .d-name {
   position: absolute;
-  left: 0; right: 0; top: 312px;
-  height: 44px;
-  font-size: 32px;
-  line-height: 44px;
+  left: 0; right: 0;
   color: #c4c4c4;
   text-align: center;
   white-space: nowrap;
@@ -1798,6 +1916,12 @@ div, section, span { outline: none; }
   width: 300px; height: 300px;
   /* The QR bitmap is downloaded from the backend; no bundled asset exists. */
   background: transparent;
+}
+.fb-qr-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 12px;
 }
 .fb-qr span {
   position: absolute; left: 0; right: 0; top: 134px;

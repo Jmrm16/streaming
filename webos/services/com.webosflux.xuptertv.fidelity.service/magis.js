@@ -952,15 +952,95 @@ function home(e, r, t) {
     if (s) return t(s);
     call(
       "getNextColumns",
-      { columnCode: ROOT_CODES[e], pageNum: r, pageSize: 60, version: "" },
+      { columnCode: ROOT_CODES[e], pageNum: r, pageSize: 120, version: "" },
       function (s, a) {
         if (s) return t(s);
         var o = itemsFromTree(a, e);
-        ((treeCache[n] = { at: Date.now(), items: o }),
-          t(null, { root: e, pageNum: r, items: o, cached: !1 }));
+        enrichCatalog(e, o, function (enriched) {
+          ((treeCache[n] = { at: Date.now(), items: enriched }),
+            t(null, { root: e, pageNum: r, items: enriched, cached: !1 }));
+        });
       }
     );
   });
+}
+var ROOT_SEEDS = {
+  movies: [
+    { q: "2026", row: "Novedades 2026" },
+    { q: "2025", row: "Novedades 2025" },
+    { q: "disney", row: "Disney Movie" },
+    { q: "marvel", row: "Colección de Marvel" }
+  ],
+  series: [
+    { q: "disney", row: "Disney Series" },
+    { q: "netflix", row: "Netflix Series" },
+    { q: "hbo", row: "Series HBO" }
+  ],
+  kids: [
+    { q: "disney", row: "Disney Movie" },
+    { q: "animacion", row: "Película de Animación" }
+  ],
+  anime: [
+    { q: "anime", row: "Anime Asiático" },
+    { q: "naruto", row: "Serie de Anime" }
+  ],
+  featured: [
+    { q: "2026", row: "Novedades 2026" },
+    { q: "2025", row: "Novedades 2025" }
+  ]
+};
+function enrichCatalog(root, baseItems, callback) {
+  var seeds = ROOT_SEEDS[root];
+  if (!seeds || !seeds.length) {
+    return callback(baseItems || []);
+  }
+  var seen = {},
+    out = baseItems ? baseItems.slice() : [],
+    targetCategory = ROOT_CATEGORY[root] || "",
+    MAX_ITEMS = 180;
+
+  for (var i = 0; i < out.length; i++) {
+    if (out[i] && out[i].id) {
+      seen[out[i].id] = !0;
+    }
+  }
+
+  if (out.length >= MAX_ITEMS) {
+    return callback(out);
+  }
+
+  var idx = 0;
+  var nextSeed = function () {
+    if (idx >= seeds.length || out.length >= MAX_ITEMS) {
+      return callback(out);
+    }
+    var seed = seeds[idx++];
+    search(seed.q, 1, function (err, res) {
+      if (!err && res && res.items && res.items.length) {
+        for (var k = 0; k < res.items.length; k++) {
+          if (out.length >= MAX_ITEMS) break;
+          var itm = res.items[k];
+          if (itm && itm.id && !seen[itm.id]) {
+            if ("movies" === root && "teleplay" === itm.type) continue;
+            if ("series" === root && "movie" === itm.type) continue;
+            if (
+              targetCategory &&
+              (!itm.category || -1 === itm.category.indexOf(targetCategory))
+            ) {
+              itm.category = targetCategory;
+            }
+            if (!itm.row) {
+              itm.row = seed.row;
+            }
+            seen[itm.id] = !0;
+            out.push(itm);
+          }
+        }
+      }
+      nextSeed();
+    });
+  };
+  nextSeed();
 }
 function column(e, r, t) {
   "function" == typeof r && ((t = r), (r = 1));
@@ -979,28 +1059,30 @@ function column(e, r, t) {
       );
     }));
 }
-function search(e, r) {
-  var t = trim(e);
-  if (!t) return r(null, { items: [] });
-  var n = t.toLowerCase(),
-    s = searchCache[n];
+function search(e, r, t) {
+  "function" == typeof r && ((t = r), (r = 1));
+  var n = trim(e);
+  if (!n) return t(null, { items: [] });
+  var page = Math.max(1, parseInt(r, 10) || 1),
+    cacheKey = n.toLowerCase() + ":p" + page,
+    s = searchCache[cacheKey];
   if (s && Date.now() - s.at < SEARCH_TTL)
-    return r(null, { items: s.items, cached: !0 });
+    return t(null, { items: s.items, cached: !0 });
   ensureSession(function (e) {
-    if (e) return r(e);
+    if (e) return t(e);
     call(
       "v3/searchByName",
       {
-        value: t,
+        value: n,
         type: "0",
         columnId: "",
         filter: "",
-        pageNum: 1,
+        pageNum: page,
         pageSize: 50,
       },
-      function (e, t) {
-        if (e) return r(e);
-        var s = t && t.searchItemList,
+      function (e, rResp) {
+        if (e) return t(e);
+        var s = rResp && rResp.searchItemList,
           a = [],
           o = {};
         if (s && s.length)
@@ -1012,8 +1094,8 @@ function search(e, r) {
                 d && !o[d.id] && ((o[d.id] = !0), a.push(d), remember(d));
               }
           }
-        ((searchCache[n] = { at: Date.now(), items: a }),
-          r(null, { items: a, total: t && t.totalSize, cached: !1 }));
+        ((searchCache[cacheKey] = { at: Date.now(), items: a }),
+          t(null, { items: a, total: rResp && rResp.totalSize, cached: !1 }));
       }
     );
   });
@@ -1313,9 +1395,22 @@ function xTier(e) {
             ? 3
             : 4;
 }
+function audioTrackPenalty(e) {
+  var a = trim((e && (e.audioInfo || e.audio || e.language)) || "").toLowerCase();
+  if (!a) return 0;
+  if (/latino|latam|419|\b(?:mx|co|ar|cl|pe|ve|ec|uy|py|bo|do|pr)\b|am[eé]rica latina/.test(a))
+    return 0;
+  if (/^(?:es|spa|esp)\b|español|spanish/.test(a)) {
+    if (/españa|espana|castellano|\bes\b/.test(a)) return 400;
+    return 50;
+  }
+  if (/^(?:en|eng|ing)\b|english|ingl[eé]s/.test(a)) return 250;
+  if (/^(?:pt|por|bra)\b|portugu[eé]s|brasil|brazil/.test(a)) return 1500;
+  return 300;
+}
 function xQScore(e) {
   var t = trackHeight(e),
-    r = mediaScore(e) + 1e3 * xTier(t),
+    r = mediaScore(e) + 1e3 * xTier(t) + audioTrackPenalty(e),
     n = trim(e && e.encodeFormat)
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "");
@@ -1332,7 +1427,11 @@ function collectTracks(e) {
       s[a] && trim(s[a].contentId) && r.push(s[a]);
   return (
     r.sort(function (e, r) {
-      return mediaScore(e) - mediaScore(r);
+      return (
+        mediaScore(e) +
+        audioTrackPenalty(e) -
+        (mediaScore(r) + audioTrackPenalty(r))
+      );
     }),
     r
   );
@@ -1725,8 +1824,14 @@ function parseM3u(e) {
   }
   return t;
 }
+var m3uCache = {},
+  M3U_CACHE_TTL = 36e5;
 function fetchM3u(e, r) {
   if (!e) return r(new Error("URL de addon requerida"));
+  var cached = m3uCache[e];
+  if (cached && Date.now() - cached.at < M3U_CACHE_TTL) {
+    return r(null, cached.data);
+  }
   var t = 0 === e.indexOf("https://") ? https : http,
     n = url.parse(e);
   ((n.rejectUnauthorized = !1),
@@ -1747,8 +1852,9 @@ function fetchM3u(e, r) {
           n.push(e);
         }),
           t.on("end", function () {
-            var e = parseM3u(Buffer.concat(n).toString("utf8"));
-            r(null, e);
+            var parsed = parseM3u(Buffer.concat(n).toString("utf8"));
+            m3uCache[e] = { at: Date.now(), data: parsed };
+            r(null, parsed);
           }));
       });
       (a.on("error", function (e) {
