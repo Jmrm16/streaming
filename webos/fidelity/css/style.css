@@ -4332,7 +4332,9 @@ div, section, span { outline: none; }
 .dg-report {
   height: 450px;
   padding: 16px 22px;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
   white-space: pre-wrap;
   font-family: monospace;
   font-size: 22px;
@@ -4393,16 +4395,20 @@ div, section, span { outline: none; }
   top: 50%;
   transform: translate(-50%, -50%);
   width: 980px;
+  max-width: 92vw;
   max-height: 720px;
+  max-height: 86vh;
   background: #181b20;
   border-radius: 16px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.95);
   border: 1.5px solid rgba(255, 255, 255, 0.14);
 }
 .du-header {
+  flex: 0 0 auto;
   padding: 30px 40px 20px;
   background: linear-gradient(180deg, #242932 0%, #1c2027 100%);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -4430,11 +4436,13 @@ div, section, span { outline: none; }
 }
 .du-body {
   padding: 28px 40px;
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
 .du-section-title {
+  flex: 0 0 auto;
   font-size: 20px;
   font-weight: 600;
   color: #d1d5db;
@@ -4448,8 +4456,10 @@ div, section, span { outline: none; }
   color: #e5e7eb;
   font-size: 21px;
   line-height: 32px;
-  min-height: 90px;
+  min-height: 60px;
   max-height: 180px;
+  max-height: 24vh;
+  flex: 1 1 auto;
   overflow-y: auto;
   white-space: pre-wrap;
   margin-bottom: 24px;
@@ -4484,6 +4494,7 @@ div, section, span { outline: none; }
   margin-top: 4px;
 }
 .du-footer {
+  flex: 0 0 auto;
   padding: 20px 40px 30px;
   display: flex;
   gap: 20px;

@@ -1128,10 +1128,14 @@ which node 2>/dev/null || echo "sin node en PATH"
 node -v 2>&1
 echo
 echo "=== APP INSTALADA ==="
-for d in /media/developer/apps/usr/palm/applications/$APPID /media/cryptofs/apps/usr/palm/applications/$APPID /usr/palm/applications/$APPID; do
+for d in /media/developer/apps/usr/palm/applications/$APPID /media/cryptofs/apps/usr/palm/applications/$APPID /usr/palm/applications/$APPID /media/developer/apps/usr/palm/applications/* ; do
   if [ -d "$d" ]; then
-    echo "DIR $d"
-    grep -o '"version"[^,]*' "$d/appinfo.json" 2>/dev/null
+    case "$d" in
+      *.fidelity|*/$APPID)
+        echo "DIR $d"
+        sed -n 's/.*"version"[^"]*"\([^"]*\)".*/  version: \1/p' "$d/appinfo.json" 2>/dev/null
+        ;;
+    esac
   fi
 done
 echo
@@ -1142,29 +1146,54 @@ for d in /media/developer/apps/usr/palm/services/$SVCID /media/cryptofs/apps/usr
     echo "DIR $d"
     SVC="$d"
     ls -l "$d" 2>&1
+    echo "--- modulos presentes ---"
+    ls "$d"/*.js 2>/dev/null | sed 's#.*/##' | tr '\n' ' '
+    echo
   fi
 done
-[ -z "$SVC" ] && echo "NO ENCONTRADO el directorio del servicio"
+[ -z "$SVC" ] && echo "NO ENCONTRADO el directorio del servicio en las rutas conocidas"
+if [ -z "$SVC" ]; then
+  echo "--- busqueda alternativa ---"
+  for base in /media/developer/apps/usr/palm/services /media/cryptofs/apps/usr/palm/services; do
+    [ -d "$base" ] && ls -d "$base"/*fidelity* 2>/dev/null
+  done
+fi
 echo
 echo "=== PROCESO DEL SERVICIO ==="
 ps -ef 2>/dev/null | grep -i "fidelity.service" | grep -v grep || echo "no hay proceso del servicio"
 echo
+echo "=== PUERTOS LOCALES (8787 relay / 8910 api) ==="
+netstat -lnt 2>/dev/null | grep -E "8787|8910" || echo "netstat no disponible o puertos cerrados"
+echo
 echo "=== LUNA: PING ==="
 for LS in luna-send luna-send-pub /usr/bin/luna-send /usr/sbin/luna-send; do
-  if command -v "$LS" >/dev/null 2>&1; then
+  if command -v "$LS" >/dev/null 2>&1 || [ -x "$LS" ]; then
     echo "probando $LS"
     "$LS" -n 1 -f luna://$SVCID/ping '{}' 2>&1 | head -c 400
     echo
   fi
 done
 echo
-echo "=== API LOCAL HTTP (respaldo) ==="
+echo "=== API LOCAL HTTP (respaldo de Luna) ==="
 if command -v wget >/dev/null 2>&1; then
-  wget -q -O - "http://127.0.0.1:8910/ping" 2>&1 | head -c 400
+  echo "--- ping ---"
+  wget -T 20 -q -O - "http://127.0.0.1:8910/ping" 2>&1 | head -c 1600
+  echo
+  echo "--- liveLog (congelamientos y errores del reproductor) ---"
+  wget -T 20 -q -O - "http://127.0.0.1:8910/liveLog?q=%7B%7D" 2>&1 | head -c 2500
+  echo
+  echo "--- home (catalogo del portal) ---"
+  wget -T 40 -q -O - "http://127.0.0.1:8910/home?q=%7B%22root%22%3A%22movies%22%7D" 2>&1 | head -c 600
+  echo
+  echo "--- liveChannels ---"
+  wget -T 40 -q -O - "http://127.0.0.1:8910/liveChannels?q=%7B%22page%22%3A1%2C%22pageSize%22%3A3%7D" 2>&1 | head -c 600
+  echo
+  echo "--- netdiag (DNS por portal, DoH vs DNS del operador) ---"
+  wget -T 120 -q -O - "http://127.0.0.1:8910/netdiag?q=%7B%7D" 2>&1 | head -c 3500
+  echo
 else
   echo "sin wget en la TV"
 fi
-echo
 echo
 echo "=== SINTAXIS DE LOS MODULOS (Node de la TV) ==="
 if [ -n "$SVC" ]; then
@@ -1177,18 +1206,22 @@ if [ -n "$SVC" ]; then
       node -e "new Function(require('fs').readFileSync('$f','utf8'));" 2>&1 | head -n 4
     fi
   done
-  echo "--- carga de modulos ---"
-  if timeout -t 1 true >/dev/null 2>&1; then TO="timeout -t 10"; else TO="timeout 10"; fi
-  $TO node -e "require('./magis');require('./proxy');require('./dnsx');require('./netdiag');require('./upstream');console.log('MODULOS OK')" 2>&1 | head -n 20
+  echo "--- carga de modulos (solo los que existen) ---"
+  MODS=""
+  for m in magis proxy dnsx netdiag updater ts-indexer ffmpeg-relay upstream tunnel; do
+    [ -f "./$m.js" ] && MODS="$MODS'./$m',"
+  done
+  if timeout -t 1 true >/dev/null 2>&1; then TO="timeout -t 12"; else TO="timeout 12"; fi
+  $TO node -e "var m=[$MODS];for(var i=0;i<m.length;i++)require(m[i]);console.log('MODULOS OK (' + m.join(',') + ')')" 2>&1 | head -n 20
   echo "--- permisos ffmpeg ---"
   ls -l ffmpeg 2>&1
 fi
 echo
 echo "=== LOGS ==="
-for f in /var/log/luna-service2.log /var/log/messages /tmp/xuper-relay.log; do
+for f in /var/log/luna-service2.log /var/log/messages /tmp/xuper-relay.log /tmp/xuper-service.log; do
   if [ -f "$f" ]; then
     echo "--- $f ---"
-    tail -n 400 "$f" 2>/dev/null | grep -i -E "xupter|fidelity|denied|unknown method|syntaxerror|no se pudo cargar" | tail -n 40
+    tail -n 400 "$f" 2>/dev/null | grep -i -E "xupter|fidelity|denied|unknown method|syntaxerror|no se pudo cargar|error|basic" | tail -n 40
   fi
 done
 echo "--- logread ---"

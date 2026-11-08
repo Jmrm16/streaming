@@ -203,17 +203,21 @@ function resetSessionAfterLiveFailure() {
     (liveResolveCache = {}));
 }
 var queue = [],
+  fastQueue = [],
   lastCallAt = 0,
   queueToken = 0,
   QUEUE_WATCHDOG_MS = 12e3;
-function enqueue(e) {
-  (queue.push(e), drain());
+function enqueue(e, fast) {
+  ((fast ? fastQueue : queue).push(e), drain());
+}
+function nextJob() {
+  return fastQueue.length ? fastQueue.shift() : queue.shift();
 }
 function releaseQueue(e) {
   e === queueToken && ((session.busy = !1), drain());
 }
 function drain() {
-  if (!session.busy && queue.length) {
+  if (!session.busy && (queue.length || fastQueue.length)) {
     var e = lastCallAt + RATE_MS - Date.now();
     if (e > 0)
       return (
@@ -223,7 +227,7 @@ function drain() {
           ((session.busy = !1), drain());
         }, e)
       );
-    var r = queue.shift(),
+    var r = nextJob(),
       t = ++queueToken;
     ((session.busy = !0),
       (lastCallAt = Date.now()),
@@ -535,7 +539,7 @@ function call(e, r, t, n) {
         }
         n(a, o);
       });
-    }));
+    }, t.urgent));
 }
 var seedPool = [],
   seedsAt = 0,
@@ -778,7 +782,7 @@ function ensureSession(e) {
       (n.etheMac = randomHex(6).replace(/(..)(?=.)/g, "$1:")),
       (n.gatewayMac = randomHex(6).replace(/(..)(?=.)/g, "$1:")),
       (n.wifiMac = randomHex(6).replace(/(..)(?=.)/g, "$1:")),
-      call("v3/snToken", n, { baseFields: !1 }, function (e, r) {
+      call("v3/snToken", n, { baseFields: !1, urgent: !0 }, function (e, r) {
         if (e) return e.portalCode ? a(e) : s(e);
         var t = trim(r && r.snToken);
         if (!t) return a(new Error("el portal no devolvió snToken"));
@@ -804,7 +808,7 @@ function ensureSession(e) {
               matadata: "",
               signdata: "",
             },
-            { baseFields: !1 },
+            { baseFields: !1, urgent: !0 },
             function (e, r) {
               return e
                 ? e.portalCode
@@ -952,7 +956,7 @@ function home(e, r, t) {
     if (s) return t(s);
     call(
       "getNextColumns",
-      { columnCode: ROOT_CODES[e], pageNum: r, pageSize: 120, version: "" },
+      { columnCode: ROOT_CODES[e], pageNum: r, pageSize: 60, version: "" },
       function (s, a) {
         if (s) return t(s);
         var o = itemsFromTree(a, e);
@@ -997,7 +1001,7 @@ function enrichCatalog(root, baseItems, callback) {
   var seen = {},
     out = baseItems ? baseItems.slice() : [],
     targetCategory = ROOT_CATEGORY[root] || "",
-    MAX_ITEMS = 180;
+    MAX_ITEMS = 90;
 
   for (var i = 0; i < out.length; i++) {
     if (out[i] && out[i].id) {
@@ -1037,7 +1041,10 @@ function enrichCatalog(root, baseItems, callback) {
           }
         }
       }
-      nextSeed();
+      /* Se cede el bucle de eventos entre semillas: el proxy de TV en vivo
+         corre en este mismo proceso Node, y el televisor de 1 GB necesita
+         respirar para seguir enviando los segmentos sin cortes. */
+      setTimeout(nextSeed, 30);
     });
   };
   nextSeed();
@@ -1485,6 +1492,7 @@ function loadPlay(e, r, t) {
             columnId: 0,
             authType: "",
           },
+          { urgent: !0 },
           function (e, r) {
             if (e) return a(e);
             var t = r && r.episodeList && r.episodeList[0];
@@ -1873,7 +1881,7 @@ function firstCall(e, r) {
   !(function n(s) {
     if (t >= e.length) return r(s || new Error("el portal no respondió"));
     var a = e[t++];
-    call(a.path, a.bean, function (e, t) {
+    call(a.path, a.bean, { urgent: !0 }, function (e, t) {
       if (e) return n(e);
       r(null, t);
     });
@@ -1910,9 +1918,9 @@ function liveCdnsOf(e) {
   }
   return t;
 }
-function resolveLive(e, r) {
+function resolveLive(e, r, force) {
   var t = liveResolveCache[e];
-  if (t && Date.now() - t.at < LIVE_RESOLVE_CACHE_MS)
+  if (!force && t && Date.now() - t.at < LIVE_RESOLVE_CACHE_MS)
     return setTimeout(function () {
       r(null, t.stream);
     }, 0);
@@ -1965,7 +1973,7 @@ function resolveLive(e, r) {
       !(function t(u) {
         if (l >= i.length)
           return r(new Error("el portal no expuso CDN de vivo"));
-        call(i[l++], o, function (o, i) {
+        call(i[l++], o, { urgent: !0 }, function (o, i) {
           if (o) return t(o);
           var l = liveCdnsOf(i);
           if (!l.length) return t(new Error("CDN de vivo vacía"));

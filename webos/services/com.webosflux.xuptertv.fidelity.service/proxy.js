@@ -28,7 +28,18 @@ var http = require("http"),
   activeToken = null,
   activeUpstreams = [],
   TS_PACKET_BYTES = 188,
-  HLS_SEGMENT_SECONDS = 10;
+  HLS_SEGMENT_SECONDS = 10,
+  /* Contadores de diagnóstico: permiten saber desde la app si los cortes son
+     de red (errores/timeouts del CDN) o del reproductor (sin errores aquí). */
+  stats = {
+    reqs: 0,
+    errors: 0,
+    timeouts: 0,
+    badStatus: 0,
+    lastError: "",
+    lastStatus: 0,
+    lastAt: 0,
+  };
 function destroyConnection(e) {
   if (e) {
     if (e.up) {
@@ -99,7 +110,7 @@ function normalizeBackups(e) {
   }
   return t;
 }
-function add(e, t, r, n, o) {
+function add(e, t, r, n, o, live) {
   var s = crypto.randomBytes(12).toString("hex"),
     a = {
       url: e,
@@ -110,6 +121,9 @@ function add(e, t, r, n, o) {
       contentLength: 0,
       lengthWaiters: null,
       resolvedIp: n || "",
+      /* TV en vivo: sus segmentos se piden de nuevo cada pocos segundos y el
+         CDN a veces cierra el socket justo al reutilizarlo (ECONNRESET). */
+      isLive: !!live,
       at: Date.now(),
     };
   remember(s, a);
@@ -233,23 +247,26 @@ function mediaRequest(e, t, r, n) {
     Object.prototype.hasOwnProperty.call(r, c) && (p[c] = r[c]);
   var d = l ? 443 : 80,
     h = u && "80" === o.port ? 443 : o.port || d;
-  return (
-    (p.Host = o.host || s + (h !== d ? ":" + h : "")),
-    {
-      secure: l,
-      options: {
-        hostname: a,
-        host: a,
-        servername: u ? "cachefly.net" : s,
-        rejectUnauthorized: !1,
-        port: h,
-        path: o.path,
-        method: t,
-        headers: p,
-        agent: upstream.agentFor(l, a, h) || (l ? httpsAgent : httpAgent),
-      },
-    }
-  );
+  (p.Host = o.host || s + (h !== d ? ":" + h : ""));
+  var ag = upstream.agentFor(l, a, h);
+  /* Los segmentos de TV en vivo no usan el pool keep-alive: en Node 0.12 un
+     socket ocioso que el CDN cierra justo al reutilizarlo provoca ECONNRESET a
+     mitad del segmento y el <video> se queda congelado hasta 12 s. */
+  ag || (ag = e._noKeepAlive ? !1 : l ? httpsAgent : httpAgent);
+  return {
+    secure: l,
+    options: {
+      hostname: a,
+      host: a,
+      servername: u ? "cachefly.net" : s,
+      rejectUnauthorized: !1,
+      port: h,
+      path: o.path,
+      method: t,
+      headers: p,
+      agent: ag,
+    },
+  };
 }
 function sourceLength(e, t) {
   if (e.contentLength > 0) return t(null, e.contentLength);
@@ -417,11 +434,16 @@ function forward(e, t, r, n) {
           t.on("close", p),
           t.on("finish", p),
           t.on("error", p));
-        var c = (i ? https : http).request(l, function (o) {
+        var retryUpstream = null,
+          c = (i ? https : http).request(l, function (o) {
           if (((u.up = o), o.socket))
             try {
               o.socket.setNoDelay(!0);
             } catch (e) {}
+          (stats.reqs++,
+            (stats.lastStatus = o.statusCode || 0),
+            (stats.lastAt = Date.now()),
+            o.statusCode >= 400 && stats.badStatus++);
           if ((c.setTimeout(0), c.socket))
             try {
               c.socket.setTimeout(0);
@@ -498,6 +520,110 @@ function forward(e, t, r, n) {
               })
             );
           }
+          if (r._segBuf && "GET" === e.method && (o.statusCode || 200) < 400) {
+            /* Segmento de TV en vivo: se descarga completo antes de entregarlo.
+               Si el CDN corta el socket a mitad (ECONNRESET), se reintenta y el
+               <video> recibe el segmento entero en vez de uno truncado que lo
+               dejaba congelado hasta que saltaba el vigilante. */
+            var sc = [],
+              sb = 0,
+              sdone = !1,
+              sstream = !1,
+              stm = null,
+              sonData,
+              sonEnd,
+              sstop = function () {
+                stm && (clearTimeout(stm), (stm = null));
+              },
+              skick = function () {
+                sstop();
+                stm = setTimeout(function () {
+                  (stats.timeouts++, (stats.lastError = "segmento sin datos"));
+                  sfail(new Error("segmento sin datos"));
+                }, 1e4);
+              },
+              sfail = function (x) {
+                if (sdone) return;
+                sdone = !0;
+                sstop();
+                try {
+                  (o.removeListener("data", sonData),
+                    o.removeListener("end", sonEnd),
+                    o.removeListener("error", sfail));
+                } catch (x) {}
+                try {
+                  o.destroy();
+                } catch (x) {}
+                if (sstream || t.headersSent) {
+                  try {
+                    t.destroy();
+                  } catch (x) {}
+                  return void p();
+                }
+                r._segTries = (r._segTries || 0) + 1;
+                /* Primero se reintenta el mismo segmento con conexión nueva;
+                   si el CDN sigue fallando se entra en la cadena de rescate
+                   (DoH, SNI camuflado, protocolo, CDN alternativa). */
+                if (r._segTries <= 2) {
+                  p();
+                  return void forward(e, t, r, n);
+                }
+                if (r._segTries <= 4) return void retryUpstream(x);
+                try {
+                  (t.writeHead(502, {
+                    "Content-Type": "text/plain",
+                    "Access-Control-Allow-Origin": "*",
+                  }),
+                    t.end("segmento incompleto"));
+                } catch (x) {}
+                p();
+              };
+            sonData = function (chunk) {
+              if (sdone) return;
+              if (sstream) return void t.write(chunk);
+              (sc.push(chunk), (sb += chunk.length));
+              if (sb > 16777216) {
+                /* Segmento enorme: se entrega en streaming para no llenar la
+                   memoria del televisor. */
+                sstream = !0;
+                try {
+                  (t.writeHead(o.statusCode || 200, d),
+                    t.write(Buffer.concat(sc, sb)));
+                } catch (x) {
+                  return void sfail(x);
+                }
+                (sc = []), (sb = 0);
+                return;
+              }
+              skick();
+            };
+            sonEnd = function () {
+              if (sdone) return;
+              sdone = !0;
+              sstop();
+              if (sstream) {
+                try {
+                  t.end();
+                } catch (x) {
+                  p();
+                }
+                return;
+              }
+              var b = Buffer.concat(sc, sb);
+              (delete d["Content-Length"], (d["Content-Length"] = b.length));
+              try {
+                (t.writeHead(o.statusCode || 200, d), t.end(b));
+              } catch (x) {
+                p();
+              }
+            };
+            return (
+              o.on("data", sonData),
+              o.on("end", sonEnd),
+              o.on("error", sfail),
+              void skick()
+            );
+          }
           (t.writeHead(o.statusCode || 200, d),
             o.on("error", function () {
               p();
@@ -508,22 +634,21 @@ function forward(e, t, r, n) {
           try {
             c.socket.setNoDelay(!0);
           } catch (e) {}
-        (c.setTimeout(25e3, function () {
-          if (!t.headersSent) {
-            try {
-              c.abort();
-            } catch (e) {}
-            try {
-              (t.writeHead(504, {
-                "Content-Type": "text/plain",
-                "Access-Control-Allow-Origin": "*",
-              }),
-                t.end("gateway timeout"));
-            } catch (e) {}
-          }
+        (c.setTimeout(15e3, function () {
+          /* Antes, un CDN con la IP filtrada se quedaba 25 s colgado y luego
+             devolvía 504 sin probar nada más. Ahora el tiempo agotado entra
+             en la misma cadena de rescate que un error de conexión. */
+          (stats.timeouts++, (stats.lastError = "tiempo agotado"));
+          if (retryUpstream) return retryUpstream(new Error("tiempo agotado"));
+          try {
+            c.abort();
+          } catch (e) {}
           p();
         }),
-          c.on("error", function (o) {
+          (retryUpstream = function (o) {
+            (stats.errors++,
+              (stats.lastError = String((o && (o.code || o.message)) || "error")),
+              (stats.lastAt = Date.now()));
             if (r && r.url) {
               var s = urlmod.parse(r.url).hostname,
                 a = dnsx.cached(s);
@@ -557,6 +682,7 @@ function forward(e, t, r, n) {
             )
               return (
                 (r._retriedProtocol = !0),
+                (r._dnsRetry = !1),
                 /^https:\/\//i.test(r.url)
                   ? (console.log(
                       "[proxy] upstream HTTPS falló (" +
@@ -577,6 +703,34 @@ function forward(e, t, r, n) {
                     p(),
                     forward(e, t, r, n))
               );
+            /* El DNS del operador puede devolver una IP envenenada que no
+               conecta (bloqueo de anoche). Se descarta la caché y se vuelve a
+               resolver, forzando DoH, una sola vez por petición. */
+            if (
+              !t.headersSent &&
+              r &&
+              !r._dnsRetry &&
+              r.url &&
+              /^https?:\/\//i.test(r.url)
+            ) {
+              var dh = urlmod.parse(r.url).hostname;
+              if (dh && !dnsx.isIpv4(dh)) {
+                return (
+                  (r._dnsRetry = !0),
+                  dnsx.clearCache(dh),
+                  (r.resolvedIp = ""),
+                  console.log(
+                    "[proxy] upstream falló en " +
+                      dh +
+                      " (" +
+                      (o && (o.code || o.message)) +
+                      "), renovando DNS por DoH..."
+                  ),
+                  p(),
+                  forward(e, t, r, n)
+                );
+              }
+            }
             if (
               !t.headersSent &&
               r &&
@@ -598,6 +752,7 @@ function forward(e, t, r, n) {
                   (r.resolvedIp = ""),
                   (r._retriedProtocol = !1),
                   (r._maskSni = !1),
+                  (r._dnsRetry = !1),
                   p(),
                   forward(e, t, r, n)
                 );
@@ -616,6 +771,7 @@ function forward(e, t, r, n) {
               } catch (e) {}
             p();
           }),
+          c.on("error", retryUpstream),
           c.end());
       }
       function p() {
@@ -707,6 +863,9 @@ function handler(e, t) {
             duration: 0,
             backupUrls: s.backupUrls,
             backupIndex: s.backupIndex,
+            isLive: s.isLive,
+            _segBuf: !!s.isLive,
+            _noKeepAlive: !!s.isLive,
           },
           o[1]
         )
@@ -738,6 +897,7 @@ function handler(e, t) {
       }),
       void t.end("expired")
     );
+  c.isLive && (c._noKeepAlive = !0),
   -1 !== c.url.indexOf(".m3u8") || -1 === u.indexOf(".m3u8")
     ? forward(e, t, c, l)
     : sendVirtualHls(e, t, l, c);
@@ -765,4 +925,15 @@ module.exports = {
     return port;
   },
   killActiveStreams: killActiveStreams,
+  stats: function () {
+    return {
+      reqs: stats.reqs,
+      errors: stats.errors,
+      timeouts: stats.timeouts,
+      badStatus: stats.badStatus,
+      lastError: stats.lastError,
+      lastStatus: stats.lastStatus,
+      lastAt: stats.lastAt,
+    };
+  },
 };

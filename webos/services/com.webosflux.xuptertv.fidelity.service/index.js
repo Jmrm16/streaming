@@ -23,7 +23,8 @@ var magis = loadModule("./magis"),
   dnsx = loadModule("./dnsx"),
   netdiag = loadModule("./netdiag"),
   upstream = loadModule("./upstream"),
-  updater = loadModule("./updater");
+  updater = loadModule("./updater"),
+  liveLogRing = [];
 try {
   var savedProxy = JSON.parse(fs.readFileSync("/tmp/xuper-proxy.json", "utf8"));
   savedProxy &&
@@ -377,6 +378,9 @@ function startHttpApi() {
     seeds: safeValue(function () {
       return magis.seedStatus ? magis.seedStatus() : null;
     }, null),
+    proxyStats: safeValue(function () {
+      return proxy.stats ? proxy.stats() : null;
+    }, null),
   });
 }),
   service.register("setProxy", function (e) {
@@ -417,6 +421,34 @@ function startHttpApi() {
         return proxy.port();
       }, 0),
       timestamp: Date.now(),
+    });
+  }),
+  /* Eventos de TV en vivo enviados por la app (congelamientos, reintentos,
+     errores del <video>). Se guardan en memoria para el diagnóstico. */
+  service.register("liveLog", function (e) {
+    var r = (e.payload && e.payload.events) || [],
+      i,
+      v;
+    for (i = 0; i < r.length && i < 40; i++)
+      try {
+        v = r[i] || {};
+        liveLogRing.push({
+          at: Date.now(),
+          ev: String(v.ev || "").slice(0, 24),
+          t: Number(v.t) || 0,
+          rs: Number(v.rs) || 0,
+          err: Number(v.err) || 0,
+          buf: Number(v.buf) || 0,
+          ch: String(v.ch || "").slice(0, 40),
+        });
+      } catch (x) {}
+    while (liveLogRing.length > 60) liveLogRing.shift();
+    e.respond({
+      returnValue: !0,
+      events: liveLogRing,
+      proxyStats: safeValue(function () {
+        return proxy.stats ? proxy.stats() : null;
+      }, null),
     });
   }),
   service.register("home", function (e) {
@@ -528,20 +560,25 @@ function startHttpApi() {
           : t("");
       }
       if (!r.channelCode) return fail(e, new Error("channelCode requerido"));
-      magis.resolveLive(r.channelCode, function (r, a) {
-        if (r) return fail(e, r);
-        var s = urlmod.parse(a.url || "").hostname || "";
-        dnsx.resolve(s, function (r, s) {
-          var t = (s && s.ips && s.ips[0]) || "";
-          proxy.start(function (r) {
-            if (r) return fail(e, r);
-            var s = proxy.add(a.url, a.headers, 0, t, a.backupUrls);
-            ((a.proxyPath = proxy.baseUrl() + "/media/" + s + "/stream.m3u8"),
-              (a.isHls = !0),
-              respond(e, null, a));
+      magis.resolveLive(
+        r.channelCode,
+        function (r, a) {
+          if (r) return fail(e, r);
+          var s = urlmod.parse(a.url || "").hostname || "";
+          dnsx.resolve(s, function (r, s) {
+            var t = (s && s.ips && s.ips[0]) || "";
+            proxy.start(function (r) {
+              if (r) return fail(e, r);
+              var s = proxy.add(a.url, a.headers, 0, t, a.backupUrls, !0);
+              ((a.proxyPath =
+                proxy.baseUrl() + "/media/" + s + "/stream.m3u8"),
+                (a.isHls = !0),
+                respond(e, null, a));
+            });
           });
-        });
-      });
+        },
+        !!r.force
+      );
     }
   }),
   service.register("abortMedia", function (e) {
@@ -647,6 +684,10 @@ function startHttpApi() {
         (i.version = pkg.version),
         (i.layers = l),
         (i.relay = relay.state ? relay.state() : null),
+        (i.liveLog = liveLogRing.slice(-24)),
+        (i.proxyStats = safeValue(function () {
+          return proxy.stats ? proxy.stats() : null;
+        }, null)),
         (i.codec = {
           h264: r.codecH264 || "",
           hevc: r.codecHEVC || "",

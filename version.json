@@ -1,9 +1,9 @@
 {
-  "version": "2.2.87",
+  "version": "2.2.94",
   "name": "XuperTV",
   "minWebos": "1.0.0",
-  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.87/com.webosflux.xuptertv.fidelity_2.2.87_all.ipk",
-  "sha256": "E2D40F6C8C37F51042E1AFED39C09859491F20E4C7AED77FD98CCB227B7166DC",
-  "changelog": "Soporte para Magic Remote: pulsa un canal de la grilla de previsualización para cambiarlo sin salir de Inicio. Addons ahora abre el teclado virtual al seleccionar su campo de URL.",
-  "releaseDate": "2026-11-07"
+  "ipkUrl": "https://github.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/releases/download/v2.2.94/com.webosflux.xuptertv.fidelity_2.2.94_all.ipk",
+  "sha256": "9C6AE9DB43E7840388D8B537A4AB8130E16C3C1B673C44C6961A6106EDB46AC5",
+  "changelog": "TV en vivo: arreglada la lista incompleta al filtrar por categoria (por ejemplo 24/7). El portal entrega la ultima pagina VACIA cuando el total es multiplo de 20 (24/7 tiene 100 canales: cinco paginas de 20 y una sexta vacia) y el pintado de la lista vivia dentro de la condicion 'la pagina trajo canales', asi que esa pagina vacia no repintaba nada y la lista se quedaba clavada en los 20 canales de la primera pagina (terminaba en '24/7 Freddy's Nightmares'). Ahora el repintado se hace siempre que la pagina responde, incluida la vacia final, y ademas una pagina intermedia que falle se reintenta hasta dos veces antes de rendirse (antes cortaba la lista en silencio). Tambien se mantiene el aviso en pantalla si aun asi queda incompleta.",
+  "releaseDate": "2026-11-08"
 }
