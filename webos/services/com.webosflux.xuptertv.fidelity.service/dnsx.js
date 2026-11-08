@@ -34,6 +34,13 @@ var CACHE_MS = 6e5,
     { ip: "45.11.45.11", sni: "doh.dns.sb", path: "/dns-query" },
     { ip: "45.90.28.0", sni: "dns.nextdns.io", path: "/dns-query" },
     { ip: "45.90.30.0", sni: "dns.nextdns.io", path: "/dns-query" },
+    /* Respaldo adicional: algunos operadores bloquean de noche las IP anycast
+       mas conocidas (1.1.1.1, 8.8.8.8). Estos proveedores de otras redes
+       mantienen el rescate cuando eso pasa. */
+    { ip: "193.110.81.0", sni: "dns0.eu", path: "/dns-query" },
+    { ip: "185.253.5.0", sni: "dns0.eu", path: "/dns-query" },
+    { ip: "76.76.2.0", sni: "freedns.controld.com", path: "/p0/dns-query" },
+    { ip: "116.202.176.26", sni: "doh.libredns.gr", path: "/dns-query" },
   ],
   cache = {},
   dialIndex = {},
@@ -85,8 +92,14 @@ function dohQuery(e, n, r) {
         r.push(e);
       }),
         e.on("end", function () {
-          if (200 !== e.statusCode)
-            return i(new Error("DoH " + n.ip + ": HTTP " + e.statusCode));
+          if (200 !== e.statusCode) {
+            var se = new Error("DoH " + n.ip + ": HTTP " + e.statusCode);
+            /* 4xx (salvo 429) significa que el proveedor contestó: el nombre
+               no existe ahí, pero el proveedor está sano. No se castiga. */
+            se.soft =
+              e.statusCode >= 400 && e.statusCode < 500 && 429 !== e.statusCode;
+            return i(se);
+          }
           var t;
           try {
             t = JSON.parse(Buffer.concat(r).toString("utf8"));
@@ -95,8 +108,11 @@ function dohQuery(e, n, r) {
           }
           for (var o = (t && t.Answer) || [], s = [], a = 0; a < o.length; a++)
             o[a] && 1 === o[a].type && isIpv4(o[a].data) && s.push(o[a].data);
-          if (!s.length)
-            return i(new Error("DoH " + n.ip + ": sin registros A"));
+          if (!s.length) {
+            var nx = new Error("DoH " + n.ip + ": sin registros A");
+            nx.soft = !0;
+            return i(nx);
+          }
           i(null, s);
         }));
     }
@@ -154,60 +170,88 @@ function systemLookup(e, n) {
     o(e);
   }
 }
-var DOH_DOWN_MS = 3e5,
-  dohDownUntil = 0;
+/* Antes, si una consulta fallaba en TODOS los proveedores se apagaba DoH
+   durante 5 minutos para cualquier dominio. En redes que filtran por franjas
+   horarias eso dejaba a la app resolviendo con el DNS envenenado del operador
+   justo cuando el bloqueo estaba activo. Ahora cada proveedor entra en
+   cuarentena corta por separado y DoH se reintenta continuamente. */
+var DOH_DOWN_MS = 2e4,
+  dohDownUntil = 0,
+  PROVIDER_COOLDOWN_MS = 45e3,
+  providerDown = {};
+function providerReady(e) {
+  return now() >= (providerDown[e.ip] || 0);
+}
+function providerFailed(e) {
+  providerDown[e.ip] = now() + PROVIDER_COOLDOWN_MS;
+}
+function providerOk(e) {
+  ((providerDown[e.ip] = 0), (dohDownUntil = 0));
+}
 function queryDoh(e, n) {
-  if (now() < dohDownUntil)
-    return n(new Error("DoH no disponible en esta red"), []);
-  var r = PROVIDERS.length,
-    t = !1,
-    o = [],
-    s = [],
-    i = null;
-  function a(e, r, o) {
-    if (!t) {
-      ((t = !0), i && (clearTimeout(i), (i = null)));
-      for (var a = 0; a < s.length; a++)
-        try {
-          s[a].abort();
-        } catch (e) {}
-      if (e) return ((dohDownUntil = now() + DOH_DOWN_MS), n(e, []));
-      ((dohDownUntil = 0), n(null, r, o));
-    }
+  var list = [],
+    i,
+    pending,
+    done = !1,
+    socks = [],
+    errs = [],
+    timer = null;
+  for (i = 0; i < PROVIDERS.length; i++)
+    providerReady(PROVIDERS[i]) && list.push(PROVIDERS[i]);
+  if (!list.length) {
+    /* Todos en cuarentena: respuesta inmediata para que la app caiga al DNS
+       del televisor sin esperar, y en 45 s se vuelve a intentar DoH. */
+    return n(new Error("DoH en cuarentena en esta red"), []);
   }
-  var u,
-    c = function (n) {
-      var t = dohQuery(e, n, function (e, t) {
-        if ((r--, e))
-          return (
-            o.push(e.message),
-            void (0 === r && a(new Error(o.join(" | ")), []))
-          );
-        a(null, t, n);
-      });
-      s.push(t);
-    };
-  for (u = 0; u < 6 && u < PROVIDERS.length; u++) c(PROVIDERS[u]);
-  PROVIDERS.length > 6 &&
-    (i = setTimeout(function () {
-      if (((i = null), !t))
-        for (var e = 6; e < PROVIDERS.length; e++) c(PROVIDERS[e]);
+  pending = list.length;
+  var finish = function (err, ips) {
+    if (done) return;
+    done = !0;
+    if (timer) (clearTimeout(timer), (timer = null));
+    for (var k = 0; k < socks.length; k++)
+      try {
+        socks[k].abort();
+      } catch (e) {}
+    if (err) return ((dohDownUntil = now() + DOH_DOWN_MS), n(err, []));
+    ((dohDownUntil = 0), n(null, ips));
+  };
+  var attempt = function (p) {
+    var req = dohQuery(e, p, function (err, ips) {
+      pending--;
+      if (err) {
+        err.soft || providerFailed(p);
+        errs.push(err.message);
+        if (0 === pending && !done) finish(new Error(errs.join(" | ")), []);
+        return;
+      }
+      (providerOk(p), finish(null, ips));
+    });
+    socks.push(req);
+  };
+  for (i = 0; i < 6 && i < list.length; i++) attempt(list[i]);
+  list.length > 6 &&
+    (timer = setTimeout(function () {
+      if (((timer = null), !done))
+        for (var k = 6; k < list.length; k++) attempt(list[k]);
     }, 600));
 }
-function resolve(e, n) {
+function resolve(e, n, a) {
+  a = a || {};
   if (!(e = String(e || ""))) return n(new Error("host vacio"));
   if (isIpv4(e)) return n(null, { host: e, ips: [e], source: "ip", at: now() });
   var r = cached(e);
-  if (r) return n(null, { host: e, ips: r.ips, source: r.source, at: r.at });
-  function t(r) {
-    if ("doh" === mode) return n(r || new Error("DoH sin respuesta"));
+  if (r && !(a.preferDoh && "system" === r.source))
+    return n(null, { host: e, ips: r.ips, source: r.source, at: r.at });
+  var t = function (r) {
+    if ("doh" === mode || a.dohOnly)
+      return n(r || new Error("DoH sin respuesta"));
     systemLookup(e, function (t, o) {
       if (t) return n(r || t);
       var s = keep(e, o, "system", SYSTEM_CACHE_MS);
       n(null, { host: e, ips: s.ips, source: s.source, at: s.at });
     });
-  }
-  if ("system" === mode) return t(null);
+  };
+  if ("system" === mode && !a.dohOnly) return t(null);
   queryDoh(e, function (r, o) {
     if (r || !o.length) return t(r);
     var s = keep(e, o, "doh", CACHE_MS);

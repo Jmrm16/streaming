@@ -1,6 +1,6 @@
 !(function () {
   "use strict";
-  var APP_VERSION = "2.2.87";
+  var APP_VERSION = "2.2.94";
   function e(e, t, a) {
     var i = document.createElement(e);
     return (t && (i.className = t), null != a && (i.textContent = a), i);
@@ -2916,7 +2916,8 @@
         (Et = !1),
         F.length || ((X.channel = 0), Qt(liveFavoritesOnly), hr()));
       var n = 1,
-        r = !1;
+        r = !1,
+        fails = 0;
       !(function e() {
         P(
           "liveChannels",
@@ -2934,6 +2935,15 @@
                     (u.channelCode && d[u.channelCode]) ||
                     (u.channelCode && (d[u.channelCode] = !0), F.push(u));
                 }
+              }
+              /* El pintado NO puede vivir dentro de "l.length": la última
+                 página del portal puede llegar VACÍA. La categoría 24/7 tiene
+                 exactamente 100 canales = 5 páginas de 20 y una sexta vacía;
+                 esa sexta página no repintaba nada y la lista se quedaba
+                 clavada en los 20 canales de la primera página (el último se
+                 veía como "24/7 Freddy's Nightmares"). */
+              if (!o) {
+                fails = 0;
                 var isFirstPage = 1 === n,
                   isLastPage = !(s && s.hasMore && l.length);
                 ((Et = !0),
@@ -2986,6 +2996,16 @@
                 !o && s && s.hasMore && l.length)
               )
                 return (n++, void setTimeout(e, 25));
+              /* Página intermedia que falló: reintentarla antes de rendirse.
+                 Antes se cortaba la lista en silencio (con "Todos" son 52
+                 páginas y basta que una no conteste para perder el resto). */
+              if (o && Et && fails < 2)
+                return (fails++, void setTimeout(e, 900));
+              if (o && Et) {
+                (Qt(liveFavoritesOnly),
+                  Yt("Lista incompleta: el portal no respondió. Vuelve a elegir la categoría."));
+                return void (At = !1);
+              }
               ((At = !1),
                 o &&
                   !Et &&
@@ -5269,11 +5289,13 @@
       ),
         t.appendChild(i(e("div", "sp-hr"), 0, 216, 1478, 1)));
       var n = e("div", "dg-btn focusable", "Analizar red");
-      i(n, 52, 242, 330, 66);
+      i(n, 52, 242, 280, 66);
       var r = e("div", "dg-btn dg-report-btn focusable", "Generar reporte");
-      i(r, 400, 242, 330, 66);
+      i(r, 346, 242, 320, 66);
+      var q = e("div", "dg-btn dg-report-btn focusable", "Ver TV en vivo");
+      i(q, 680, 242, 300, 66);
       var o = e("div", "dg-summary", 'Pulsa "Analizar red" para empezar.');
-      i(o, 750, 242, 676, 66);
+      i(o, 994, 242, 520, 66);
       var s = e("div", "dg-head");
       (i(s, 52, 336, 1380, 40),
         s.appendChild(e("span", "dg-host", "Dominio")),
@@ -5293,6 +5315,70 @@
         i(c, 52, 872, 1380, 150),
         (n._activate = function () {
           Za(n, o, l);
+        }),
+        (q._activate = function () {
+          P(
+            "liveLog",
+            { events: [] },
+            function (err, data) {
+              var evs = (data && data.events) || [],
+                ps = data && data.proxyStats,
+                lines = [];
+              (lines.push("REPRODUCCION TV EN VIVO"),
+                lines.push("Version: " + APP_VERSION),
+                lines.push(
+                  "Ahora: " +
+                    (X.playerMode || "sin reproduccion") +
+                    " | modo " +
+                    (X.streamMode || "normal") +
+                    (X.streamError ? " | error " + Ka(X.streamError) : "")
+                ),
+                lines.push(""));
+              if (err) lines.push("Servicio: " + Ka(err));
+              else if (!evs.length)
+                lines.push(
+                  "Sin eventos todavia. Abre un canal de TV, espera un rato y vuelve aqui."
+                );
+              for (var k = Math.max(0, evs.length - 16); k < evs.length; k++) {
+                var ev = evs[k] || {};
+                lines.push(
+                  Ka(ev.ev || "?") +
+                    "  t=" +
+                    (ev.t || 0) +
+                    "s  rs=" +
+                    (ev.rs || 0) +
+                    "  err=" +
+                    (ev.err || 0) +
+                    "  buf=" +
+                    (ev.buf || 0) +
+                    (ev.ch ? "  " + Ka(ev.ch) : "")
+                );
+              }
+              (lines.push(""),
+                ps &&
+                  lines.push(
+                    "PROXY CDN: peticiones " +
+                      (ps.reqs || 0) +
+                      " | errores " +
+                      (ps.errors || 0) +
+                      " | timeouts " +
+                      (ps.timeouts || 0) +
+                      " | HTTP>=400 " +
+                      (ps.badStatus || 0) +
+                      (ps.lastError ? " | ultimo: " + Ka(ps.lastError) : "")
+                  ),
+                lines.push(
+                  "Foto de esta pantalla = lo que necesito para ver el corte."
+                ));
+              var box = e("div", "dg-report", lines.join("\n"));
+              while (l.firstChild) l.removeChild(l.firstChild);
+              (l.appendChild(box),
+                (o.className = "dg-summary ok"),
+                (o.textContent = "Log listo. Toma una foto de esta pantalla."),
+                rt(q));
+            },
+            8e3
+          );
         }),
         (r._activate = function () {
           !(function (t, i) {
@@ -5366,6 +5452,41 @@
                       " — " +
                       Ka(n[r].verdict || "sin datos")
                   );
+                var lg = e.liveLog || [];
+                if (lg.length) {
+                  t.push("");
+                  t.push("TV EN VIVO (ultimos eventos):");
+                  for (var k = 0; k < lg.length && k < 14; k++) {
+                    var ev = lg[k] || {};
+                    t.push(
+                      "  " +
+                        Ka(ev.ev || "?") +
+                        " t=" +
+                        (ev.t || 0) +
+                        "s rs=" +
+                        (ev.rs || 0) +
+                        " err=" +
+                        (ev.err || 0) +
+                        " buf=" +
+                        (ev.buf || 0) +
+                        (ev.ch ? " " + Ka(ev.ch) : "")
+                    );
+                  }
+                }
+                var ps = e.proxyStats;
+                if (ps)
+                  t.push(
+                    "",
+                    "PROXY CDN: peticiones " +
+                      (ps.reqs || 0) +
+                      " | errores " +
+                      (ps.errors || 0) +
+                      " | timeouts " +
+                      (ps.timeouts || 0) +
+                      " | HTTP>=400 " +
+                      (ps.badStatus || 0) +
+                      (ps.lastError ? " | ultimo: " + Ka(ps.lastError) : "")
+                  );
                 return (
                   t.push(""),
                   t.push(
@@ -5389,6 +5510,7 @@
         }),
         t.appendChild(n),
         t.appendChild(r),
+        t.appendChild(q),
         t.appendChild(o),
         t.appendChild(s),
         t.appendChild(l),
@@ -8757,7 +8879,7 @@
             ? "video/mp4"
             : "video/mp2t";
       ((xe.onerror = function () {
-        (Gn(), Nr());
+        (Gn(), Nr(), logLive("err"));
         var t = xe.error && xe.error.code;
         if (4 === t && "live" === X.playerMode && o && !a) {
           var i = Zr;
@@ -8767,6 +8889,29 @@
               "live" === X.playerMode && Zr === i && Gr(e, { nativeHls: !0 });
             }, 0)
           );
+        }
+        /* Un canal de TV en vivo puede fallar por un microcorte del CDN. Antes
+           eso mostraba "No se pudo abrir el stream" de inmediato. Ahora se
+           reintenta sin molestar al espectador: primero la misma URL, luego
+           una re-resolución de la señal. */
+        if (
+          "live" === X.playerMode &&
+          (2 === t || 3 === t || 4 === t) &&
+          liveErrRetries < 2
+        ) {
+          liveErrRetries += 1;
+          var retryToken = Zr;
+          jr("Reconectando señal…");
+          return void setTimeout(function () {
+            if ("live" !== X.playerMode || Zr !== retryToken || !xe) return;
+            if (liveErrRetries < 2)
+              try {
+                xe.load();
+                var retryPlay = xe.play();
+                retryPlay && retryPlay.catch && retryPlay.catch(function () {});
+              } catch (err) {}
+            else to(F[X.channel], !0, !0);
+          }, 1200 * liveErrRetries);
         }
         if (
           4 === t &&
@@ -8876,6 +9021,9 @@
         }),
         (xe.onplaying = function () {
           (clearLiveStallWatch(),
+            "live" === X.playerMode && watchLiveStall(15000),
+            "live" === X.playerMode && logLive("play"),
+            (liveErrRetries = 0),
             "live" === X.playerMode &&
               (liveStallLastTime = Number(xe.currentTime) || 0),
             Lr(),
@@ -8966,10 +9114,13 @@
             }, 500)));
         }),
         (xe.onwaiting = function () {
-          (Pr("Cargando vídeo…"), watchLiveStall());
+          /* Solo el aviso visual, como en la 2.2.77. Aquí NO se arma el
+             vigilante: "waiting" se dispara de forma normal entre segmentos
+             de una señal en vivo. */
+          Pr("Cargando vídeo…");
         }),
         (xe.onstalled = function () {
-          (Pr("Conectando…"), watchLiveStall());
+          Pr("Conectando…");
         }));
       for (
         var l = {
@@ -9232,12 +9383,51 @@
     liveStallTimer = null,
     liveStallChannel = -1,
     liveStallRetries = 0,
+    liveErrRetries = 0,
     liveStallLastTime = -1,
-    liveStallStableSince = 0;
+    liveStallStableSince = 0,
+    liveLogBuf = [],
+    liveLogTimer = null;
+  /* Registro de eventos de TV en vivo: se envía al servicio (método liveLog)
+     para que el diagnóstico diga si el corte fue de red o del reproductor. */
+  function logLive(ev) {
+    try {
+      var b = xe && xe.buffered;
+      liveLogBuf.push({
+        ev: ev,
+        t: Math.round((Number(xe && xe.currentTime) || 0) * 10) / 10,
+        rs: (xe && xe.readyState) || 0,
+        err: (xe && xe.error && xe.error.code) || 0,
+        buf: b && b.length ? Math.round(b.end(b.length - 1)) : 0,
+        ch: String((F[X.channel] && F[X.channel].name) || "").slice(0, 40),
+      });
+      if (liveLogBuf.length > 30) liveLogBuf.shift();
+      liveLogTimer ||
+        (liveLogTimer = setTimeout(function () {
+          liveLogTimer = null;
+          var batch = liveLogBuf;
+          liveLogBuf = [];
+          if (!batch.length) return;
+          try {
+            P("liveLog", { events: batch }, function () {}, 8e3);
+          } catch (e) {}
+        }, 1500));
+    } catch (e) {}
+  }
   function clearLiveStallWatch() {
     liveStallTimer && (clearTimeout(liveStallTimer), (liveStallTimer = null));
   }
-  function watchLiveStall() {
+  /* Vigilante de TV en vivo: SOLO rescata un cuelgue real.
+     - No reacciona a "waiting"/"stalled": en HLS en vivo esos avisos son
+       normales entre segmentos y reaccionar ahí producía justo el tirón de
+       "Cargando vídeo" seguido de un salto de imagen.
+     - No mueve currentTime ni recarga el elemento. Cualquier salto (más aún
+       hacia atrás) obliga al televisor a volver a descargar y decodificar, y
+       las marcas de tiempo de estas señales no son fiables: se saltaba a otro
+       punto de la emisión.
+     - Comprueba cada 15 s si la posición avanzó. Si no avanzó, primero solo
+       reanuda (barato); si sigue parado, reconecta la señal completa. */
+  function watchLiveStall(delay, mark) {
     if (
       liveStallTimer ||
       "live" !== X.playerMode ||
@@ -9246,33 +9436,46 @@
       xe.paused
     )
       return;
-    var e = X.channel,
-      t = Zr,
-      startTime = Number(xe.currentTime) || 0;
+    var ch = X.channel,
+      gen = Zr,
+      start = "number" == typeof mark ? mark : Number(xe.currentTime) || 0;
     liveStallTimer = setTimeout(function () {
-      ((liveStallTimer = null),
-        "live" === X.playerMode &&
-          "player" === X.screen &&
-          X.channel === e &&
-          Zr === t &&
-          xe &&
-          !xe.paused &&
-          (function () {
-            var currentTime = Number(xe.currentTime) || 0;
-            if (currentTime > startTime + 0.25) {
-              liveStallStableSince = Date.now();
-              return !1;
-            }
-            return currentTime <= startTime + 0.25;
-          })() &&
-          liveStallRetries < 1 &&
-          ((liveStallRetries += 1),
-          (liveStallStableSince = 0),
-          jr("Reconectando señal…"),
-          to(F[e], !0)));
-    }, 12000);
+      liveStallTimer = null;
+      if (
+        "live" !== X.playerMode ||
+        "player" !== X.screen ||
+        X.channel !== ch ||
+        Zr !== gen ||
+        !xe ||
+        xe.paused
+      )
+        return;
+      var now = Number(xe.currentTime) || 0;
+      if (now > start + 0.3) {
+        liveStallRetries = 0;
+        liveStallStableSince = Date.now();
+        return void watchLiveStall(delay || 15000);
+      }
+      logLive("stall");
+      if (liveStallRetries < 1) {
+        liveStallRetries = 1;
+        liveStallStableSince = 0;
+        try {
+          var pl = xe.play();
+          pl && pl.catch && pl.catch(function () {});
+        } catch (e) {}
+        return void watchLiveStall(7e3, start);
+      }
+      if (liveStallRetries < 2) {
+        liveStallRetries = 2;
+        liveStallStableSince = 0;
+        logLive("reconnect");
+        jr("Reconectando señal…");
+        to(F[ch], !0, !0);
+      }
+    }, delay || 15000);
   }
-  function to(e, t) {
+  function to(e, t, force) {
     if (
       (eo && (clearTimeout(eo), (eo = null)),
       e || (e = F[X.channel]),
@@ -9283,15 +9486,17 @@
         (liveStallRetries = 0),
         (liveStallLastTime = -1),
         (liveStallStableSince = 0));
+      liveErrRetries = 0;
       clearLiveStallWatch();
+      logLive("zap");
       var a = function () {
         var t = ++Zr;
         (jr("Cargando señal " + (e.name || "") + "…"),
           P(
             "resolveLive",
             e.streamUrl
-              ? { streamUrl: e.streamUrl }
-              : { channelCode: e.channelCode },
+              ? { streamUrl: e.streamUrl, force: force ? 1 : 0 }
+              : { channelCode: e.channelCode, force: force ? 1 : 0 },
             function (e, a) {
               if (t === Zr) {
                 if (e || !a || !1 === a.returnValue)
