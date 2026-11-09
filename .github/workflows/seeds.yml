@@ -1,0 +1,59 @@
+name: seeds
+
+# Mantiene fresco el pool de semillas de XuperTV.
+#
+# El portal bloquea por región (portal100024) a muchos países: allí la
+# activación real nunca funciona y la app entra con una sesión anónima prestada
+# ("semilla"). Las semillas caducan, así que este trabajo acuña sesiones nuevas
+# desde un runner (IP no bloqueada), comprueba que funcionan con el catálogo
+# real y publica el pool en la rama `seeds`, que es la que descarga la app.
+#
+# No usa secretos: el GITHUB_TOKEN del propio repo basta para hacer commit en
+# la rama `seeds`.
+
+on:
+  schedule:
+    - cron: "0 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "Semillas nuevas a acuñar"
+        required: false
+        default: "30"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: seeds
+  cancel-in-progress: false
+
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Codigo de la app
+        uses: actions/checkout@v4
+
+      - name: Pool actual (rama seeds)
+        uses: actions/checkout@v4
+        with:
+          ref: seeds
+          path: pool
+
+      - name: Acunar semillas
+        run: node tools/mint-seeds.js --count "${{ inputs.count || '30' }}" --pool pool/seeds.json --out pool/seeds.json
+
+      - name: Publicar pool
+        working-directory: pool
+        run: |
+          git config user.name "xupertv-seeds"
+          git config user.email "seeds@users.noreply.github.com"
+          git add seeds.json
+          if git diff --cached --quiet; then
+            echo "sin cambios en el pool"
+            exit 0
+          fi
+          git commit -m "seeds: pool $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push origin HEAD:seeds
