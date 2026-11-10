@@ -1,5 +1,5 @@
 export const getApiBaseUrl = (): string => {
-  return localStorage.getItem('xuper_api_url') || (import.meta.env.VITE_API_URL as string) || 'http://127.0.0.1:8910';
+  return localStorage.getItem('xuper_api_url') || (import.meta.env.VITE_API_URL as string) || 'https://streaming-qste.onrender.com';
 };
 
 export const setApiBaseUrl = (url: string) => {
@@ -29,6 +29,7 @@ export interface Episode {
 }
 
 export interface Season {
+  id?: string;
   number: number;
   name?: string;
   title?: string;

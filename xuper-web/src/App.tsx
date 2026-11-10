@@ -19,6 +19,10 @@ import {
   X,
   Loader2,
   User,
+  PanelLeftClose,
+  PanelLeft,
+  Menu,
+  Activity,
 } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Card, CardContent } from './components/ui/card';
@@ -71,6 +75,21 @@ export const App: React.FC = () => {
       return [];
     }
   });
+
+  // Sidebar states
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    return localStorage.getItem('xuper_sidebar_collapsed') === 'true';
+  });
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const searchInputRef = React.useRef<HTMLInputElement>(null);
+
+  const toggleSidebar = () => {
+    setIsSidebarCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem('xuper_sidebar_collapsed', String(next));
+      return next;
+    });
+  };
 
   // Modal Detail state
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
@@ -286,182 +305,357 @@ export const App: React.FC = () => {
   const isSearchActive = searchQuery.trim().length >= 2;
   const totalSearchResults = searchResults.length + channelSearchResults.length;
 
+  const navSections = [
+    {
+      title: 'Descubrir',
+      items: [
+        {
+          id: 'home' as const,
+          label: 'Inicio',
+          icon: Home,
+          color: 'text-rose-400',
+        },
+        {
+          id: 'live' as const,
+          label: 'TV en Vivo',
+          icon: Tv,
+          color: 'text-rose-500',
+          badge: categories.length > 0 ? `${categories.length} cat.` : 'Live',
+          badgeColor: 'bg-rose-950/70 text-rose-400 border border-rose-800/40',
+        },
+      ],
+    },
+    {
+      title: 'Catálogo VOD',
+      items: [
+        {
+          id: 'movies' as const,
+          label: 'Películas',
+          icon: Film,
+          color: 'text-amber-400',
+        },
+        {
+          id: 'series' as const,
+          label: 'Series',
+          icon: Clapperboard,
+          color: 'text-sky-400',
+        },
+        {
+          id: 'anime' as const,
+          label: 'Animé',
+          icon: Smile,
+          color: 'text-purple-400',
+        },
+        {
+          id: 'kids' as const,
+          label: 'Infantil / Kids',
+          icon: Baby,
+          color: 'text-emerald-400',
+        },
+      ],
+    },
+    {
+      title: 'Biblioteca',
+      items: [
+        {
+          id: 'favorites' as const,
+          label: 'Mis Favoritos',
+          icon: Heart,
+          color: 'text-pink-500',
+          badge:
+            favChannels.length + favMedia.length > 0
+              ? String(favChannels.length + favMedia.length)
+              : undefined,
+          badgeColor: 'bg-pink-950/70 text-pink-400 border border-pink-800/40',
+        },
+      ],
+    },
+    {
+      title: 'Sistema',
+      items: [
+        {
+          id: 'settings' as const,
+          label: 'Configuración',
+          icon: Settings,
+          color: 'text-zinc-400',
+        },
+      ],
+    },
+  ];
+
+  const renderNavItems = (isCollapsed: boolean, onNavClick?: () => void) => (
+    <div className="space-y-4">
+      {navSections.map((sec, idx) => (
+        <div key={idx} className="space-y-1">
+          {!isCollapsed && (
+            <p className="px-3 text-[10px] font-bold uppercase tracking-wider text-zinc-500 mb-1.5 select-none">
+              {sec.title}
+            </p>
+          )}
+          {sec.items.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id && !isSearchActive;
+            return (
+              <Button
+                key={item.id}
+                variant={isActive ? 'secondary' : 'ghost'}
+                size="sm"
+                title={isCollapsed ? item.label : undefined}
+                onClick={() => {
+                  setSearchQuery('');
+                  setActiveTab(item.id);
+                  if (onNavClick) onNavClick();
+                }}
+                className={`w-full h-10 px-3 text-xs font-medium cursor-pointer transition-all ${
+                  isCollapsed ? 'justify-center' : 'justify-start gap-3'
+                } ${
+                  isActive
+                    ? 'bg-zinc-800/90 text-white font-semibold border-l-2 border-rose-500 shadow-sm'
+                    : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900/80'
+                }`}
+              >
+                <Icon className={`h-4 w-4 shrink-0 ${item.color}`} />
+                {!isCollapsed && <span className="truncate">{item.label}</span>}
+                {!isCollapsed && item.badge && (
+                  <Badge
+                    variant="outline"
+                    className={`ml-auto text-[10px] py-0 px-1.5 font-semibold ${item.badgeColor}`}
+                  >
+                    {item.badge}
+                  </Badge>
+                )}
+              </Button>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+
   return (
     <div className="flex h-screen w-screen bg-zinc-950 text-zinc-100 overflow-hidden font-sans">
-      {/* Sidebar Navigation */}
-      <aside className="w-64 border-r border-zinc-800/80 bg-zinc-900/40 backdrop-blur-md flex flex-col justify-between p-4 z-20 shrink-0">
-        <div>
-          {/* Logo */}
-          <div className="flex items-center gap-2.5 px-3 py-4 mb-4 border-b border-zinc-800/60">
-            <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-rose-600 to-red-500 flex items-center justify-center shadow-lg shadow-rose-950/40">
-              <Tv className="h-5 w-5 text-white" />
-            </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="font-black text-lg tracking-wider bg-gradient-to-r from-white via-zinc-200 to-zinc-400 bg-clip-text text-transparent">
-                  XUPER
-                </span>
-                <Badge variant="outline" className="text-[10px] uppercase font-bold py-0 px-1 border-rose-500/50 text-rose-400 bg-rose-950/20">
-                  STREAM
-                </Badge>
+      {/* Mobile Drawer Overlay */}
+      {isMobileSidebarOpen && (
+        <div className="fixed inset-0 z-50 md:hidden flex animate-in fade-in duration-200">
+          <div
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm"
+            onClick={() => setIsMobileSidebarOpen(false)}
+          />
+          <aside className="relative w-72 max-w-[80vw] h-full bg-zinc-950 border-r border-zinc-800/80 p-4 flex flex-col justify-between z-10 shadow-2xl">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-zinc-800/60">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-rose-600 to-red-500 flex items-center justify-center shadow-lg shadow-rose-950/40">
+                    <Tv className="h-5 w-5 text-white" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-black text-lg tracking-wider bg-gradient-to-r from-white via-zinc-200 to-zinc-400 bg-clip-text text-transparent">
+                        XUPER
+                      </span>
+                      <Badge variant="outline" className="text-[9px] uppercase font-bold py-0 px-1 border-rose-500/50 text-rose-400 bg-rose-950/20">
+                        STREAM
+                      </Badge>
+                    </div>
+                    <p className="text-[10px] text-zinc-500 font-medium">Portal Ultra HD</p>
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setIsMobileSidebarOpen(false)}
+                  className="h-8 w-8 text-zinc-400 hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
               </div>
-              <p className="text-[11px] text-zinc-500 font-medium">Portal Ultra HD</p>
+              <div className="overflow-y-auto max-h-[calc(100vh-180px)] pr-1">
+                {renderNavItems(false, () => setIsMobileSidebarOpen(false))}
+              </div>
             </div>
+
+            {/* Mobile Backend status */}
+            <div
+              onClick={() => {
+                setActiveTab('settings');
+                setIsMobileSidebarOpen(false);
+              }}
+              className="border border-zinc-800/80 rounded-xl p-3 bg-zinc-900/60 cursor-pointer hover:border-zinc-700 transition-colors"
+            >
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2">
+                  <Server className="h-3.5 w-3.5 text-zinc-400" />
+                  <span className="text-xs font-semibold text-zinc-300">Servidor Backend</span>
+                </div>
+                <span
+                  className={`flex h-2 w-2 rounded-full ${
+                    isBackendOnline
+                      ? 'bg-emerald-500 ring-4 ring-emerald-950 animate-pulse'
+                      : 'bg-rose-500 ring-4 ring-rose-950'
+                  }`}
+                />
+              </div>
+              <p className="text-[11px] text-zinc-400 truncate">
+                {apiUrl.replace(/^https?:\/\//, '')}
+              </p>
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {/* Desktop Collapsible Sidebar */}
+      <aside
+        className={`hidden md:flex flex-col justify-between border-r border-zinc-800/80 bg-zinc-950/90 backdrop-blur-xl z-20 shrink-0 transition-all duration-300 ease-in-out ${
+          isSidebarCollapsed ? 'w-20 p-2.5' : 'w-64 p-4'
+        }`}
+      >
+        <div className="space-y-4">
+          {/* Logo & Toggle Header */}
+          <div
+            className={`flex items-center ${
+              isSidebarCollapsed ? 'flex-col gap-2' : 'justify-between'
+            } pb-3 border-b border-zinc-800/60`}
+          >
+            <div className="flex items-center gap-2.5 overflow-hidden">
+              <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-rose-600 to-red-500 flex items-center justify-center shadow-lg shadow-rose-950/40 shrink-0">
+                <Tv className="h-5 w-5 text-white" />
+              </div>
+              {!isSidebarCollapsed && (
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-black text-lg tracking-wider bg-gradient-to-r from-white via-zinc-200 to-zinc-400 bg-clip-text text-transparent">
+                      XUPER
+                    </span>
+                    <Badge variant="outline" className="text-[9px] uppercase font-bold py-0 px-1 border-rose-500/50 text-rose-400 bg-rose-950/20">
+                      STREAM
+                    </Badge>
+                  </div>
+                  <p className="text-[10px] text-zinc-500 font-medium truncate">Portal Ultra HD</p>
+                </div>
+              )}
+            </div>
+
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleSidebar}
+              title={isSidebarCollapsed ? 'Expandir menú (Ctrl+B)' : 'Colapsar menú (Ctrl+B)'}
+              className="h-8 w-8 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-900 shrink-0 cursor-pointer"
+            >
+              {isSidebarCollapsed ? (
+                <PanelLeft className="h-4 w-4" />
+              ) : (
+                <PanelLeftClose className="h-4 w-4" />
+              )}
+            </Button>
           </div>
 
           {/* Navigation Links */}
-          <nav className="space-y-1">
-            <Button
-              variant={activeTab === 'home' && !isSearchActive ? 'secondary' : 'ghost'}
-              className="w-full justify-start gap-3 h-10 px-3 text-sm font-medium"
-              onClick={() => {
-                setSearchQuery('');
-                setActiveTab('home');
-              }}
-            >
-              <Home className="h-4 w-4 text-rose-400" />
-              <span>Inicio</span>
-            </Button>
-
-            <Button
-              variant={activeTab === 'live' && !isSearchActive ? 'secondary' : 'ghost'}
-              className="w-full justify-start gap-3 h-10 px-3 text-sm font-medium"
-              onClick={() => {
-                setSearchQuery('');
-                setActiveTab('live');
-              }}
-            >
-              <Tv className="h-4 w-4 text-rose-500" />
-              <span>TV en Vivo</span>
-              {categories.length > 0 && (
-                <Badge variant="secondary" className="ml-auto text-[10px] bg-zinc-800/80 text-zinc-400">
-                  {categories.length} cat.
-                </Badge>
-              )}
-            </Button>
-
-            <Button
-              variant={activeTab === 'movies' && !isSearchActive ? 'secondary' : 'ghost'}
-              className="w-full justify-start gap-3 h-10 px-3 text-sm font-medium"
-              onClick={() => {
-                setSearchQuery('');
-                setActiveTab('movies');
-              }}
-            >
-              <Film className="h-4 w-4 text-amber-500" />
-              <span>Películas</span>
-            </Button>
-
-            <Button
-              variant={activeTab === 'series' && !isSearchActive ? 'secondary' : 'ghost'}
-              className="w-full justify-start gap-3 h-10 px-3 text-sm font-medium"
-              onClick={() => {
-                setSearchQuery('');
-                setActiveTab('series');
-              }}
-            >
-              <Clapperboard className="h-4 w-4 text-sky-500" />
-              <span>Series</span>
-            </Button>
-
-            <Button
-              variant={activeTab === 'anime' && !isSearchActive ? 'secondary' : 'ghost'}
-              className="w-full justify-start gap-3 h-10 px-3 text-sm font-medium"
-              onClick={() => {
-                setSearchQuery('');
-                setActiveTab('anime');
-              }}
-            >
-              <Smile className="h-4 w-4 text-purple-400" />
-              <span>Anime</span>
-            </Button>
-
-            <Button
-              variant={activeTab === 'kids' && !isSearchActive ? 'secondary' : 'ghost'}
-              className="w-full justify-start gap-3 h-10 px-3 text-sm font-medium"
-              onClick={() => {
-                setSearchQuery('');
-                setActiveTab('kids');
-              }}
-            >
-              <Baby className="h-4 w-4 text-emerald-400" />
-              <span>Infantil / Kids</span>
-            </Button>
-
-            <Button
-              variant={activeTab === 'favorites' && !isSearchActive ? 'secondary' : 'ghost'}
-              className="w-full justify-start gap-3 h-10 px-3 text-sm font-medium"
-              onClick={() => {
-                setSearchQuery('');
-                setActiveTab('favorites');
-              }}
-            >
-              <Heart className="h-4 w-4 text-pink-500" />
-              <span>Mis Favoritos</span>
-              {(favChannels.length > 0 || favMedia.length > 0) && (
-                <Badge variant="secondary" className="ml-auto text-[10px] bg-pink-950/40 text-pink-400">
-                  {favChannels.length + favMedia.length}
-                </Badge>
-              )}
-            </Button>
-
-            <Button
-              variant={activeTab === 'settings' && !isSearchActive ? 'secondary' : 'ghost'}
-              className="w-full justify-start gap-3 h-10 px-3 text-sm font-medium"
-              onClick={() => {
-                setSearchQuery('');
-                setActiveTab('settings');
-              }}
-            >
-              <Settings className="h-4 w-4 text-zinc-400" />
-              <span>Configuración</span>
-            </Button>
-          </nav>
-        </div>
-
-        {/* Backend Status Card */}
-        <div className="border border-zinc-800/80 rounded-xl p-3 bg-zinc-900/60">
-          <div className="flex items-center justify-between mb-1.5">
-            <div className="flex items-center gap-2">
-              <Server className="h-3.5 w-3.5 text-zinc-400" />
-              <span className="text-xs font-semibold text-zinc-300">Servidor Node</span>
-            </div>
-            {isBackendOnline ? (
-              <span className="flex h-2 w-2 rounded-full bg-emerald-500 ring-4 ring-emerald-950 animate-pulse" />
-            ) : (
-              <span className="flex h-2 w-2 rounded-full bg-amber-500 ring-4 ring-amber-950" />
-            )}
+          <div className="overflow-y-auto max-h-[calc(100vh-210px)] pr-0.5 space-y-2">
+            {renderNavItems(isSidebarCollapsed)}
           </div>
-          <p className="text-[11px] text-zinc-400 leading-snug">
-            {isBackendOnline ? 'Conectado a 127.0.0.1:8910' : 'Desconectado'}
-          </p>
         </div>
+
+        {/* Desktop Backend Status Footer */}
+        {isSidebarCollapsed ? (
+          <div
+            onClick={() => setActiveTab('settings')}
+            title={`Backend: ${apiUrl} (${isBackendOnline ? 'En línea' : 'Desconectado'})`}
+            className="flex flex-col items-center justify-center py-3 border border-zinc-800/80 rounded-xl bg-zinc-900/40 hover:bg-zinc-900/80 cursor-pointer transition-colors"
+          >
+            <span
+              className={`flex h-2.5 w-2.5 rounded-full ${
+                isBackendOnline
+                  ? 'bg-emerald-500 ring-4 ring-emerald-950 animate-pulse'
+                  : 'bg-rose-500 ring-4 ring-rose-950'
+              }`}
+            />
+          </div>
+        ) : (
+          <div className="border border-zinc-800/80 rounded-xl p-3 bg-zinc-900/40 hover:bg-zinc-900/80 transition-colors">
+            <div className="flex items-center justify-between mb-1.5">
+              <div
+                onClick={() => setActiveTab('settings')}
+                className="flex items-center gap-2 cursor-pointer"
+              >
+                <Server className="h-3.5 w-3.5 text-zinc-400" />
+                <span className="text-xs font-semibold text-zinc-300">Backend Cloud</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    checkBackend();
+                  }}
+                  title="Verificar conexión"
+                  className="h-5 w-5 p-0 text-zinc-500 hover:text-white"
+                >
+                  <Activity className="h-3 w-3" />
+                </Button>
+                <span
+                  className={`flex h-2 w-2 rounded-full ${
+                    isBackendOnline
+                      ? 'bg-emerald-500 ring-4 ring-emerald-950 animate-pulse'
+                      : 'bg-rose-500 ring-4 ring-rose-950'
+                  }`}
+                />
+              </div>
+            </div>
+            <p
+              onClick={() => setActiveTab('settings')}
+              className="text-[10px] text-zinc-400 truncate cursor-pointer hover:text-zinc-200"
+            >
+              {apiUrl.replace(/^https?:\/\//, '')}
+            </p>
+          </div>
+        )}
       </aside>
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col h-full overflow-hidden bg-zinc-950">
         {/* Header Bar */}
-        <header className="h-16 border-b border-zinc-800/80 bg-zinc-950/70 backdrop-blur-md px-6 flex items-center justify-between z-10 shrink-0">
-          <div className="relative w-96">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
-            <Input
-              type="text"
-              placeholder="Buscar películas, series, anime o canales..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 pr-9 bg-zinc-900/80 border-zinc-800 text-xs focus-visible:ring-rose-500"
-            />
-            {/* Clear Search Button or Loading Spinner */}
-            {isSearching ? (
-              <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-rose-500 animate-spin" />
-            ) : searchQuery.length > 0 ? (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white p-0.5 rounded-full"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            ) : null}
+        <header className="h-16 border-b border-zinc-800/80 bg-zinc-950/70 backdrop-blur-md px-4 sm:px-6 flex items-center justify-between gap-3 z-10 shrink-0">
+          <div className="flex items-center gap-3 flex-1 max-w-xl">
+            {/* Mobile Hamburger Menu */}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setIsMobileSidebarOpen(true)}
+              className="md:hidden h-9 w-9 text-zinc-400 hover:text-white shrink-0"
+            >
+              <Menu className="h-5 w-5" />
+            </Button>
+
+            {/* Search Bar with Keyboard Shortcut */}
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
+              <Input
+                ref={searchInputRef}
+                type="text"
+                placeholder="Buscar películas, series, anime o canales..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9 pr-14 bg-zinc-900/80 border-zinc-800 text-xs focus-visible:ring-rose-500"
+              />
+              <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+                {isSearching ? (
+                  <Loader2 className="h-4 w-4 text-rose-500 animate-spin" />
+                ) : searchQuery.length > 0 ? (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="text-zinc-400 hover:text-white p-0.5 rounded-full"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                ) : (
+                  <kbd className="hidden sm:inline-flex items-center gap-0.5 rounded bg-zinc-800/80 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 border border-zinc-700/50">
+                    /
+                  </kbd>
+                )}
+              </div>
+            </div>
           </div>
 
           <div className="flex items-center gap-3">
@@ -469,10 +663,10 @@ export const App: React.FC = () => {
               variant="outline"
               size="sm"
               onClick={loadTabData}
-              className="gap-2 text-xs border-zinc-800"
+              className="gap-2 text-xs border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800 text-zinc-300 hover:text-white cursor-pointer"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-              Actualizar
+              <span className="hidden sm:inline">Actualizar</span>
             </Button>
             <div className="flex items-center gap-2 pl-3 border-l border-zinc-800">
               <div className="h-7 w-7 rounded-full bg-zinc-800 border border-zinc-700/60 flex items-center justify-center text-zinc-300">
