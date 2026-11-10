@@ -6,8 +6,8 @@ echo   INICIANDO XUPER DESKTOP CON DISENO SHADCN / TAILWIND
 echo ============================================================
 echo.
 
-echo [1/2] Iniciando servicio backend en segundo plano (puerto 8910)...
-start "Xuper Backend API" /min cmd /c "node tools/dev_service.mjs"
+echo [1/2] Iniciando servicio backend unificado (puerto 8910)...
+start "Xuper Backend Server" cmd /k "node server.mjs"
 
 timeout /t 2 /nobreak >nul
 
