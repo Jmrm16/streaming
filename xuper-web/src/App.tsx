@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import {
   Home,
   Tv,
@@ -16,6 +16,7 @@ import {
   Baby,
   Smile,
   ChevronRight,
+  ChevronDown,
   X,
   Loader2,
   User,
@@ -59,6 +60,28 @@ export const App: React.FC = () => {
 
   const [isLoading, setIsLoading] = useState(false);
   const [apiUrl, setApiUrlState] = useState(getApiBaseUrl());
+
+  // Scroll container and active request tracking
+  const contentScrollRef = useRef<HTMLDivElement>(null);
+  const activeRequestIdRef = useRef<number>(0);
+
+  // Genre filter for catalog tabs
+  const [selectedGenre, setSelectedGenre] = useState<string>('all');
+
+  // Pagination states
+  const [catalogPages, setCatalogPages] = useState<Record<string, number>>({
+    movies: 1,
+    series: 1,
+    anime: 1,
+    kids: 1,
+  });
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMoreMap, setHasMoreMap] = useState<Record<string, boolean>>({
+    movies: true,
+    series: true,
+    anime: true,
+    kids: true,
+  });
 
   // Favorites (Stored in localStorage)
   const [favChannels, setFavChannels] = useState<Channel[]>(() => {
@@ -161,11 +184,11 @@ export const App: React.FC = () => {
   }, [activeTab]);
 
   const loadTabData = async (forceRefresh = false) => {
+    const reqId = ++activeRequestIdRef.current;
     if (forceRefresh) {
       api.clearCache();
     }
 
-    // Check if the current tab already has cached data so switching is instantaneous
     const hasData =
       (activeTab === 'home' && homeFeatured.length > 0) ||
       (activeTab === 'movies' && movies.length > 0) ||
@@ -183,11 +206,12 @@ export const App: React.FC = () => {
     try {
       if (activeTab === 'home') {
         const [feat, chans, movs, sers] = await Promise.all([
-          api.getHome('featured'),
-          api.getLiveChannels(undefined, 1, 30),
-          api.getHome('movies'),
-          api.getHome('series'),
+          api.getHome('featured', 1, forceRefresh),
+          api.getLiveChannels(undefined, 1, 30, forceRefresh),
+          api.getHome('movies', 1, forceRefresh),
+          api.getHome('series', 1, forceRefresh),
         ]);
+        if (reqId !== activeRequestIdRef.current) return;
         if (feat.length) setHomeFeatured(feat);
         if (chans.length) setChannels(chans);
         if (movs.length) setMovies(movs);
@@ -195,8 +219,9 @@ export const App: React.FC = () => {
       } else if (activeTab === 'live') {
         const [cats, chans] = await Promise.all([
           api.getLiveCategories(),
-          api.getLiveChannels(selectedCategory === 'all' ? undefined : selectedCategory, 1, 250),
+          api.getLiveChannels(selectedCategory === 'all' ? undefined : selectedCategory, 1, 250, forceRefresh),
         ]);
+        if (reqId !== activeRequestIdRef.current) return;
         if (cats.length) setCategories([{ id: 'all', name: 'Todos los Canales' }, ...cats]);
         if (chans.length) {
           setChannels(chans);
@@ -205,23 +230,105 @@ export const App: React.FC = () => {
           }
         }
       } else if (activeTab === 'movies') {
-        const items = await api.getHome('movies');
+        const items = await api.getHome('movies', 1, forceRefresh);
+        if (reqId !== activeRequestIdRef.current) return;
         if (items.length) setMovies(items);
+        setCatalogPages((prev) => ({ ...prev, movies: 1 }));
+        setHasMoreMap((prev) => ({ ...prev, movies: items.length >= 30 }));
       } else if (activeTab === 'series') {
-        const items = await api.getHome('series');
+        const items = await api.getHome('series', 1, forceRefresh);
+        if (reqId !== activeRequestIdRef.current) return;
         if (items.length) setSeries(items);
+        setCatalogPages((prev) => ({ ...prev, series: 1 }));
+        setHasMoreMap((prev) => ({ ...prev, series: items.length >= 30 }));
       } else if (activeTab === 'anime') {
-        const items = await api.getHome('anime');
+        const items = await api.getHome('anime', 1, forceRefresh);
+        if (reqId !== activeRequestIdRef.current) return;
         if (items.length) setAnime(items);
+        setCatalogPages((prev) => ({ ...prev, anime: 1 }));
+        setHasMoreMap((prev) => ({ ...prev, anime: items.length >= 30 }));
       } else if (activeTab === 'kids') {
-        const items = await api.getHome('kids');
+        const items = await api.getHome('kids', 1, forceRefresh);
+        if (reqId !== activeRequestIdRef.current) return;
         if (items.length) setKids(items);
+        setCatalogPages((prev) => ({ ...prev, kids: 1 }));
+        setHasMoreMap((prev) => ({ ...prev, kids: items.length >= 30 }));
       }
     } catch (err) {
       console.error('Error loading tab data:', err);
     } finally {
-      setIsLoading(false);
+      if (reqId === activeRequestIdRef.current) {
+        setIsLoading(false);
+      }
     }
+  };
+
+  // Pagination handler to load next page in catalogs
+  const handleLoadMore = async () => {
+    if (isLoadingMore) return;
+    const tab = activeTab;
+    if (tab !== 'movies' && tab !== 'series' && tab !== 'anime' && tab !== 'kids') return;
+
+    const nextPage = (catalogPages[tab] || 1) + 1;
+    setIsLoadingMore(true);
+    try {
+      const moreItems = await api.getHome(tab, nextPage);
+      if (moreItems && moreItems.length > 0) {
+        if (tab === 'movies') {
+          setMovies((prev) => {
+            const ids = new Set(prev.map((p) => p.id));
+            const unique = moreItems.filter((m) => !ids.has(m.id));
+            return [...prev, ...unique];
+          });
+        } else if (tab === 'series') {
+          setSeries((prev) => {
+            const ids = new Set(prev.map((p) => p.id));
+            const unique = moreItems.filter((m) => !ids.has(m.id));
+            return [...prev, ...unique];
+          });
+        } else if (tab === 'anime') {
+          setAnime((prev) => {
+            const ids = new Set(prev.map((p) => p.id));
+            const unique = moreItems.filter((m) => !ids.has(m.id));
+            return [...prev, ...unique];
+          });
+        } else if (tab === 'kids') {
+          setKids((prev) => {
+            const ids = new Set(prev.map((p) => p.id));
+            const unique = moreItems.filter((m) => !ids.has(m.id));
+            return [...prev, ...unique];
+          });
+        }
+        setCatalogPages((prev) => ({ ...prev, [tab]: nextPage }));
+        if (moreItems.length < 20) {
+          setHasMoreMap((prev) => ({ ...prev, [tab]: false }));
+        }
+      } else {
+        setHasMoreMap((prev) => ({ ...prev, [tab]: false }));
+      }
+    } catch (err) {
+      console.error('Error loading more catalog items:', err);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
+  // Robust navigation handler that avoids view sticking and scrolls to top
+  const handleNavClick = (tabId: typeof activeTab, onNavClickCallback?: () => void) => {
+    setSelectedMedia(null);
+    setSearchQuery('');
+    setSelectedGenre('all');
+
+    if (activeTab === tabId) {
+      // User clicked already active tab: force a fresh reload and scroll smoothly to top
+      loadTabData(true);
+      contentScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      setActiveTab(tabId);
+      contentScrollRef.current?.scrollTo({ top: 0, behavior: 'instant' });
+    }
+
+    if (onNavClickCallback) onNavClickCallback();
   };
 
   // Real Global Search Handler with Debounce
@@ -356,6 +463,35 @@ export const App: React.FC = () => {
       ? favMedia
       : [];
 
+  // Dynamically extract unique genres from the current media list
+  const availableGenres = useMemo(() => {
+    const set = new Set<string>();
+    currentMediaList.forEach((m) => {
+      if (Array.isArray(m.genres)) {
+        m.genres.forEach((g) => {
+          if (g && typeof g === 'string') set.add(g.trim());
+        });
+      }
+      if (m.category && typeof m.category === 'string' && m.category !== 'pelicula' && m.category !== 'serie') {
+        set.add(m.category.trim());
+      }
+    });
+    return ['all', ...Array.from(set).slice(0, 14)];
+  }, [currentMediaList]);
+
+  const filteredMediaList = useMemo(() => {
+    if (selectedGenre === 'all') return currentMediaList;
+    return currentMediaList.filter((m) => {
+      if (Array.isArray(m.genres) && m.genres.some((g) => g.toLowerCase() === selectedGenre.toLowerCase())) {
+        return true;
+      }
+      if (m.category && m.category.toLowerCase() === selectedGenre.toLowerCase()) {
+        return true;
+      }
+      return false;
+    });
+  }, [currentMediaList, selectedGenre]);
+
   const isSearchActive = searchQuery.trim().length >= 2;
   const totalSearchResults = searchResults.length + channelSearchResults.length;
 
@@ -455,12 +591,7 @@ export const App: React.FC = () => {
                 variant={isActive ? 'secondary' : 'ghost'}
                 size="sm"
                 title={isCollapsed ? item.label : undefined}
-                onClick={() => {
-                  setSelectedMedia(null);
-                  setSearchQuery('');
-                  setActiveTab(item.id);
-                  if (onNavClick) onNavClick();
-                }}
+                onClick={() => handleNavClick(item.id, onNavClick)}
                 className={`w-full h-10 px-3 text-xs font-medium cursor-pointer transition-all ${
                   isCollapsed ? 'justify-center' : 'justify-start gap-3'
                 } ${
@@ -760,7 +891,7 @@ export const App: React.FC = () => {
         </header>
 
         {/* View Container */}
-        <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-6 sm:space-y-8 pb-24 md:pb-8">
+        <div ref={contentScrollRef} className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-6 sm:space-y-8 pb-24 md:pb-8">
           {/* ============================================================ */}
           {/* SEARCH RESULTS VIEW (ACTIVATED GLOBALLY WHEN QUERY >= 2)      */}
           {/* ============================================================ */}
@@ -1241,25 +1372,65 @@ export const App: React.FC = () => {
 
               {/* TAB: CATALOGOS (MOVIES, SERIES, ANIME, KIDS, FAVORITES) */}
               {activeTab !== 'home' && activeTab !== 'live' && activeTab !== 'settings' && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-bold text-white capitalize">
-                      {activeTab === 'movies'
-                        ? 'Catálogo de Películas'
-                        : activeTab === 'series'
-                        ? 'Catálogo de Series'
-                        : activeTab === 'anime'
-                        ? 'Catálogo de Anime'
-                        : activeTab === 'kids'
-                        ? 'Zona Infantil'
-                        : 'Mis Favoritos'}
-                    </h2>
-                    <span className="text-xs text-zinc-400">
-                      {activeTab === 'favorites'
-                        ? `${favChannels.length} canales / ${favMedia.length} títulos`
-                        : `${currentMediaList.length} títulos disponibles`}
-                    </span>
+                <div key={activeTab} className="space-y-5 animate-in fade-in duration-200">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-1 border-b border-zinc-900">
+                    <div>
+                      <h2 className="text-lg font-bold text-white capitalize flex items-center gap-2">
+                        {activeTab === 'movies'
+                          ? 'Catálogo de Películas'
+                          : activeTab === 'series'
+                          ? 'Catálogo de Series'
+                          : activeTab === 'anime'
+                          ? 'Catálogo de Anime'
+                          : activeTab === 'kids'
+                          ? 'Zona Infantil'
+                          : 'Mis Favoritos'}
+                        {isLoading && (
+                          <Loader2 className="h-4 w-4 animate-spin text-rose-500 inline-block" />
+                        )}
+                      </h2>
+                      <p className="text-xs text-zinc-400 mt-0.5">
+                        {activeTab === 'favorites'
+                          ? `${favChannels.length} canales / ${favMedia.length} títulos guardados`
+                          : selectedGenre !== 'all'
+                          ? `Mostrando ${filteredMediaList.length} de ${currentMediaList.length} títulos en género "${selectedGenre}"`
+                          : `${filteredMediaList.length} títulos disponibles`}
+                      </p>
+                    </div>
+
+                    {activeTab !== 'favorites' && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => loadTabData(true)}
+                        className="gap-2 text-xs border-zinc-800 bg-zinc-900/60 hover:bg-zinc-800 text-zinc-300 hover:text-white cursor-pointer self-start sm:self-auto shadow-sm"
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+                        <span>Recargar catálogo</span>
+                      </Button>
+                    )}
                   </div>
+
+                  {/* Category / Genre Filter Chips */}
+                  {activeTab !== 'favorites' && availableGenres.length > 2 && (
+                    <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+                      {availableGenres.map((g) => (
+                        <Button
+                          key={g}
+                          variant={selectedGenre === g ? 'default' : 'outline'}
+                          size="sm"
+                          onClick={() => setSelectedGenre(g)}
+                          className={`text-xs whitespace-nowrap rounded-full transition-all cursor-pointer h-7 px-3 ${
+                            selectedGenre === g
+                              ? 'bg-zinc-100 text-zinc-950 font-bold shadow-md'
+                              : 'border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                          }`}
+                        >
+                          {g === 'all' ? 'Todos los Géneros' : g}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
 
                   {/* FAVORITES VIEW HAS BOTH CHANNELS AND MEDIA */}
                   {activeTab === 'favorites' && favChannels.length > 0 && (
@@ -1301,7 +1472,7 @@ export const App: React.FC = () => {
 
                   {/* Grid de Contenido */}
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                    {currentMediaList.map((item, idx) => (
+                    {filteredMediaList.map((item, idx) => (
                       <Card
                         key={item.id || idx}
                         className="group border border-zinc-800/80 bg-zinc-900/40 hover:border-zinc-700 transition-all duration-300 overflow-hidden cursor-pointer relative"
@@ -1357,7 +1528,7 @@ export const App: React.FC = () => {
                   {/* Catalog Loading Skeletons */}
                   {isLoading && currentMediaList.length === 0 && (
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4 animate-in fade-in duration-150">
-                      {Array.from({ length: 12 }).map((_, i) => (
+                      {Array.from({ length: 18 }).map((_, i) => (
                         <div
                           key={i}
                           className="rounded-xl overflow-hidden bg-zinc-900/60 border border-zinc-800/60 animate-pulse"
@@ -1372,10 +1543,49 @@ export const App: React.FC = () => {
                     </div>
                   )}
 
-                  {currentMediaList.length === 0 && !isLoading && (
+                  {/* Load More Button for Catalogs */}
+                  {(activeTab === 'movies' || activeTab === 'series' || activeTab === 'anime' || activeTab === 'kids') &&
+                    filteredMediaList.length > 0 &&
+                    selectedGenre === 'all' &&
+                    hasMoreMap[activeTab] !== false && (
+                      <div className="pt-6 pb-6 flex justify-center">
+                        <Button
+                          variant="outline"
+                          size="default"
+                          onClick={handleLoadMore}
+                          disabled={isLoadingMore}
+                          className="gap-2 border-zinc-800 bg-zinc-900/60 hover:bg-zinc-800 text-zinc-300 hover:text-white px-6 py-2 rounded-xl transition-all cursor-pointer shadow-lg"
+                        >
+                          {isLoadingMore ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin text-rose-500" />
+                              <span>Cargando más títulos...</span>
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown className="h-4 w-4 text-zinc-400" />
+                              <span>Cargar más títulos</span>
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    )}
+
+                  {filteredMediaList.length === 0 && !isLoading && (
                     <div className="py-20 text-center text-zinc-500">
                       <Film className="h-12 w-12 mx-auto mb-3 opacity-40" />
-                      <p className="text-sm">No se encontraron títulos disponibles en esta sección.</p>
+                      <p className="text-sm">No se encontraron títulos disponibles en esta sección o filtro.</p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setSelectedGenre('all');
+                          loadTabData(true);
+                        }}
+                        className="mt-3 text-xs border-zinc-800 bg-zinc-900 hover:bg-zinc-800"
+                      >
+                        Restablecer y reintentar
+                      </Button>
                     </div>
                   )}
                 </div>
@@ -1453,11 +1663,7 @@ export const App: React.FC = () => {
         {/* Mobile Phone Native Bottom Bar */}
         <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-zinc-950/95 backdrop-blur-xl border-t border-zinc-800/80 px-2 py-1.5 flex items-center justify-around shadow-2xl">
           <button
-            onClick={() => {
-              setSelectedMedia(null);
-              setSearchQuery('');
-              setActiveTab('home');
-            }}
+            onClick={() => handleNavClick('home')}
             className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer ${
               activeTab === 'home' && !isSearchActive
                 ? 'text-rose-500 font-bold scale-105'
@@ -1469,11 +1675,7 @@ export const App: React.FC = () => {
           </button>
 
           <button
-            onClick={() => {
-              setSelectedMedia(null);
-              setSearchQuery('');
-              setActiveTab('live');
-            }}
+            onClick={() => handleNavClick('live')}
             className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer relative ${
               activeTab === 'live' && !isSearchActive
                 ? 'text-rose-500 font-bold scale-105'
@@ -1486,11 +1688,7 @@ export const App: React.FC = () => {
           </button>
 
           <button
-            onClick={() => {
-              setSelectedMedia(null);
-              setSearchQuery('');
-              setActiveTab('movies');
-            }}
+            onClick={() => handleNavClick('movies')}
             className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer ${
               activeTab === 'movies' && !isSearchActive
                 ? 'text-rose-500 font-bold scale-105'
@@ -1502,11 +1700,7 @@ export const App: React.FC = () => {
           </button>
 
           <button
-            onClick={() => {
-              setSelectedMedia(null);
-              setSearchQuery('');
-              setActiveTab('series');
-            }}
+            onClick={() => handleNavClick('series')}
             className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer ${
               activeTab === 'series' && !isSearchActive
                 ? 'text-rose-500 font-bold scale-105'
@@ -1518,11 +1712,7 @@ export const App: React.FC = () => {
           </button>
 
           <button
-            onClick={() => {
-              setSelectedMedia(null);
-              setSearchQuery('');
-              setActiveTab('favorites');
-            }}
+            onClick={() => handleNavClick('favorites')}
             className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer relative ${
               activeTab === 'favorites' && !isSearchActive
                 ? 'text-rose-500 font-bold scale-105'

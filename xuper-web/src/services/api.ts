@@ -90,13 +90,18 @@ export interface ResolveResponse {
   seriesId?: string;
 }
 
-// In-Memory Fast Cache with 10-minute TTL to prevent freezing and redundant requests
+// In-Memory Fast Cache with 3-minute TTL to balance snappy navigation and fresh data
 const apiCache = new Map<string, { at: number; data: any }>();
-const CACHE_TTL_MS = 10 * 60 * 1000;
+const CACHE_TTL_MS = 3 * 60 * 1000;
 
-async function fetchWithCache<T>(key: string, url: string, timeoutMs = 8000): Promise<T | null> {
+async function fetchWithCache<T>(
+  key: string,
+  url: string,
+  timeoutMs = 7000,
+  forceRefresh = false
+): Promise<T | null> {
   const cached = apiCache.get(key);
-  if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+  if (!forceRefresh && cached && Date.now() - cached.at < CACHE_TTL_MS) {
     return cached.data as T;
   }
   try {
@@ -112,8 +117,16 @@ async function fetchWithCache<T>(key: string, url: string, timeoutMs = 8000): Pr
 }
 
 export const api = {
-  clearCache(): void {
-    apiCache.clear();
+  clearCache(prefix?: string): void {
+    if (!prefix) {
+      apiCache.clear();
+    } else {
+      for (const k of Array.from(apiCache.keys())) {
+        if (k.startsWith(prefix)) {
+          apiCache.delete(k);
+        }
+      }
+    }
   },
 
   async ping(): Promise<boolean> {
@@ -138,7 +151,7 @@ export const api = {
     return [];
   },
 
-  async getLiveChannels(columnId?: string, pageNum = 1, pageSize = 200): Promise<Channel[]> {
+  async getLiveChannels(columnId?: string, pageNum = 1, pageSize = 200, forceRefresh = false): Promise<Channel[]> {
     const col = columnId && columnId !== 'all' ? columnId : 'all';
     const key = `channels_${col}_p${pageNum}_s${pageSize}`;
     const params = new URLSearchParams();
@@ -148,7 +161,9 @@ export const api = {
 
     const data = await fetchWithCache<{ channels?: Channel[] }>(
       key,
-      `${getApiBaseUrl()}/liveChannels?${params.toString()}`
+      `${getApiBaseUrl()}/liveChannels?${params.toString()}`,
+      7000,
+      forceRefresh
     );
     if (data && data.channels && Array.isArray(data.channels)) {
       return data.channels;
@@ -177,12 +192,15 @@ export const api = {
 
   async getHome(
     root: 'featured' | 'movies' | 'series' | 'anime' | 'kids' = 'movies',
-    page = 1
+    page = 1,
+    forceRefresh = false
   ): Promise<MediaItem[]> {
     const key = `home_${root}_p${page}`;
     const data = await fetchWithCache<{ items?: MediaItem[] }>(
       key,
-      `${getApiBaseUrl()}/home?root=${root}&page=${page}`
+      `${getApiBaseUrl()}/home?root=${root}&page=${page}`,
+      7000,
+      forceRefresh
     );
     if (data && data.items && Array.isArray(data.items)) {
       return data.items;
