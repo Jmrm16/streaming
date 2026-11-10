@@ -139,9 +139,13 @@ export const api = {
     }
   },
 
-  async getLiveCategories(): Promise<{ id: string; name: string }[]> {
+  async checkStatus(): Promise<boolean> {
+    return api.ping();
+  },
+
+  async getLiveCategories(forceRefresh = false): Promise<{ id: string; name: string }[]> {
     const key = `categories`;
-    const data = await fetchWithCache<{ categories?: any[] }>(key, `${getApiBaseUrl()}/liveCategories`);
+    const data = await fetchWithCache<{ categories?: any[] }>(key, `${getApiBaseUrl()}/liveCategories`, 7000, forceRefresh);
     if (data && data.categories && Array.isArray(data.categories)) {
       return data.categories.map((c: any) => ({
         id: String(c.id || c.columnId || c.code),
@@ -149,6 +153,10 @@ export const api = {
       }));
     }
     return [];
+  },
+
+  async getLiveColumns(forceRefresh = false): Promise<{ id: string; name: string }[]> {
+    return api.getLiveCategories(forceRefresh);
   },
 
   async getLiveChannels(columnId?: string, pageNum = 1, pageSize = 200, forceRefresh = false): Promise<Channel[]> {
@@ -262,5 +270,9 @@ export const api = {
       contentId,
       seriesId,
     };
+  },
+
+  async resolveVod(contentId: string, seriesId?: string, trackIndex?: number): Promise<ResolveResponse> {
+    return api.resolveMedia(contentId, seriesId, trackIndex);
   },
 };

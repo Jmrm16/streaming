@@ -510,17 +510,17 @@ export const Player: React.FC<PlayerProps> = ({
 
       {/* Loading Spinner Overlay */}
       {isLoading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 pointer-events-none">
-          <Loader2 className="h-12 w-12 text-rose-500 animate-spin mb-3" />
-          <p className="text-zinc-200 text-sm font-semibold tracking-wide">Cargando transmisión en vivo...</p>
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 pointer-events-none">
+          <div className="w-12 h-12 rounded-full border-4 border-white/20 border-t-[#e50914] animate-spin mb-3" />
+          <p className="text-zinc-200 text-sm font-semibold tracking-wide">Cargando...</p>
         </div>
       )}
 
       {/* Error Alert Overlay */}
       {errorMessage && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-6 text-center z-30">
-          <p className="text-rose-400 font-semibold mb-4 text-sm">{errorMessage}</p>
-          <Button onClick={initHls} className="gap-2 bg-rose-600 hover:bg-rose-700 text-white">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 p-6 text-center z-30">
+          <p className="text-red-400 font-semibold mb-4 text-sm">{errorMessage}</p>
+          <Button onClick={initHls} className="gap-2 bg-[#e50914] hover:bg-red-700 text-white font-bold">
             <RefreshCw className="h-4 w-4" /> Reintentar conexión
           </Button>
         </div>
@@ -783,7 +783,7 @@ export const Player: React.FC<PlayerProps> = ({
                 setProgress(seek);
                 if (videoRef.current) videoRef.current.currentTime = seek;
               }}
-              className="w-full h-1 bg-zinc-700/60 hover:h-2 accent-rose-500 rounded-lg cursor-pointer transition-all"
+              className="w-full h-1 bg-zinc-700/60 hover:h-2 accent-[#e50914] rounded-lg cursor-pointer transition-all"
             />
             <div className="flex justify-between text-xs text-zinc-400 font-mono">
               <span>{formatTime(progress)}</span>

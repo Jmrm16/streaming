@@ -1,0 +1,66 @@
+.zentix-app { min-height: 100dvh; }
+.zentix-tv-link { display: inline-flex; align-items: center; gap: 6px; }
+.zentix-live-dot { width: 6px; height: 6px; border-radius: 50%; background: #e50914; box-shadow: 0 0 12px #e5091470; }
+@media (min-width: 960px) and (max-width: 1280px) { .zentix-app .browse-header { gap: 24px; } .zentix-app .primary-navigation { gap: 14px; font-size: 12px; } .zentix-app .browse-header:has(.browse-search.is-open) .primary-navigation { display: none; } }
+.zentix-app .catalog-content:not(.is-filtered) { margin-top: -100px; }
+.zentix-brand { color: #e50914; font-family: "Arial Narrow", "Helvetica Neue", Arial, sans-serif; font-size: 28px; font-weight: 900; letter-spacing: -1.6px; line-height: 1; text-decoration: none; display: inline-block; transform: scaleX(.91); transform-origin: left center; }
+.browse-brand.zentix-brand { width: 93px; flex: 0 0 93px; }
+.zentix-featured-text { display: block; font-size: clamp(30px, 4vw, 64px); line-height: 1.05; font-weight: 800; text-wrap: balance; text-shadow: 0 3px 20px #000b; }
+.zentix-app .featured-description { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.zentix-app .hero-age-label { width: auto; min-width: 90px; max-width: 150px; }
+.zentix-catalog-status { padding: 0 var(--catalog-gutter) 12px; color: #aaa; font-size: 11px; }
+.zentix-catalog-status:empty { display: none; }
+.zentix-service-error { margin: 16px var(--catalog-gutter) 36px; padding: 24px; background: #242424; border: 1px solid #555; border-radius: 6px; }
+.zentix-service-error p { margin: 0 0 20px; max-width: 680px; color: #ddd; }
+.zentix-load-more { padding: 10px 4% 32px; text-align: center; }
+.zentix-profile-form { display: flex; flex-direction: column; gap: 10px; padding: 0 18px 12px; }
+.zentix-profile-form label { color: #ccc; font-size: 12px; }
+.zentix-profile-form input { background: #292929; color: #fff; padding: 8px 10px; border: 1px solid #666; border-radius: 3px; width: 100%; }
+.zentix-profile-form .empty-button { padding: 7px 12px; font-size: 13px; }
+.zentix-footer-top { display: flex; align-items: center; gap: 22px; margin-bottom: 24px; }
+.zentix-footer-top .zentix-brand { font-size: 24px; }
+.zentix-footer-top span { font-size: 12px; }
+.zentix-inline-error { padding: 12px 14px; margin: 16px 0; color: #ffd0d0; background: #562323; border-radius: 4px; font-size: 14px; }
+.zentix-detail-status { color: #aaa; font-size: 13px; margin-top: 16px; }
+.zentix-episodes { margin-top: 30px; }
+.zentix-episodes-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.zentix-episodes-heading h3 { font-size: 22px; font-weight: 600; }
+.zentix-episodes select,.zentix-quality select { color: #fff; background: #252525; border: 1px solid #666; padding: 7px 12px; border-radius: 3px; font-size: 14px; }
+.zentix-episode { display: flex; align-items: center; gap: 18px; width: 100%; padding: 22px 14px; text-align: left; border-bottom: 1px solid #444; color: #bbb; border-radius: 3px; font-size: 14px; }
+.zentix-episode:hover { background: #303030; }
+.zentix-episode-title { flex: 1; color: #eee; font-weight: 500; }
+.zentix-episode-number { font-size: 20px; width: 24px; text-align: center; }
+.zentix-quality { display: flex; align-items: center; gap: 12px; color: #bbb; margin-top: 20px; font-size: 13px; }
+.zentix-app .media-card-art { display: block; }
+.zentix-app button:disabled { opacity: .6; }
+.zentix-app .notification-link { width: 100%; text-align: left; }
+.zentix-app .detail-hero .detail-title { overflow-wrap: anywhere; }
+.zentix-player-error { padding: 24px; }
+.zentix-player-error p { margin-bottom: 18px; color: #ddd; }
+.zentix-player-timeline { padding: 12px 24px 4px; background: #141414; }
+.zentix-player-timeline input { display: block; width: 100%; min-height: 28px; margin: 0; accent-color: #e50914; cursor: pointer; }
+.zentix-player-times { display: flex; justify-content: space-between; gap: 16px; margin-top: 3px; color: #ddd; font-size: 12px; font-variant-numeric: tabular-nums; }
+.zentix-player-loading { padding: 10px 24px; font-size: 13px; color: #ccc; }
+.zentix-player-start { padding: 12px 24px; }
+.zentix-relay-video::-webkit-media-controls-timeline,.zentix-relay-video::-webkit-media-controls-current-time-display,.zentix-relay-video::-webkit-media-controls-time-remaining-display { display: none; }
+.zentix-app .results-grid .media-card { min-width: 0; }
+@media (min-width: 960px) and (max-width: 1100px) { .browse-header:has(.browse-search.is-open) .primary-navigation { display: none; } }
+@media (max-width: 699px) {
+  .browse-brand.zentix-brand { width: 80px; flex-basis: 80px; font-size: 25px; }
+  .zentix-catalog-status { font-size: 10px; max-width: 95%; }
+  .zentix-app .catalog-toolbar { gap: 16px 10px; }
+  .zentix-app .browse-view-title { flex-basis: 100%; font-size: 27px; overflow-wrap: anywhere; }
+  .zentix-app .catalog-filter select { max-width: 170px; font-size: 12px; padding-left: 8px; }
+  .zentix-app .sort-control { margin-left: 0; }
+  .zentix-app .detail-hero { min-height: 270px; }
+  .zentix-app .detail-title { font-size: 27px; }
+  .zentix-app .detail-list:has(span) { padding-inline: 9px; font-size: 12px; }
+  .zentix-app .detail-primary { padding-inline: 16px; font-size: 15px; }
+  .zentix-episode { padding: 16px 4px; gap: 10px; font-size: 12px; }
+  .zentix-episodes-heading { align-items: flex-start; }
+  .zentix-episodes-heading h3 { font-size: 20px; }
+  .zentix-episodes select { max-width: 170px; padding-inline: 8px; }
+  .zentix-footer-top { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .zentix-service-error { padding: 18px; font-size: 14px; }
+}
+@media (prefers-reduced-motion: reduce) { .zentix-app *, .zentix-app *::before, .zentix-app *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
