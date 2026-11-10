@@ -19,6 +19,9 @@ import {
   Plus,
   ArrowRight,
   Loader2,
+  Home,
+  Smile,
+  Settings,
 } from 'lucide-react';
 import { MaicaoflixLogo } from './components/MaicaoflixLogo';
 import { NetflixRow } from './components/NetflixRow';
@@ -28,6 +31,16 @@ import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
 import { Badge } from './components/ui/badge';
+import { Sheet, SheetContent, SheetTrigger } from './components/ui/sheet';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogAction,
+} from './components/ui/alert-dialog';
 import {
   api,
   Channel,
@@ -106,6 +119,7 @@ export const App: React.FC = () => {
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [alertModal, setAlertModal] = useState<{ open: boolean; title: string; description: string } | null>(null);
   const [toastMessage, setToastMessage] = useState('');
 
   // Dedicated Detail Page & Playback
@@ -374,11 +388,19 @@ export const App: React.FC = () => {
           contentId: code,
         });
       } else {
-        alert('No se pudo sintonizar el canal en este momento.');
+        setAlertModal({
+          open: true,
+          title: 'Canal no disponible',
+          description: 'No se pudo sintonizar la transmisión de este canal en vivo en este momento.',
+        });
       }
     } catch (e) {
       console.error('Error playing channel:', e);
-      alert('Error de conexión al cargar la señal en vivo.');
+      setAlertModal({
+        open: true,
+        title: 'Error de conexión',
+        description: 'Error al conectar con la señal de televisión en vivo. Verifica tu conexión.',
+      });
     }
   };
 
@@ -573,28 +595,165 @@ export const App: React.FC = () => {
             <button
               type="button"
               onClick={() => navigateTab('home')}
-              className="browse-brand cursor-pointer shrink-0 transition-opacity hover:opacity-90 flex items-center"
+              className="browse-brand cursor-pointer shrink-0 transition-opacity hover:opacity-90 flex items-center mr-2 sm:mr-6"
               aria-label="MAICAOFLIX, ir a inicio"
             >
-              <MaicaoflixLogo width={138} height={30} />
+              <MaicaoflixLogo width={118} height={26} className="sm:w-[138px] sm:h-[30px]" />
             </button>
 
-            {/* Mobile Nav Toggle */}
-            <button
-              className="mobile-nav-toggle flex items-center gap-1.5 md:hidden text-xs text-white font-semibold cursor-pointer"
-              type="button"
-              aria-expanded={mobileNavOpen}
-              onClick={() => setMobileNavOpen(!mobileNavOpen)}
-            >
-              <span>Explorar</span>
-              <ChevronDown className="w-3.5 h-3.5" />
-            </button>
+            {/* Mobile Nav Drawer Trigger (Shadcn Sheet) */}
+            <div className="md:hidden flex items-center">
+              <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+                <SheetTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="flex items-center gap-1.5 text-xs text-zinc-200 hover:text-white hover:bg-zinc-800/80 font-bold px-2.5 h-8 rounded-lg border border-zinc-800/80 bg-zinc-900/60 shadow-sm"
+                  >
+                    <span>Explorar</span>
+                    <ChevronDown className={`w-3.5 h-3.5 text-zinc-400 transition-transform duration-200 ${mobileNavOpen ? 'rotate-180' : ''}`} />
+                  </Button>
+                </SheetTrigger>
+                <SheetContent side="left" className="w-72 bg-[#121212] border-r border-zinc-800 p-0 flex flex-col justify-between shadow-2xl">
+                  <div className="p-5 space-y-6">
+                    <div className="flex items-center gap-2 pt-1 pb-4 border-b border-zinc-850">
+                      <MaicaoflixLogo width={128} height={28} />
+                    </div>
 
-            {/* Primary Desktop & Mobile Navigation Links */}
+                    <nav className="flex flex-col space-y-1.5" aria-label="Navegación móvil">
+                      <button
+                        type="button"
+                        onClick={() => navigateTab('home')}
+                        className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === 'home' && !isSearchActive
+                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
+                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                        }`}
+                      >
+                        <Home className="w-4 h-4 text-zinc-400" />
+                        <span>Inicio</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => navigateTab('live')}
+                        className={`flex items-center justify-between px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === 'live' && !isSearchActive
+                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
+                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <Tv className="w-4 h-4 text-red-500" />
+                          <span>TV en vivo</span>
+                        </div>
+                        <Badge variant="outline" className="bg-red-950/80 border-red-800/80 text-red-400 text-[10px] px-2 py-0.5 uppercase font-bold animate-pulse">
+                          ● DIRECTO
+                        </Badge>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => navigateTab('series')}
+                        className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === 'series' && !isSearchActive
+                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
+                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                        }`}
+                      >
+                        <Clapperboard className="w-4 h-4 text-zinc-400" />
+                        <span>Series</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => navigateTab('movies')}
+                        className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === 'movies' && !isSearchActive
+                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
+                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                        }`}
+                      >
+                        <Film className="w-4 h-4 text-zinc-400" />
+                        <span>Películas</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => navigateTab('anime')}
+                        className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === 'anime' && !isSearchActive
+                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
+                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                        }`}
+                      >
+                        <Sparkles className="w-4 h-4 text-zinc-400" />
+                        <span>Animé</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => navigateTab('kids')}
+                        className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === 'kids' && !isSearchActive
+                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
+                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                        }`}
+                      >
+                        <Smile className="w-4 h-4 text-zinc-400" />
+                        <span>Infantil</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => navigateTab('favorites')}
+                        className={`flex items-center justify-between px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === 'favorites' && !isSearchActive
+                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
+                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <Heart className="w-4 h-4 text-pink-500" />
+                          <span>Mi lista</span>
+                        </div>
+                        {favChannels.length + favMedia.length > 0 && (
+                          <Badge variant="secondary" className="text-[10px] bg-zinc-800 text-zinc-200 px-2 py-0.5 rounded-full font-bold">
+                            {favChannels.length + favMedia.length}
+                          </Badge>
+                        )}
+                      </button>
+                    </nav>
+                  </div>
+
+                  <div className="p-5 border-t border-zinc-850 space-y-3 bg-[#0d0d0d]">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setMobileNavOpen(false);
+                        setIsSettingsModalOpen(true);
+                      }}
+                      className="w-full justify-start gap-2.5 text-xs h-9 border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
+                    >
+                      <Settings className="w-4 h-4 text-zinc-400" />
+                      <span>Configurar Servidor</span>
+                    </Button>
+                    <div className="flex items-center justify-between text-[11px] text-zinc-500 px-1 pt-1">
+                      <span>Estado del backend:</span>
+                      <span className="flex items-center gap-1.5 text-zinc-300 font-medium">
+                        <span className={`w-2 h-2 rounded-full ${isBackendOnline ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-red-500'}`} />
+                        {isBackendOnline ? 'Conectado' : 'Sin conexión'}
+                      </span>
+                    </div>
+                  </div>
+                </SheetContent>
+              </Sheet>
+            </div>
+
+            {/* Primary Desktop Navigation Links */}
             <nav
-              className={`primary-navigation flex items-center gap-5 text-sm ${
-                mobileNavOpen ? 'is-open' : ''
-              }`}
+              className="hidden md:flex items-center gap-5 text-sm font-medium"
               aria-label="Navegación principal"
             >
               <button
@@ -1697,6 +1856,21 @@ export const App: React.FC = () => {
         isBackendOnline={isBackendOnline}
         onCheckBackend={checkBackend}
       />
+
+      {/* Global Alert Dialog (Shadcn) */}
+      {alertModal && (
+        <AlertDialog open={alertModal.open} onOpenChange={(open) => !open && setAlertModal(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{alertModal.title}</AlertDialogTitle>
+              <AlertDialogDescription>{alertModal.description}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogAction onClick={() => setAlertModal(null)}>Aceptar</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
 
       {/* Toast Notification */}
       <div

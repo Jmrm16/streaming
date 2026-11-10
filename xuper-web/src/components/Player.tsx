@@ -167,23 +167,12 @@ export const Player: React.FC<PlayerProps> = ({
     setIsLoading(true);
     setErrorAlert(null);
 
-    const resumeTime = savedPositionRef.current > 0 ? savedPositionRef.current : 0;
-
-    // Fast-path: if HLS instance already exists and only the variant URL changed (e.g. audio switch)
-    if (hlsRef.current && Hls.isSupported() && (url.includes('.m3u8') || !url.endsWith('.mp4'))) {
-      hlsRef.current.loadSource(url);
-      hlsRef.current.once(Hls.Events.MANIFEST_PARSED, () => {
-        setIsLoading(false);
-        const restorePos = savedPositionRef.current;
-        if (restorePos > 0 && videoRef.current) {
-          videoRef.current.currentTime = restorePos;
-        }
-        attemptPlay(video);
-      });
-      return;
+    // Live TV streams must never inherit or seek to a previous VOD position
+    if (isLive) {
+      savedPositionRef.current = 0;
     }
 
-    // Clean up previous instance
+    // Always clean up previous instance so Live TV and VOD get their exact configurations
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
@@ -196,17 +185,17 @@ export const Player: React.FC<PlayerProps> = ({
             lowLatencyMode: false,
             backBufferLength: 30,
             liveSyncDurationCount: 3,
-            liveMaxLatencyDurationCount: 6,
+            liveMaxLatencyDurationCount: 8,
             maxBufferLength: 30,
             maxMaxBufferLength: 60,
             liveDurationInfinity: true,
-            manifestLoadingTimeOut: 15000,
-            manifestLoadingMaxRetry: 5,
-            levelLoadingTimeOut: 15000,
-            levelLoadingMaxRetry: 5,
-            fragLoadingTimeOut: 20000,
-            fragLoadingMaxRetry: 6,
-            fragLoadingRetryDelay: 800,
+            manifestLoadingTimeOut: 20000,
+            manifestLoadingMaxRetry: 6,
+            levelLoadingTimeOut: 20000,
+            levelLoadingMaxRetry: 6,
+            fragLoadingTimeOut: 25000,
+            fragLoadingMaxRetry: 8,
+            fragLoadingRetryDelay: 1000,
             nudgeOffset: 0.2,
             nudgeMaxRetry: 5,
           }
@@ -241,9 +230,12 @@ export const Player: React.FC<PlayerProps> = ({
           }));
           setLevels(lvls);
         }
-        const restorePos = savedPositionRef.current;
-        if (restorePos > 0) {
-          video.currentTime = restorePos;
+        // Only restore timestamp for VOD; Live TV stays on live edge
+        if (!isLive) {
+          const restorePos = savedPositionRef.current;
+          if (restorePos > 0) {
+            video.currentTime = restorePos;
+          }
         }
         attemptPlay(video);
       });
@@ -301,8 +293,8 @@ export const Player: React.FC<PlayerProps> = ({
         'loadedmetadata',
         () => {
           setIsLoading(false);
-          if (resumeTime > 0) {
-            video.currentTime = resumeTime;
+          if (!isLive && savedPositionRef.current > 0) {
+            video.currentTime = savedPositionRef.current;
           }
           attemptPlay(video);
         },
