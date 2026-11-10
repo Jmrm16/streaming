@@ -7,9 +7,15 @@ shots/
 *.ipk
 *.class
 
+# Node modules
+node_modules/
+.firebase/
+
 # Local media fixtures used while diagnosing HEVC/TS playback
-*.ts
+*.m2ts
 *.mp4
+!xuper-web/**/*.ts
+!xuper-web/**/*.tsx
 
 # Extracted APK analysis (293 MB, reproducible from the documented APK hash)
 analysis/

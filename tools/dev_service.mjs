@@ -40,7 +40,11 @@ const server = http.createServer((req, res) => {
   const done = (err, data) => (err ? json(res, 502, { returnValue: false, errorText: String(err.message || err), errorCode: err.portalCode || 1 }) : json(res, 200, { returnValue: true, ...data }));
 
   if (u.pathname === "/ping") return json(res, 200, { returnValue: true, port: PORT, proxy: proxy.port() });
-  if (u.pathname === "/home") return magis.home(u.searchParams.get("root") || "movies", done);
+  if (u.pathname === "/home") {
+    const root = u.searchParams.get("root") || "movies";
+    const pageNum = parseInt(u.searchParams.get("page") || u.searchParams.get("pageNum") || "1", 10);
+    return magis.home(root, pageNum, done);
+  }
   if (u.pathname === "/search") return magis.search(u.searchParams.get("value") || "", done);
   if (u.pathname === "/detail") {
     return magis.detail(u.searchParams.get("contentId") || u.searchParams.get("id") || "", done);
@@ -69,7 +73,10 @@ const server = http.createServer((req, res) => {
     return magis.getLiveCategories((err, categories) => done(err, { categories }));
   }
   if (u.pathname === "/liveChannels") {
-    return magis.getLiveChannels(u.searchParams.get("columnId") || null, (err, channels) => done(err, { channels }));
+    const colId = u.searchParams.get("columnId") || null;
+    const pageNum = parseInt(u.searchParams.get("pageNum") || "1", 10);
+    const pageSize = parseInt(u.searchParams.get("pageSize") || "250", 10);
+    return magis.getLiveChannels(colId, pageNum, pageSize, (err, channels) => done(err, { channels: channels || [] }));
   }
   if (u.pathname === "/resolveLive") {
     const streamUrl = u.searchParams.get("streamUrl") || "";

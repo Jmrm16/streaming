@@ -1,0 +1,13 @@
+{
+  "name": "xuper-server",
+  "version": "1.0.0",
+  "description": "Xuper Streaming Backend for Render & Web",
+  "main": "server.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

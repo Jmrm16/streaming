@@ -348,7 +348,7 @@ function sendVirtualHls(e, t, r, n) {
         var i = [
             "#EXTM3U",
             "#EXT-X-VERSION:4",
-            "#EXT-X-PLAYLIST-TYPE:VOD",
+            a.complete ? "#EXT-X-PLAYLIST-TYPE:VOD" : "#EXT-X-PLAYLIST-TYPE:EVENT",
             "#EXT-X-TARGETDURATION:" + HLS_SEGMENT_SECONDS,
             "#EXT-X-MEDIA-SEQUENCE:0",
           ],
@@ -913,10 +913,13 @@ function start(e) {
       ((port = server.address().port), e(null, port));
     }));
 }
+var customBaseUrl = "";
 function baseUrl() {
-  return port ? "http://127.0.0.1:" + port : "";
+  return customBaseUrl || (port ? "http://127.0.0.1:" + port : "");
 }
 module.exports = {
+  handler: handler,
+  setBaseUrl: function (u) { customBaseUrl = u; },
   start: start,
   add: add,
   addSubtitle: addSubtitle,

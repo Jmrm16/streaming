@@ -98,7 +98,7 @@ function create(t, r) {
           }),
         void e()
       );
-    var t = Math.floor(2097152 / PACKET) * PACKET,
+    var t = Math.floor(6291456 / PACKET) * PACKET,
       i = n.offset,
       p = Math.min(n.length - 1, i + t - 1);
     r(i, p, function (t, r) {
