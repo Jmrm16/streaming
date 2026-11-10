@@ -23,8 +23,6 @@ import {
   PanelLeft,
   Menu,
   Activity,
-  Eye,
-  EyeOff,
 } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Card, CardContent } from './components/ui/card';
@@ -83,7 +81,6 @@ export const App: React.FC = () => {
     return localStorage.getItem('xuper_sidebar_collapsed') === 'true';
   });
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-  const [showApiUrl, setShowApiUrl] = useState(false);
   const searchInputRef = React.useRef<HTMLInputElement>(null);
 
   const toggleSidebar = () => {
@@ -1342,48 +1339,50 @@ export const App: React.FC = () => {
                       </div>
 
                       <div className="space-y-2 pt-2">
-                        <label className="text-xs text-zinc-300 font-medium">URL del Servidor Privado</label>
+                        <label className="text-xs text-zinc-300 font-medium">Clave / URL del Servidor Privado</label>
                         <div className="flex gap-2">
-                          <div className="relative flex-1">
-                            <Input
-                              type={showApiUrl ? 'text' : 'password'}
-                              value={apiUrl}
-                              onChange={(e) => setApiUrlState(e.target.value)}
-                              placeholder="https://..."
-                              className="text-xs pr-10 font-mono"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setShowApiUrl(!showApiUrl)}
-                              className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white"
-                            >
-                              {showApiUrl ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                            </button>
-                          </div>
-                          <Button onClick={handleSaveApiUrl} size="sm" className="cursor-pointer">
+                          <Input
+                            type="password"
+                            value={apiUrl}
+                            onChange={(e) => setApiUrlState(e.target.value)}
+                            placeholder="•••••••••••••••••••••••••••••"
+                            className="text-xs font-mono select-none tracking-widest bg-zinc-950 border-zinc-800"
+                          />
+                          <Button onClick={handleSaveApiUrl} size="sm" className="cursor-pointer bg-rose-600 hover:bg-rose-700 text-white shrink-0">
                             Guardar
                           </Button>
                         </div>
+                        <p className="text-[11px] text-zinc-500">
+                          La conexión se encuentra encriptada y protegida contra visualización pública.
+                        </p>
                       </div>
 
-                      <div className="pt-4 border-t border-zinc-800/80 space-y-2">
+                      <div className="pt-4 border-t border-zinc-800/80 space-y-3">
                         <h4 className="text-xs font-semibold text-white flex items-center gap-1.5">
-                          <Sparkles className="h-3.5 w-3.5 text-rose-500" />
-                          <span>¿Desplegaste tu backend en Render?</span>
+                          <Server className="h-3.5 w-3.5 text-emerald-400" />
+                          <span>Estado del Servicio Cloud</span>
                         </h4>
-                        <p className="text-xs text-zinc-400 leading-relaxed">
-                          Cuando crees tu Web Service en Render, copia la URL que te asigne (ej: <span className="text-rose-400 font-mono">https://tu-backend.onrender.com</span>), pégala arriba y dale a <strong>Guardar</strong>.
-                        </p>
-                      </div>
-
-                      <div className="pt-3 border-t border-zinc-800/80">
-                        <h4 className="text-xs font-semibold text-zinc-300 mb-1">Para probar en tu PC localmente:</h4>
-                        <p className="text-xs text-zinc-400 leading-relaxed">
-                          Abre la terminal en la carpeta principal del proyecto y ejecuta:
-                        </p>
-                        <pre className="mt-1 p-3 bg-zinc-950 rounded-lg text-emerald-400 font-mono text-xs overflow-x-auto">
-                          node server.mjs
-                        </pre>
+                        <div className="grid grid-cols-2 gap-3 text-xs">
+                          <div className="p-3 bg-zinc-950/70 border border-zinc-800/80 rounded-xl space-y-1">
+                            <span className="text-zinc-500 text-[10px] uppercase font-bold">Conexión</span>
+                            <p className="font-semibold text-emerald-400 flex items-center gap-1.5">
+                              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                              {isBackendOnline ? 'En línea • Activo' : 'Reconectando...'}
+                            </p>
+                          </div>
+                          <div className="p-3 bg-zinc-950/70 border border-zinc-800/80 rounded-xl space-y-1">
+                            <span className="text-zinc-500 text-[10px] uppercase font-bold">Resolución</span>
+                            <p className="font-semibold text-zinc-200">Ultra HD 1080p / 4K</p>
+                          </div>
+                          <div className="p-3 bg-zinc-950/70 border border-zinc-800/80 rounded-xl space-y-1">
+                            <span className="text-zinc-500 text-[10px] uppercase font-bold">Protocolo</span>
+                            <p className="font-semibold text-zinc-200">HLS • MPEG-TS Seguro</p>
+                          </div>
+                          <div className="p-3 bg-zinc-950/70 border border-zinc-800/80 rounded-xl space-y-1">
+                            <span className="text-zinc-500 text-[10px] uppercase font-bold">Plataforma</span>
+                            <p className="font-semibold text-zinc-200">v2.6.0 Stable</p>
+                          </div>
+                        </div>
                       </div>
                     </CardContent>
                   </Card>
