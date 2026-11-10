@@ -174,8 +174,9 @@ export const Player: React.FC<PlayerProps> = ({
       hlsRef.current.loadSource(url);
       hlsRef.current.once(Hls.Events.MANIFEST_PARSED, () => {
         setIsLoading(false);
-        if (resumeTime > 0 && videoRef.current) {
-          videoRef.current.currentTime = resumeTime;
+        const restorePos = savedPositionRef.current;
+        if (restorePos > 0 && videoRef.current) {
+          videoRef.current.currentTime = restorePos;
         }
         attemptPlay(video);
       });
@@ -240,8 +241,9 @@ export const Player: React.FC<PlayerProps> = ({
           }));
           setLevels(lvls);
         }
-        if (resumeTime > 0) {
-          video.currentTime = resumeTime;
+        const restorePos = savedPositionRef.current;
+        if (restorePos > 0) {
+          video.currentTime = restorePos;
         }
         attemptPlay(video);
       });
@@ -555,12 +557,13 @@ export const Player: React.FC<PlayerProps> = ({
   const setAudioTrack = (trackIndex: number) => {
     setCurrentAudioTrack(trackIndex);
 
-    // Save exact position before switching audio track
-    if (videoRef.current && videoRef.current.currentTime > 0) {
-      savedPositionRef.current = videoRef.current.currentTime;
+    const video = videoRef.current;
+    const currentPos = video ? video.currentTime : savedPositionRef.current;
+    if (currentPos > 0) {
+      savedPositionRef.current = currentPos;
     }
 
-    // 1. Instantaneous in-stream HLS audio track change if supported
+    // 1. Instantaneous in-stream HLS audio track change if native multi-track HLS is present
     if (
       hlsRef.current &&
       hlsRef.current.audioTracks &&
@@ -568,9 +571,61 @@ export const Player: React.FC<PlayerProps> = ({
       trackIndex < hlsRef.current.audioTracks.length
     ) {
       hlsRef.current.audioTrack = trackIndex;
-    } else if (onSwitchAudioTrack) {
-      // 2. Stream variant switch: resolves new audio URL while preserving currentTime
-      onSwitchAudioTrack(trackIndex);
+      return;
+    }
+
+    // 2. Seamless in-place source reload with audio PID swapping from proxy (zero unmount, zero full reload)
+    if (hlsRef.current) {
+      const [base, query] = url.split('?');
+      const searchParams = new URLSearchParams(query || '');
+      if (trackIndex > 0) {
+        searchParams.set('audio', String(trackIndex));
+      } else {
+        searchParams.delete('audio');
+      }
+      const targetUrl = searchParams.toString() ? `${base}?${searchParams.toString()}` : base;
+
+      if (hlsRef.current.url === targetUrl) return;
+
+      const wasPlaying = isPlaying;
+      hlsRef.current.loadSource(targetUrl);
+      hlsRef.current.once(Hls.Events.MANIFEST_PARSED, () => {
+        if (videoRef.current) {
+          if (currentPos > 0) {
+            videoRef.current.currentTime = currentPos;
+          }
+          if (wasPlaying) {
+            videoRef.current.play().catch(() => {});
+          }
+        }
+      });
+      return;
+    }
+
+    // 3. Fallback for native HTML5 video (Safari / mobile)
+    if (video) {
+      const [base, query] = url.split('?');
+      const searchParams = new URLSearchParams(query || '');
+      if (trackIndex > 0) {
+        searchParams.set('audio', String(trackIndex));
+      } else {
+        searchParams.delete('audio');
+      }
+      const targetUrl = searchParams.toString() ? `${base}?${searchParams.toString()}` : base;
+      const wasPlaying = !video.paused;
+      video.src = targetUrl;
+      video.addEventListener(
+        'loadedmetadata',
+        () => {
+          if (currentPos > 0) {
+            video.currentTime = currentPos;
+          }
+          if (wasPlaying) {
+            video.play().catch(() => {});
+          }
+        },
+        { once: true }
+      );
     }
   };
 

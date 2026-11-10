@@ -3,6 +3,7 @@ var http = require("http"),
   https = require("https"),
   crypto = require("crypto"),
   urlmod = require("url"),
+  streamMod = require("stream"),
   tsIndexer = require("./ts-indexer"),
   dnsx = require("./dnsx"),
   upstream = require("./upstream"),
@@ -358,7 +359,79 @@ function readRange(e, t, r, n) {
       a.end());
   });
 }
+function createAudioPidTransform(audioTrackIndex) {
+  var stream = new streamMod.Transform();
+  var targetPid = 257 + audioTrackIndex;
+  var basePid = 257;
+  var remainder = Buffer.alloc(0);
+
+  stream._transform = function (chunk, encoding, callback) {
+    var data = remainder.length > 0 ? Buffer.concat([remainder, chunk]) : chunk;
+    var len = data.length;
+    var validLen = len - (len % 188);
+    remainder = data.slice(validLen);
+
+    if (validLen > 0) {
+      for (var i = 0; i < validLen; i += 188) {
+        if (data[i] !== 0x47) continue;
+        var pid = ((data[i + 1] & 0x1f) << 8) | data[i + 2];
+        if (pid === basePid) {
+          data[i + 1] = (data[i + 1] & 0xe0) | ((targetPid >> 8) & 0x1f);
+          data[i + 2] = targetPid & 0xff;
+        } else if (pid === targetPid) {
+          data[i + 1] = (data[i + 1] & 0xe0) | ((basePid >> 8) & 0x1f);
+          data[i + 2] = basePid & 0xff;
+        } else if (pid === 4096) {
+          var spaIdx = data.indexOf(Buffer.from("spa\0"), i);
+          var engIdx = data.indexOf(Buffer.from("eng\0"), i);
+          if (spaIdx !== -1 && engIdx !== -1 && spaIdx < i + 188 && engIdx < i + 188) {
+            data.write("eng\0", spaIdx);
+            data.write("spa\0", engIdx);
+          }
+        }
+      }
+      this.push(data.slice(0, validLen));
+    }
+    callback();
+  };
+
+  stream._flush = function (callback) {
+    if (remainder.length > 0) {
+      this.push(remainder);
+      remainder = Buffer.alloc(0);
+    }
+    callback();
+  };
+
+  return stream;
+}
+function transformTsBuffer(buf, audioTrackIndex) {
+  if (!audioTrackIndex || audioTrackIndex <= 0) return buf;
+  var targetPid = 257 + audioTrackIndex;
+  var basePid = 257;
+  for (var i = 0; i + 188 <= buf.length; i += 188) {
+    if (buf[i] !== 0x47) continue;
+    var pid = ((buf[i + 1] & 0x1f) << 8) | buf[i + 2];
+    if (pid === basePid) {
+      buf[i + 1] = (buf[i + 1] & 0xe0) | ((targetPid >> 8) & 0x1f);
+      buf[i + 2] = targetPid & 0xff;
+    } else if (pid === targetPid) {
+      buf[i + 1] = (buf[i + 1] & 0xe0) | ((basePid >> 8) & 0x1f);
+      buf[i + 2] = basePid & 0xff;
+    } else if (pid === 4096) {
+      var spaIdx = buf.indexOf(Buffer.from("spa\0"), i);
+      var engIdx = buf.indexOf(Buffer.from("eng\0"), i);
+      if (spaIdx !== -1 && engIdx !== -1 && spaIdx < i + 188 && engIdx < i + 188) {
+        buf.write("eng\0", spaIdx);
+        buf.write("spa\0", engIdx);
+      }
+    }
+  }
+  return buf;
+}
 function sendVirtualHls(e, t, r, n) {
+  var parsedReq = urlmod.parse(e.url, true);
+  var audioTrack = parseInt(parsedReq.query.audio || "0", 10);
   sourceLength(n, function (o, s) {
     if (o)
       return (
@@ -390,7 +463,7 @@ function sendVirtualHls(e, t, r, n) {
         var u = a.segments[l];
         (i.push("#EXTINF:" + u.duration.toFixed(3) + ","),
           i.push("#EXT-X-BYTERANGE:" + (u.end - u.start + 1) + "@" + u.start),
-          i.push("stream.ts"));
+          i.push(audioTrack > 0 ? "stream.ts?audio=" + audioTrack : "stream.ts"));
       }
       a.complete && i.push("#EXT-X-ENDLIST");
       var c = i.join("\n") + "\n";
@@ -641,6 +714,11 @@ function forward(e, t, r, n) {
                 return;
               }
               var b = Buffer.concat(sc, sb);
+              var parsedUrlBuf = urlmod.parse(e.url, true);
+              var audioTrackBuf = parseInt(parsedUrlBuf.query.audio || "0", 10);
+              if (audioTrackBuf > 0) {
+                b = transformTsBuffer(b, audioTrackBuf);
+              }
               (delete d["Content-Length"], (d["Content-Length"] = b.length));
               try {
                 (t.writeHead(o.statusCode || 200, d), t.end(b));
@@ -655,11 +733,22 @@ function forward(e, t, r, n) {
               void skick()
             );
           }
-          (t.writeHead(o.statusCode || 200, d),
-            o.on("error", function () {
-              p();
-            }),
-            o.pipe(t));
+          var parsedUrlStream = urlmod.parse(e.url, true);
+          var audioTrackStream = parseInt(parsedUrlStream.query.audio || "0", 10);
+          if (audioTrackStream > 0) {
+            var audioTransform = createAudioPidTransform(audioTrackStream);
+            (t.writeHead(o.statusCode || 200, d),
+              o.on("error", function () {
+                p();
+              }),
+              o.pipe(audioTransform).pipe(t));
+          } else {
+            (t.writeHead(o.statusCode || 200, d),
+              o.on("error", function () {
+                p();
+              }),
+              o.pipe(t));
+          }
         });
         if (((u.upstream = c), c.socket))
           try {
