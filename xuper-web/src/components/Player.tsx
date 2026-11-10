@@ -25,8 +25,6 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Input } from './ui/input';
 import { Channel, SubtitleTrack, AudioLanguage } from '../services/api';
-import { PreRollAd } from './Ads/PreRollAd';
-import { BannerAd } from './Ads/BannerAd';
 
 interface SubtitleCue {
   start: number;
@@ -104,10 +102,6 @@ export const Player: React.FC<PlayerProps> = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
-
-  // Advertising states
-  const [isAdPlaying, setIsAdPlaying] = useState<boolean>(adsEnabled);
-  const [showPauseBanner, setShowPauseBanner] = useState<boolean>(true);
 
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
@@ -211,11 +205,7 @@ export const Player: React.FC<PlayerProps> = ({
         if (resumeTime > 0) {
           video.currentTime = resumeTime;
         }
-        if (!isAdPlaying) {
-          if (!isAdPlaying) {
-            video.play().catch(() => setIsPlaying(false));
-          }
-        }
+        video.play().catch(() => setIsPlaying(false));
       });
 
       hls.on(Hls.Events.LEVEL_UPDATED, (_, data) => {
@@ -266,9 +256,7 @@ export const Player: React.FC<PlayerProps> = ({
           if (resumeTime > 0) {
             video.currentTime = resumeTime;
           }
-          if (!isAdPlaying) {
-            video.play().catch(() => setIsPlaying(false));
-          }
+          video.play().catch(() => setIsPlaying(false));
         },
         { once: true }
       );
@@ -943,23 +931,6 @@ export const Player: React.FC<PlayerProps> = ({
           </div>
         </div>
       </div>
-
-      {/* Pre-Roll Video Ad (Estilo YouTube / Pluto TV con Omitir en 5s) */}
-      {adsEnabled && isAdPlaying && (
-        <PreRollAd
-          onComplete={() => {
-            setIsAdPlaying(false);
-            if (videoRef.current) {
-              videoRef.current.play().catch(() => setIsPlaying(false));
-            }
-          }}
-        />
-      )}
-
-      {/* Pause Screen Display Banner Ad (Estilo Smart TV / Cable) */}
-      {adsEnabled && !isPlaying && !isAdPlaying && showPauseBanner && (
-        <BannerAd placement="player_pause" onClose={() => setShowPauseBanner(false)} />
-      )}
     </div>
   );
 };

@@ -33,8 +33,6 @@ import { Input } from './components/ui/input';
 import { Badge } from './components/ui/badge';
 import { Player } from './components/Player';
 import { MediaDetailPage } from './components/MediaDetailPage';
-import { BannerAd } from './components/Ads/BannerAd';
-import { InterstitialModalAd } from './components/Ads/InterstitialModalAd';
 import { adManager } from './services/adConfig';
 import { api, Channel, MediaItem, SubtitleTrack, AudioLanguage, getApiBaseUrl, setApiBaseUrl } from './services/api';
 
@@ -90,7 +88,6 @@ export const App: React.FC = () => {
 
   // Advertising states (Dual mode: Con Anuncios / Sin Anuncios)
   const [adsEnabled, setAdsEnabled] = useState<boolean>(() => adManager.isAdsEnabled());
-  const [showInterstitial, setShowInterstitial] = useState<boolean>(false);
 
   // Keep Monetag official tag in sync with adsEnabled mode
   useEffect(() => {
@@ -1483,11 +1480,6 @@ export const App: React.FC = () => {
                     </div>
                   )}
 
-                  {/* Sponsored Catalog Banner Ad (Solo en modo con anuncios) */}
-                  {adsEnabled && activeTab !== 'favorites' && (
-                    <BannerAd placement="catalog" />
-                  )}
-
                   {/* FAVORITES VIEW HAS BOTH CHANNELS AND MEDIA */}
                   {activeTab === 'favorites' && favChannels.length > 0 && (
                     <div className="space-y-3 mb-6">
@@ -1741,50 +1733,17 @@ export const App: React.FC = () => {
                         </Button>
                       </div>
 
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                         <div className="p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl space-y-1">
-                          <span className="text-[10px] uppercase font-bold text-amber-400">1. Video Pre-roll</span>
-                          <p className="text-xs font-semibold text-white">Al inicio de reproducción</p>
-                          <p className="text-[11px] text-zinc-400">Clip de 15s con contador de salto a los 5s.</p>
+                          <span className="text-[10px] uppercase font-bold text-emerald-400">Red Publicitaria Conectada</span>
+                          <p className="text-xs font-semibold text-white">Monetag MultiTag AI (Zona 308489)</p>
+                          <p className="text-[11px] text-zinc-400">Monetización en segundo plano con OnClick Popunder, In-Page Push y Vignettes sin estorbar.</p>
                         </div>
                         <div className="p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl space-y-1">
-                          <span className="text-[10px] uppercase font-bold text-amber-400">2. Banners Display</span>
-                          <p className="text-xs font-semibold text-white">En Catálogo y Pausa</p>
-                          <p className="text-[11px] text-zinc-400">Banners responsivos Adsterra / Monetag.</p>
+                          <span className="text-[10px] uppercase font-bold text-sky-400">Push Notifications Activas</span>
+                          <p className="text-xs font-semibold text-white">Service Worker (sw.js)</p>
+                          <p className="text-[11px] text-zinc-400">Genera ingresos recurrentes por suscriptores web sin saturar la pantalla.</p>
                         </div>
-                        <div className="p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl space-y-1">
-                          <span className="text-[10px] uppercase font-bold text-amber-400">3. Intersticiales</span>
-                          <p className="text-xs font-semibold text-white">Ventana flotante / Pop-up</p>
-                          <p className="text-[11px] text-zinc-400">Modal de alta conversión con botón omitir.</p>
-                        </div>
-                      </div>
-
-                      {/* Demo testing actions */}
-                      <div className="pt-2 border-t border-zinc-800/60 flex flex-wrap items-center gap-2">
-                        <span className="text-xs text-zinc-400 font-medium mr-1">Probar formatos:</span>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setShowInterstitial(true)}
-                          className="text-xs border-zinc-800 bg-zinc-900/60 hover:bg-zinc-800 text-zinc-200 cursor-pointer h-8"
-                        >
-                          Ver Anuncio Intersticial
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            setActivePlayback({
-                              url: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-                              title: 'Video Demo de Prueba',
-                              subtitle: 'Comprobación de Anuncio Pre-roll de 5s',
-                              isLive: false,
-                            });
-                          }}
-                          className="text-xs border-zinc-800 bg-zinc-900/60 hover:bg-zinc-800 text-zinc-200 cursor-pointer h-8"
-                        >
-                          Ver Anuncio Pre-roll en Player
-                        </Button>
                       </div>
                     </CardContent>
                   </Card>
@@ -1882,12 +1841,6 @@ export const App: React.FC = () => {
           adsEnabled={adsEnabled}
         />
       )}
-
-      {/* Global Interstitial Modal Ad */}
-      <InterstitialModalAd
-        isOpen={showInterstitial}
-        onClose={() => setShowInterstitial(false)}
-      />
     </div>
   );
 };
