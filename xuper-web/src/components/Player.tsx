@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
 import {
   Play,
@@ -20,10 +20,31 @@ import {
   Search,
   ArrowLeft,
   Subtitles,
+  Gauge,
+  Sliders,
+  AudioWaveform,
+  AlertTriangle,
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Input } from './ui/input';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from './ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from './ui/alert-dialog';
 import { Channel, SubtitleTrack, AudioLanguage } from '../services/api';
 import { MaicaoflixLogo } from './MaicaoflixLogo';
 
@@ -46,6 +67,7 @@ function parseVttTime(timeStr: string): number {
 }
 
 function parseVttCues(vttText: string): SubtitleCue[] {
+  if (!vttText) return [];
   const lines = vttText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
   const result: SubtitleCue[] = [];
   let i = 0;
@@ -102,6 +124,7 @@ export const Player: React.FC<PlayerProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
 
+  // Playback states
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -109,35 +132,44 @@ export const Player: React.FC<PlayerProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [bufferedEnd, setBufferedEnd] = useState(0);
   const [showControls, setShowControls] = useState(true);
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
 
   // Advanced features state
   const [aspectRatio, setAspectRatio] = useState<'contain' | 'cover' | 'fill'>('contain');
+  const [playbackRate, setPlaybackRate] = useState<number>(1);
   const [levels, setLevels] = useState<{ id: number; height: number; bitrate: number }[]>([]);
   const [currentLevel, setCurrentLevel] = useState<number>(-1); // -1 = Auto
   const [audioTracks, setAudioTracks] = useState<{ id: number; name: string; lang: string }[]>([]);
   const [currentAudioTrack, setCurrentAudioTrack] = useState<number>(0);
+
+  // Subtitles
   const [selectedSubtitle, setSelectedSubtitle] = useState<string>('none');
   const [cues, setCues] = useState<SubtitleCue[]>([]);
   const [activeCueText, setActiveCueText] = useState<string | null>(null);
-  const savedPositionRef = useRef<number>(0);
-  const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+
+  // Modals & Panels
+  const [showSettingsDialog, setShowSettingsDialog] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'audio' | 'subtitles' | 'quality' | 'speed'>('audio');
   const [showChannelDrawer, setShowChannelDrawer] = useState(false);
   const [channelSearch, setChannelSearch] = useState('');
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorAlert, setErrorAlert] = useState<{ open: boolean; message: string } | null>(null);
 
+  const savedPositionRef = useRef<number>(0);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const initHls = () => {
+  // Initialize and play HLS stream
+  const initHls = useCallback(() => {
     const video = videoRef.current;
     if (!video || !url) return;
 
     setIsLoading(true);
-    setErrorMessage(null);
+    setErrorAlert(null);
 
     const resumeTime = savedPositionRef.current > 0 ? savedPositionRef.current : 0;
 
-    // If Hls is already running and only URL changed (e.g. audio stream variant switch):
+    // Fast-path: if HLS instance already exists and only the variant URL changed (e.g. audio switch)
     if (hlsRef.current && Hls.isSupported() && (url.includes('.m3u8') || !url.endsWith('.mp4'))) {
       hlsRef.current.loadSource(url);
       hlsRef.current.once(Hls.Events.MANIFEST_PARSED, () => {
@@ -145,11 +177,12 @@ export const Player: React.FC<PlayerProps> = ({
         if (resumeTime > 0 && videoRef.current) {
           videoRef.current.currentTime = resumeTime;
         }
-        videoRef.current?.play().catch(() => setIsPlaying(false));
+        attemptPlay(video);
       });
       return;
     }
 
+    // Clean up previous instance
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
@@ -178,10 +211,17 @@ export const Player: React.FC<PlayerProps> = ({
           }
         : {
             enableWorker: true,
-            lowLatencyMode: true,
-            backBufferLength: 60,
-            maxBufferLength: 30,
-            maxMaxBufferLength: 60,
+            lowLatencyMode: false, // Critical: lowLatencyMode must be false for smooth VOD seeking & playback
+            backBufferLength: 90,
+            maxBufferLength: 60,
+            maxMaxBufferLength: 120,
+            manifestLoadingTimeOut: 18000,
+            manifestLoadingMaxRetry: 5,
+            levelLoadingTimeOut: 18000,
+            levelLoadingMaxRetry: 5,
+            fragLoadingTimeOut: 25000,
+            fragLoadingMaxRetry: 6,
+            fragLoadingRetryDelay: 600,
           };
 
       const hls = new Hls(hlsConfig);
@@ -192,7 +232,6 @@ export const Player: React.FC<PlayerProps> = ({
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
         setIsLoading(false);
-        // Extract resolution levels
         if (data.levels && data.levels.length > 0) {
           const lvls = data.levels.map((lvl, index) => ({
             id: index,
@@ -204,7 +243,7 @@ export const Player: React.FC<PlayerProps> = ({
         if (resumeTime > 0) {
           video.currentTime = resumeTime;
         }
-        video.play().catch(() => setIsPlaying(false));
+        attemptPlay(video);
       });
 
       hls.on(Hls.Events.LEVEL_UPDATED, (_, data) => {
@@ -229,13 +268,20 @@ export const Player: React.FC<PlayerProps> = ({
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
+              console.warn('HLS Network Error, attempting recovery...');
               hls.startLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
+              console.warn('HLS Media Error, attempting recovery...');
               hls.recoverMediaError();
               break;
             default:
-              setErrorMessage('Error fatal al cargar la transmisión. Reintentando...');
+              console.error('Fatal HLS Error:', data);
+              setErrorAlert({
+                open: true,
+                message:
+                  'No se pudo reproducir la transmisión. Esto puede deberse a un problema de conexión con el servidor o al formato de video.',
+              });
               hls.destroy();
               break;
           }
@@ -247,6 +293,7 @@ export const Player: React.FC<PlayerProps> = ({
         }
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl') || url.endsWith('.mp4')) {
+      // Native Apple HLS / MP4 (Safari, iOS, TV browsers)
       video.src = url;
       video.addEventListener(
         'loadedmetadata',
@@ -255,22 +302,150 @@ export const Player: React.FC<PlayerProps> = ({
           if (resumeTime > 0) {
             video.currentTime = resumeTime;
           }
-          video.play().catch(() => setIsPlaying(false));
+          attemptPlay(video);
         },
         { once: true }
       );
     }
+  }, [url, isLive, audioLanguages]);
+
+  // Resilient play with unmuted -> muted autoplay fallback
+  const attemptPlay = (video: HTMLVideoElement) => {
+    const promise = video.play();
+    if (promise !== undefined) {
+      promise
+        .then(() => {
+          setIsPlaying(true);
+          setAutoplayBlocked(false);
+        })
+        .catch((err) => {
+          console.warn('Browser blocked unmuted playback, retrying muted:', err);
+          video.muted = true;
+          setIsMuted(true);
+          video
+            .play()
+            .then(() => {
+              setIsPlaying(true);
+              setAutoplayBlocked(true);
+            })
+            .catch((err2) => {
+              console.warn('Muted autoplay also rejected:', err2);
+              setIsPlaying(false);
+            });
+        });
+    }
   };
 
+  // Mount/Unmount stream
   useEffect(() => {
     initHls();
     return () => {
       if (hlsRef.current) {
         hlsRef.current.destroy();
+        hlsRef.current = null;
       }
     };
-  }, [url]);
+  }, [initHls]);
 
+  // Sync external audio languages from API
+  useEffect(() => {
+    if (audioLanguages && audioLanguages.length > 0 && audioTracks.length === 0) {
+      setAudioTracks(
+        audioLanguages.map((a) => ({
+          id: a.id,
+          name: a.name,
+          lang: a.code,
+        }))
+      );
+    }
+  }, [audioLanguages, audioTracks.length]);
+
+  // Fetch and parse subtitle cues for elevated subtitle overlay
+  useEffect(() => {
+    if (!selectedSubtitle || selectedSubtitle === 'none') {
+      setCues([]);
+      setActiveCueText(null);
+      return;
+    }
+
+    let isMounted = true;
+    fetch(selectedSubtitle)
+      .then((res) => res.text())
+      .then((text) => {
+        if (!isMounted) return;
+        const parsed = parseVttCues(text);
+        setCues(parsed);
+      })
+      .catch((err) => {
+        console.warn('Error fetching subtitle file:', err);
+        if (isMounted) setCues([]);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedSubtitle]);
+
+  // Keyboard controls
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept typing in inputs
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) {
+        return;
+      }
+
+      switch (e.key) {
+        case ' ':
+        case 'k':
+        case 'K':
+          e.preventDefault();
+          togglePlay();
+          break;
+        case 'f':
+        case 'F':
+          e.preventDefault();
+          toggleFullscreen();
+          break;
+        case 'm':
+        case 'M':
+          e.preventDefault();
+          toggleMute();
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          skipSeconds(-10);
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          skipSeconds(10);
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          adjustVolume(0.1);
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          adjustVolume(-0.1);
+          break;
+        case 'Escape':
+          if (showSettingsDialog) {
+            setShowSettingsDialog(false);
+          } else if (showChannelDrawer) {
+            setShowChannelDrawer(false);
+          } else if (errorAlert) {
+            setErrorAlert(null);
+          } else {
+            onClose();
+          }
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showSettingsDialog, showChannelDrawer, errorAlert, isPlaying, isMuted, volume, duration]);
+
+  // Playback actions
   const togglePlay = () => {
     if (!videoRef.current) return;
     if (isPlaying) {
@@ -284,8 +459,29 @@ export const Player: React.FC<PlayerProps> = ({
 
   const toggleMute = () => {
     if (!videoRef.current) return;
-    videoRef.current.muted = !isMuted;
-    setIsMuted(!isMuted);
+    const newMuted = !isMuted;
+    videoRef.current.muted = newMuted;
+    setIsMuted(newMuted);
+    if (!newMuted && autoplayBlocked) {
+      setAutoplayBlocked(false);
+    }
+  };
+
+  const unmuteAndPlay = () => {
+    if (!videoRef.current) return;
+    videoRef.current.muted = false;
+    setIsMuted(false);
+    setAutoplayBlocked(false);
+    videoRef.current.play().catch(() => {});
+  };
+
+  const adjustVolume = (delta: number) => {
+    if (!videoRef.current) return;
+    const newVol = Math.max(0, Math.min(1, volume + delta));
+    setVolume(newVol);
+    videoRef.current.volume = newVol;
+    videoRef.current.muted = newVol === 0;
+    setIsMuted(newVol === 0);
   };
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -300,7 +496,8 @@ export const Player: React.FC<PlayerProps> = ({
 
   const skipSeconds = (seconds: number) => {
     if (!videoRef.current) return;
-    videoRef.current.currentTime = Math.max(0, Math.min(duration, videoRef.current.currentTime + seconds));
+    const maxDur = duration > 0 ? duration : (videoRef.current.duration || 0);
+    videoRef.current.currentTime = Math.max(0, Math.min(maxDur, videoRef.current.currentTime + seconds));
   };
 
   const toggleFullscreen = () => {
@@ -338,49 +535,15 @@ export const Player: React.FC<PlayerProps> = ({
     if (hlsRef.current) {
       hlsRef.current.currentLevel = levelIndex;
     }
-    setShowSettingsMenu(false);
   };
 
-  // Sync external audio languages from API
-  useEffect(() => {
-    if (audioLanguages && audioLanguages.length > 0 && audioTracks.length === 0) {
-      setAudioTracks(
-        audioLanguages.map((a) => ({
-          id: a.id,
-          name: a.name,
-          lang: a.code,
-        }))
-      );
+  const changePlaybackRate = (rate: number) => {
+    setPlaybackRate(rate);
+    if (videoRef.current) {
+      videoRef.current.playbackRate = rate;
     }
-  }, [audioLanguages, audioTracks.length]);
+  };
 
-  // Fetch and parse subtitle cues for custom elevated overlay
-  useEffect(() => {
-    if (!selectedSubtitle || selectedSubtitle === 'none') {
-      setCues([]);
-      setActiveCueText(null);
-      return;
-    }
-
-    let isMounted = true;
-    fetch(selectedSubtitle)
-      .then((res) => res.text())
-      .then((text) => {
-        if (!isMounted) return;
-        const parsed = parseVttCues(text);
-        setCues(parsed);
-      })
-      .catch((err) => {
-        console.warn('Error fetching subtitle file:', err);
-        if (isMounted) setCues([]);
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [selectedSubtitle]);
-
-  // Handle subtitle selection in real time
   const switchSubtitle = (subUrl: string) => {
     setSelectedSubtitle(subUrl);
     if (subUrl === 'none') {
@@ -409,14 +572,13 @@ export const Player: React.FC<PlayerProps> = ({
       // 2. Stream variant switch: resolves new audio URL while preserving currentTime
       onSwitchAudioTrack(trackIndex);
     }
-    setShowSettingsMenu(false);
   };
 
   const handleMouseMove = () => {
     setShowControls(true);
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     controlsTimeoutRef.current = setTimeout(() => {
-      if (isPlaying && !showSettingsMenu && !showChannelDrawer) {
+      if (isPlaying && !showSettingsDialog && !showChannelDrawer) {
         setShowControls(false);
       }
     }, 3500);
@@ -426,7 +588,7 @@ export const Player: React.FC<PlayerProps> = ({
     setShowControls((prev) => !prev);
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     controlsTimeoutRef.current = setTimeout(() => {
-      if (isPlaying && !showSettingsMenu && !showChannelDrawer) {
+      if (isPlaying && !showSettingsDialog && !showChannelDrawer) {
         setShowControls(false);
       }
     }, 4000);
@@ -456,6 +618,8 @@ export const Player: React.FC<PlayerProps> = ({
       <video
         ref={videoRef}
         crossOrigin="anonymous"
+        autoPlay
+        playsInline
         onTimeUpdate={() => {
           if (videoRef.current) {
             const cur = videoRef.current.currentTime;
@@ -463,7 +627,12 @@ export const Player: React.FC<PlayerProps> = ({
             setDuration(videoRef.current.duration || 0);
             savedPositionRef.current = cur;
 
-            // Live check for active subtitle cue
+            // Buffered range indicator
+            if (videoRef.current.buffered.length > 0) {
+              setBufferedEnd(videoRef.current.buffered.end(videoRef.current.buffered.length - 1));
+            }
+
+            // Real-time subtitle cue lookup
             if (cues.length > 0 && selectedSubtitle !== 'none') {
               const match = cues.find((c) => cur >= c.start && cur <= c.end);
               const txt = match ? match.text : null;
@@ -488,7 +657,6 @@ export const Player: React.FC<PlayerProps> = ({
             ? 'object-cover'
             : 'object-fill'
         }`}
-        playsInline
       />
 
       {/* Elevated High-Visibility Netflix-Style Subtitle Overlay */}
@@ -499,7 +667,7 @@ export const Player: React.FC<PlayerProps> = ({
           }`}
         >
           <div
-            className="bg-black/85 text-white font-semibold text-base sm:text-xl md:text-2xl px-4 py-2 rounded-lg shadow-2xl text-center max-w-[90%] sm:max-w-[80%] whitespace-pre-line leading-relaxed tracking-wide border border-white/10 backdrop-blur-sm select-none"
+            className="bg-black/85 text-white font-semibold text-base sm:text-xl md:text-2xl px-5 py-2.5 rounded-lg shadow-2xl text-center max-w-[90%] sm:max-w-[80%] whitespace-pre-line leading-relaxed tracking-wide border border-white/10 backdrop-blur-sm select-none"
             style={{
               textShadow: '0 2px 4px rgba(0,0,0,0.95), 0 0 2px rgba(0,0,0,0.9)',
             }}
@@ -511,20 +679,22 @@ export const Player: React.FC<PlayerProps> = ({
 
       {/* Loading Spinner Overlay */}
       {isLoading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 pointer-events-none">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 pointer-events-none z-30">
           <div className="w-12 h-12 rounded-full border-4 border-white/20 border-t-[#e50914] animate-spin mb-3" />
           <p className="text-zinc-200 text-sm font-semibold tracking-wide">Cargando...</p>
         </div>
       )}
 
-      {/* Error Alert Overlay */}
-      {errorMessage && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 p-6 text-center z-30">
-          <p className="text-red-400 font-semibold mb-4 text-sm">{errorMessage}</p>
-          <Button onClick={initHls} className="gap-2 bg-[#e50914] hover:bg-red-700 text-white font-bold">
-            <RefreshCw className="h-4 w-4" /> Reintentar conexión
-          </Button>
-        </div>
+      {/* Autoplay Blocked Floating Pill (Unmute prompt) */}
+      {autoplayBlocked && (
+        <button
+          type="button"
+          onClick={unmuteAndPlay}
+          className="absolute top-20 left-1/2 -translate-x-1/2 z-40 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-2xl animate-bounce cursor-pointer"
+        >
+          <VolumeX className="w-4 h-4" />
+          <span>El navegador silenció el audio — Haz clic aquí para activar el sonido</span>
+        </button>
       )}
 
       {/* Centered Large Play/Pause Touch Control */}
@@ -548,22 +718,23 @@ export const Player: React.FC<PlayerProps> = ({
 
       {/* Top Header Overlay */}
       <div
-        className={`absolute top-0 left-0 right-0 p-4 sm:p-5 bg-gradient-to-b from-black/90 via-black/40 to-transparent flex items-center justify-between transition-opacity duration-300 z-20 ${
+        className={`absolute top-0 left-0 right-0 p-4 sm:p-5 bg-gradient-to-b from-black/95 via-black/50 to-transparent flex items-center justify-between transition-opacity duration-300 z-20 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
-        <div className="flex items-center gap-2.5 min-w-0 pr-2">
-          {/* Back button for mobile & easy exit */}
+        <div className="flex items-center gap-3 min-w-0 pr-2">
+          {/* Back button */}
           <Button
             variant="ghost"
             size="icon"
             onClick={onClose}
             className="rounded-full bg-black/60 hover:bg-zinc-800 text-white h-9 w-9 shrink-0 cursor-pointer"
+            title="Volver"
           >
             <ArrowLeft className="h-5 w-5" />
           </Button>
 
-          <MaicaoflixLogo width={95} height={20} className="hidden sm:block ml-1 mr-2" />
+          <MaicaoflixLogo width={100} height={22} className="hidden sm:block ml-1 mr-2" />
 
           {isLive ? (
             <Badge variant="destructive" className="bg-red-600 font-bold px-2 py-0.5 tracking-wider animate-pulse shrink-0 text-[10px]">
@@ -582,7 +753,7 @@ export const Player: React.FC<PlayerProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Quick Channels Switcher Button (For Live TV) */}
+          {/* Quick Channels Guide for Live TV */}
           {channels.length > 0 && (
             <Button
               variant="outline"
@@ -590,17 +761,18 @@ export const Player: React.FC<PlayerProps> = ({
               onClick={() => setShowChannelDrawer(!showChannelDrawer)}
               className="gap-2 rounded-lg border-zinc-700 bg-zinc-900/80 text-zinc-200 hover:text-white text-xs h-9"
             >
-              <ListVideo className="h-4 w-4 text-rose-500" />
+              <ListVideo className="h-4 w-4 text-red-500" />
               <span>Canales ({channels.length})</span>
             </Button>
           )}
 
-          {/* Aspect Ratio Toggle */}
+          {/* Aspect Ratio Cycler */}
           <Button
             variant="ghost"
             size="sm"
             onClick={cycleAspectRatio}
             className="rounded-lg text-zinc-300 hover:text-white bg-zinc-900/60 hover:bg-zinc-800 text-xs px-2.5 h-9"
+            title="Cambiar relación de aspecto"
           >
             {aspectRatio === 'contain' ? 'Ajustar' : aspectRatio === 'cover' ? 'Rellenar' : 'Estirar'}
           </Button>
@@ -611,18 +783,19 @@ export const Player: React.FC<PlayerProps> = ({
             size="icon"
             onClick={onClose}
             className="rounded-full bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white h-9 w-9"
+            title="Cerrar reproductor"
           >
             <X className="h-5 w-5" />
           </Button>
         </div>
       </div>
 
-      {/* Quick Channels Sidebar Drawer (Inside Player) */}
+      {/* Quick Channels Sidebar Drawer (For Live TV) */}
       {showChannelDrawer && channels.length > 0 && (
         <div className="absolute top-0 right-0 bottom-0 w-80 bg-zinc-950/95 backdrop-blur-xl border-l border-zinc-800/80 z-40 p-4 flex flex-col shadow-2xl animate-in slide-in-from-right duration-200">
           <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
             <div className="flex items-center gap-2">
-              <Tv className="h-4 w-4 text-rose-500" />
+              <Tv className="h-4 w-4 text-red-500" />
               <h3 className="text-sm font-bold text-white">Guía de Canales</h3>
             </div>
             <Button
@@ -642,7 +815,7 @@ export const Player: React.FC<PlayerProps> = ({
                 placeholder="Buscar canal..."
                 value={channelSearch}
                 onChange={(e) => setChannelSearch(e.target.value)}
-                className="pl-8 text-xs h-8 bg-zinc-900 border-zinc-800"
+                className="pl-8 text-xs h-8 bg-zinc-900 border-zinc-800 text-white"
               />
             </div>
           </div>
@@ -678,116 +851,42 @@ export const Player: React.FC<PlayerProps> = ({
         </div>
       )}
 
-      {/* Settings Popup Menu (Quality & Audio) */}
-      {showSettingsMenu && (
-        <div className="absolute bottom-20 right-6 z-30 w-64 bg-zinc-950/95 backdrop-blur-xl border border-zinc-800 rounded-xl p-3 shadow-2xl space-y-3 animate-in fade-in duration-150">
-          <div>
-            <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2 px-1">
-              Resolución / Calidad
-            </h4>
-            <div className="space-y-1 max-h-36 overflow-y-auto">
-              <Button
-                variant={currentLevel === -1 ? 'secondary' : 'ghost'}
-                size="sm"
-                onClick={() => setQualityLevel(-1)}
-                className="w-full justify-between text-xs h-7 px-2 font-medium"
-              >
-                <span>Automático (Adaptativo)</span>
-                {currentLevel === -1 && <Check className="h-3.5 w-3.5 text-rose-500" />}
-              </Button>
-              {levels.map((lvl) => (
-                <Button
-                  key={lvl.id}
-                  variant={currentLevel === lvl.id ? 'secondary' : 'ghost'}
-                  size="sm"
-                  onClick={() => setQualityLevel(lvl.id)}
-                  className="w-full justify-between text-xs h-7 px-2 font-medium"
-                >
-                  <span>{lvl.height > 0 ? `${lvl.height}p` : `Nivel ${lvl.id + 1}`}</span>
-                  {currentLevel === lvl.id && <Check className="h-3.5 w-3.5 text-rose-500" />}
-                </Button>
-              ))}
-            </div>
-          </div>
-
-          {audioTracks.length > 0 && (
-            <div className="pt-2 border-t border-zinc-800">
-              <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2 px-1">
-                Idioma / Audio
-              </h4>
-              <div className="space-y-1">
-                {audioTracks.map((track) => (
-                  <Button
-                    key={track.id}
-                    variant={currentAudioTrack === track.id ? 'secondary' : 'ghost'}
-                    size="sm"
-                    onClick={() => setAudioTrack(track.id)}
-                    className="w-full justify-between text-xs h-7 px-2 font-medium"
-                  >
-                    <span>{track.name}</span>
-                    {currentAudioTrack === track.id && <Check className="h-3.5 w-3.5 text-rose-500" />}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {subtitles.length > 0 && (
-            <div className="pt-2 border-t border-zinc-800">
-              <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2 px-1 flex items-center justify-between">
-                <span>Subtítulos</span>
-                <span className="text-[10px] text-zinc-500 font-normal lowercase">{subtitles.length} disponibles</span>
-              </h4>
-              <div className="space-y-1 max-h-36 overflow-y-auto">
-                <Button
-                  variant={selectedSubtitle === 'none' ? 'secondary' : 'ghost'}
-                  size="sm"
-                  onClick={() => switchSubtitle('none')}
-                  className="w-full justify-between text-xs h-7 px-2 font-medium"
-                >
-                  <span>Desactivados</span>
-                  {selectedSubtitle === 'none' && <Check className="h-3.5 w-3.5 text-rose-500" />}
-                </Button>
-                {subtitles.map((sub) => (
-                  <Button
-                    key={sub.url}
-                    variant={selectedSubtitle === sub.url ? 'secondary' : 'ghost'}
-                    size="sm"
-                    onClick={() => switchSubtitle(sub.url)}
-                    className="w-full justify-between text-xs h-7 px-2 font-medium"
-                  >
-                    <span>{sub.label}</span>
-                    {selectedSubtitle === sub.url && <Check className="h-3.5 w-3.5 text-rose-500" />}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Bottom Controls Overlay */}
       <div
-        className={`absolute bottom-0 left-0 right-0 p-5 bg-gradient-to-t from-black/95 via-black/60 to-transparent transition-opacity duration-300 z-20 ${
+        className={`absolute bottom-0 left-0 right-0 p-5 bg-gradient-to-t from-black/95 via-black/70 to-transparent transition-opacity duration-300 z-20 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
         {/* Timeline Seekbar (for VOD/Movies/Series) */}
         {!isLive && duration > 0 && duration !== Infinity && (
           <div className="mb-3 space-y-1">
-            <input
-              type="range"
-              min={0}
-              max={duration}
-              step={0.5}
-              value={progress}
-              onChange={(e) => {
-                const seek = parseFloat(e.target.value);
-                setProgress(seek);
-                if (videoRef.current) videoRef.current.currentTime = seek;
-              }}
-              className="w-full h-1 bg-zinc-700/60 hover:h-2 accent-[#e50914] rounded-lg cursor-pointer transition-all"
-            />
+            <div className="relative w-full h-1.5 bg-zinc-800/80 hover:h-2.5 rounded-lg cursor-pointer group transition-all">
+              {/* Buffered progress */}
+              {bufferedEnd > 0 && (
+                <div
+                  className="absolute top-0 bottom-0 left-0 bg-zinc-600/50 rounded-lg pointer-events-none"
+                  style={{ width: `${Math.min(100, (bufferedEnd / duration) * 100)}%` }}
+                />
+              )}
+              {/* Played progress */}
+              <div
+                className="absolute top-0 bottom-0 left-0 bg-[#e50914] rounded-lg pointer-events-none"
+                style={{ width: `${Math.min(100, (progress / duration) * 100)}%` }}
+              />
+              <input
+                type="range"
+                min={0}
+                max={duration}
+                step={0.5}
+                value={progress}
+                onChange={(e) => {
+                  const seek = parseFloat(e.target.value);
+                  setProgress(seek);
+                  if (videoRef.current) videoRef.current.currentTime = seek;
+                }}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+              />
+            </div>
             <div className="flex justify-between text-xs text-zinc-400 font-mono">
               <span>{formatTime(progress)}</span>
               <span>{formatTime(duration)}</span>
@@ -802,7 +901,7 @@ export const Player: React.FC<PlayerProps> = ({
               variant="outline"
               size="icon"
               onClick={togglePlay}
-              className="rounded-full bg-white text-zinc-950 hover:bg-zinc-200 border-none h-10 w-10 shrink-0"
+              className="rounded-full bg-white text-zinc-950 hover:bg-zinc-200 border-none h-10 w-10 shrink-0 cursor-pointer shadow-lg"
             >
               {isPlaying ? <Pause className="h-5 w-5 fill-current" /> : <Play className="h-5 w-5 fill-current ml-0.5" />}
             </Button>
@@ -814,7 +913,7 @@ export const Player: React.FC<PlayerProps> = ({
                   variant="ghost"
                   size="icon"
                   onClick={() => skipSeconds(-10)}
-                  className="text-zinc-300 hover:text-white rounded-full h-8 w-8"
+                  className="text-zinc-300 hover:text-white rounded-full h-8 w-8 cursor-pointer"
                   title="Retroceder 10s"
                 >
                   <RotateCcw className="h-4 w-4" />
@@ -823,7 +922,7 @@ export const Player: React.FC<PlayerProps> = ({
                   variant="ghost"
                   size="icon"
                   onClick={() => skipSeconds(10)}
-                  className="text-zinc-300 hover:text-white rounded-full h-8 w-8"
+                  className="text-zinc-300 hover:text-white rounded-full h-8 w-8 cursor-pointer"
                   title="Adelantar 10s"
                 >
                   <RotateCw className="h-4 w-4" />
@@ -833,9 +932,14 @@ export const Player: React.FC<PlayerProps> = ({
 
             {/* Volume Control */}
             <div className="flex items-center gap-2">
-              <Button variant="ghost" size="icon" onClick={toggleMute} className="text-zinc-300 hover:text-white h-8 w-8">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={toggleMute}
+                className="text-zinc-300 hover:text-white h-8 w-8 cursor-pointer"
+              >
                 {isMuted || volume === 0 ? (
-                  <VolumeX className="h-4 w-4 text-red-400" />
+                  <VolumeX className="h-4 w-4 text-red-500" />
                 ) : (
                   <Volume2 className="h-4 w-4" />
                 )}
@@ -859,13 +963,13 @@ export const Player: React.FC<PlayerProps> = ({
               variant="ghost"
               size="icon"
               onClick={initHls}
-              className="text-zinc-300 hover:text-white h-8 w-8"
+              className="text-zinc-300 hover:text-white h-8 w-8 cursor-pointer"
               title="Recargar transmisión"
             >
               <RefreshCw className="h-4 w-4" />
             </Button>
 
-            {/* Subtitles Button (if available) */}
+            {/* Subtitles Quick Toggle */}
             {subtitles.length > 0 && (
               <Button
                 variant="ghost"
@@ -884,7 +988,7 @@ export const Player: React.FC<PlayerProps> = ({
                 }}
                 className={`h-8 w-8 cursor-pointer ${
                   selectedSubtitle !== 'none'
-                    ? 'text-rose-400 bg-rose-500/10 hover:bg-rose-500/20'
+                    ? 'text-red-500 bg-red-950/40 hover:bg-red-950/60'
                     : 'text-zinc-400 hover:text-white'
                 }`}
                 title={`Subtítulos: ${
@@ -897,7 +1001,7 @@ export const Player: React.FC<PlayerProps> = ({
               </Button>
             )}
 
-            {/* PiP */}
+            {/* Picture in Picture */}
             <Button
               variant="ghost"
               size="icon"
@@ -908,13 +1012,13 @@ export const Player: React.FC<PlayerProps> = ({
               <PictureInPicture className="h-4 w-4" />
             </Button>
 
-            {/* Settings Menu (Quality / Audio) */}
+            {/* Settings Dialog Trigger */}
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => setShowSettingsMenu(!showSettingsMenu)}
-              className={`h-8 w-8 text-zinc-300 hover:text-white ${showSettingsMenu ? 'bg-zinc-800 text-white' : ''}`}
-              title="Calidad y Audio"
+              onClick={() => setShowSettingsDialog(true)}
+              className="h-8 w-8 text-zinc-300 hover:text-white cursor-pointer"
+              title="Audio, Subtítulos y Calidad"
             >
               <Settings className="h-4 w-4" />
             </Button>
@@ -924,7 +1028,7 @@ export const Player: React.FC<PlayerProps> = ({
               variant="ghost"
               size="icon"
               onClick={toggleFullscreen}
-              className="text-zinc-300 hover:text-white h-8 w-8"
+              className="text-zinc-300 hover:text-white h-8 w-8 cursor-pointer"
               title="Pantalla Completa"
             >
               {isFullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
@@ -932,6 +1036,234 @@ export const Player: React.FC<PlayerProps> = ({
           </div>
         </div>
       </div>
+
+      {/* ============================================================ */}
+      {/* SHADCN DIALOG: Audio, Subtitles, Quality & Speed             */}
+      {/* ============================================================ */}
+      <Dialog open={showSettingsDialog} onOpenChange={setShowSettingsDialog}>
+        <DialogContent className="max-w-md bg-zinc-950 border-zinc-800 text-white">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base font-bold">
+              <Sliders className="h-4 w-4 text-red-500" />
+              <span>Ajustes de Reproducción</span>
+            </DialogTitle>
+            <DialogDescription className="text-xs text-zinc-400">
+              Personaliza el audio, subtítulos, resolución y velocidad.
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Navigation Tabs */}
+          <div className="grid grid-cols-4 gap-1 p-1 bg-zinc-900 rounded-lg text-xs font-semibold">
+            <button
+              type="button"
+              onClick={() => setSettingsTab('audio')}
+              className={`py-1.5 rounded-md transition-all cursor-pointer ${
+                settingsTab === 'audio'
+                  ? 'bg-zinc-800 text-white shadow'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              Audio
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettingsTab('subtitles')}
+              className={`py-1.5 rounded-md transition-all cursor-pointer ${
+                settingsTab === 'subtitles'
+                  ? 'bg-zinc-800 text-white shadow'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              Subtítulos
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettingsTab('quality')}
+              className={`py-1.5 rounded-md transition-all cursor-pointer ${
+                settingsTab === 'quality'
+                  ? 'bg-zinc-800 text-white shadow'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              Calidad
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettingsTab('speed')}
+              className={`py-1.5 rounded-md transition-all cursor-pointer ${
+                settingsTab === 'speed'
+                  ? 'bg-zinc-800 text-white shadow'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              Velocidad
+            </button>
+          </div>
+
+          {/* Tab 1: Audio */}
+          {settingsTab === 'audio' && (
+            <div className="py-2 space-y-1.5 max-h-56 overflow-y-auto pr-1">
+              {audioTracks.length === 0 ? (
+                <p className="text-xs text-zinc-500 italic py-4 text-center">
+                  Solo una pista de audio disponible en esta transmisión.
+                </p>
+              ) : (
+                audioTracks.map((track) => (
+                  <Button
+                    key={track.id}
+                    variant={currentAudioTrack === track.id ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => {
+                      setAudioTrack(track.id);
+                      setShowSettingsDialog(false);
+                    }}
+                    className="w-full justify-between text-xs h-9 px-3 font-medium cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2">
+                      <AudioWaveform className="h-3.5 w-3.5 text-zinc-400" />
+                      <span>{track.name}</span>
+                    </div>
+                    {currentAudioTrack === track.id && (
+                      <Check className="h-4 w-4 text-red-500 font-bold" />
+                    )}
+                  </Button>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* Tab 2: Subtítulos */}
+          {settingsTab === 'subtitles' && (
+            <div className="py-2 space-y-1.5 max-h-56 overflow-y-auto pr-1">
+              <Button
+                variant={selectedSubtitle === 'none' ? 'secondary' : 'ghost'}
+                size="sm"
+                onClick={() => {
+                  switchSubtitle('none');
+                  setShowSettingsDialog(false);
+                }}
+                className="w-full justify-between text-xs h-9 px-3 font-medium cursor-pointer"
+              >
+                <span>Desactivados</span>
+                {selectedSubtitle === 'none' && (
+                  <Check className="h-4 w-4 text-red-500 font-bold" />
+                )}
+              </Button>
+              {subtitles.map((sub) => (
+                <Button
+                  key={sub.url}
+                  variant={selectedSubtitle === sub.url ? 'secondary' : 'ghost'}
+                  size="sm"
+                  onClick={() => {
+                    switchSubtitle(sub.url);
+                    setShowSettingsDialog(false);
+                  }}
+                  className="w-full justify-between text-xs h-9 px-3 font-medium cursor-pointer"
+                >
+                  <span>{sub.label}</span>
+                  {selectedSubtitle === sub.url && (
+                    <Check className="h-4 w-4 text-red-500 font-bold" />
+                  )}
+                </Button>
+              ))}
+              {subtitles.length === 0 && (
+                <p className="text-xs text-zinc-500 italic py-4 text-center">
+                  No hay subtítulos externos disponibles para este contenido.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Tab 3: Calidad */}
+          {settingsTab === 'quality' && (
+            <div className="py-2 space-y-1.5 max-h-56 overflow-y-auto pr-1">
+              <Button
+                variant={currentLevel === -1 ? 'secondary' : 'ghost'}
+                size="sm"
+                onClick={() => {
+                  setQualityLevel(-1);
+                  setShowSettingsDialog(false);
+                }}
+                className="w-full justify-between text-xs h-9 px-3 font-medium cursor-pointer"
+              >
+                <span>Automático (Adaptativo)</span>
+                {currentLevel === -1 && <Check className="h-4 w-4 text-red-500 font-bold" />}
+              </Button>
+              {levels.map((lvl) => (
+                <Button
+                  key={lvl.id}
+                  variant={currentLevel === lvl.id ? 'secondary' : 'ghost'}
+                  size="sm"
+                  onClick={() => {
+                    setQualityLevel(lvl.id);
+                    setShowSettingsDialog(false);
+                  }}
+                  className="w-full justify-between text-xs h-9 px-3 font-medium cursor-pointer"
+                >
+                  <span>{lvl.height > 0 ? `${lvl.height}p` : `Nivel ${lvl.id + 1}`}</span>
+                  {currentLevel === lvl.id && (
+                    <Check className="h-4 w-4 text-red-500 font-bold" />
+                  )}
+                </Button>
+              ))}
+            </div>
+          )}
+
+          {/* Tab 4: Velocidad */}
+          {settingsTab === 'speed' && (
+            <div className="py-2 space-y-1.5 max-h-56 overflow-y-auto pr-1">
+              {[0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => (
+                <Button
+                  key={rate}
+                  variant={playbackRate === rate ? 'secondary' : 'ghost'}
+                  size="sm"
+                  onClick={() => {
+                    changePlaybackRate(rate);
+                    setShowSettingsDialog(false);
+                  }}
+                  className="w-full justify-between text-xs h-9 px-3 font-medium cursor-pointer"
+                >
+                  <span>{rate === 1 ? '1.0x (Normal)' : `${rate}x`}</span>
+                  {playbackRate === rate && (
+                    <Check className="h-4 w-4 text-red-500 font-bold" />
+                  )}
+                </Button>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ============================================================ */}
+      {/* SHADCN ALERT DIALOG: Fatal Playback Errors                   */}
+      {/* ============================================================ */}
+      {errorAlert && (
+        <AlertDialog open={errorAlert.open} onOpenChange={(open) => !open && setErrorAlert(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <div className="flex items-center gap-2 text-red-500 mb-1">
+                <AlertTriangle className="h-5 w-5" />
+                <AlertDialogTitle>Error de reproducción</AlertDialogTitle>
+              </div>
+              <AlertDialogDescription>{errorAlert.message}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={onClose}>Cerrar reproductor</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  setErrorAlert(null);
+                  initHls();
+                }}
+                className="bg-red-600 hover:bg-red-700 text-white"
+              >
+                Reintentar
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </div>
   );
 };
+
+export default Player;

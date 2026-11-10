@@ -20,6 +20,15 @@ import { MaicaoflixLogo } from './MaicaoflixLogo';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogAction,
+} from './ui/alert-dialog';
+import {
   api,
   MediaItem,
   MediaDetailResponse,
@@ -77,6 +86,7 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
   >({});
   const [isResolving, setIsResolving] = useState(false);
   const [resolvingEpId, setResolvingEpId] = useState<string | null>(null);
+  const [errorAlert, setErrorAlert] = useState<{ open: boolean; title: string; description: string } | null>(null);
 
   // Scroll to top on page load
   useEffect(() => {
@@ -194,7 +204,7 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
     setIsResolving(true);
     try {
       const targetId = detail?.item?.id || media.id;
-      const res = await api.resolveVod(targetId);
+      const res = await api.resolveMedia(targetId);
       if (res && res.url) {
         onPlayMovie(
           res.url,
@@ -205,11 +215,19 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
           targetId
         );
       } else {
-        alert('No se pudo obtener el enlace de reproducción.');
+        setErrorAlert({
+          open: true,
+          title: 'Error de reproducción',
+          description: 'No se pudo obtener el enlace de transmisión para esta película.',
+        });
       }
     } catch (err) {
       console.error('Error resolving movie:', err);
-      alert('Error de conexión al obtener el streaming.');
+      setErrorAlert({
+        open: true,
+        title: 'Error de conexión',
+        description: 'Error al conectar con el servidor de streaming.',
+      });
     } finally {
       setIsResolving(false);
     }
@@ -220,10 +238,12 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
     setIsResolving(true);
     setResolvingEpId(ep.id);
     try {
-      const parentId = selectedSeasonId || media.id;
-      const res = await api.resolveVod(parentId, ep.id);
+      const seriesId = selectedSeasonId || media.id;
+      // Content ID (ep.id) first, series ID second
+      const res = await api.resolveMedia(ep.id, seriesId);
       if (res && res.url) {
-        const epLabel = `T${selectedSeasonNumber} : E${ep.number} — ${ep.name || ep.title}`;
+        const cleanEpTitle = cleanEpisodeTitle(ep.name || ep.title || `Capítulo ${ep.number}`);
+        const epLabel = `T${selectedSeasonNumber} : E${ep.number} — ${cleanEpTitle}`;
         onPlayEpisode(
           res.url,
           detail?.item?.title || media.title,
@@ -231,14 +251,22 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
           res.subtitles,
           res.audioLanguages,
           ep.id,
-          parentId
+          seriesId
         );
       } else {
-        alert('No se pudo reproducir este episodio.');
+        setErrorAlert({
+          open: true,
+          title: 'Error de reproducción',
+          description: 'No se pudo obtener el enlace de streaming para este episodio.',
+        });
       }
     } catch (err) {
       console.error('Error resolving episode:', err);
-      alert('Error al conectar con la transmisión del episodio.');
+      setErrorAlert({
+        open: true,
+        title: 'Error de conexión',
+        description: 'Error al conectar con la transmisión del episodio.',
+      });
     } finally {
       setIsResolving(false);
       setResolvingEpId(null);
@@ -651,6 +679,21 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
           </section>
         )}
       </div>
+
+      {/* Error Alert Dialog */}
+      {errorAlert && (
+        <AlertDialog open={errorAlert.open} onOpenChange={(open) => !open && setErrorAlert(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{errorAlert.title}</AlertDialogTitle>
+              <AlertDialogDescription>{errorAlert.description}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogAction onClick={() => setErrorAlert(null)}>Aceptar</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </div>
   );
 };
