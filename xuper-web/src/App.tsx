@@ -483,14 +483,12 @@ export const App: React.FC = () => {
                   </div>
                   <div>
                     <div className="flex items-center gap-1.5">
-                      <span className="font-black text-lg tracking-wider bg-gradient-to-r from-white via-zinc-200 to-zinc-400 bg-clip-text text-transparent">
-                        XUPER
-                      </span>
-                      <Badge variant="outline" className="text-[9px] uppercase font-bold py-0 px-1 border-rose-500/50 text-rose-400 bg-rose-950/20">
+                      <span className="font-extrabold text-base tracking-wider text-white">
                         STREAM
-                      </Badge>
+                      </span>
+                      <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />
                     </div>
-                    <p className="text-[10px] text-zinc-500 font-medium">Portal Ultra HD</p>
+                    <p className="text-[10px] text-zinc-500 font-medium">Ultra HD</p>
                   </div>
                 </div>
                 <Button
@@ -556,14 +554,12 @@ export const App: React.FC = () => {
               {!isSidebarCollapsed && (
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <span className="font-black text-lg tracking-wider bg-gradient-to-r from-white via-zinc-200 to-zinc-400 bg-clip-text text-transparent">
-                      XUPER
-                    </span>
-                    <Badge variant="outline" className="text-[9px] uppercase font-bold py-0 px-1 border-rose-500/50 text-rose-400 bg-rose-950/20">
+                    <span className="font-extrabold text-base tracking-wider text-white">
                       STREAM
-                    </Badge>
+                    </span>
+                    <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />
                   </div>
-                  <p className="text-[10px] text-zinc-500 font-medium truncate">Portal Ultra HD</p>
+                  <p className="text-[10px] text-zinc-500 font-medium truncate">Ultra HD</p>
                 </div>
               )}
             </div>

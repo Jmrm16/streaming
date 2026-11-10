@@ -68,7 +68,7 @@ const server = http.createServer((req, res) => {
   // Health check & root status for Render
   if (u.pathname === "/" || u.pathname === "") {
     return json(res, 200, {
-      name: "XUPER Streaming Cloud API",
+      name: "Streaming Cloud API",
       status: "online",
       version: "1.0.0",
       sessionReady: magis.session.ready,
