@@ -25,6 +25,7 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Input } from './ui/input';
 import { Channel, SubtitleTrack, AudioLanguage } from '../services/api';
+import { MaicaoflixLogo } from './MaicaoflixLogo';
 
 interface SubtitleCue {
   start: number;
@@ -561,6 +562,8 @@ export const Player: React.FC<PlayerProps> = ({
           >
             <ArrowLeft className="h-5 w-5" />
           </Button>
+
+          <MaicaoflixLogo width={95} height={20} className="hidden sm:block ml-1 mr-2" />
 
           {isLive ? (
             <Badge variant="destructive" className="bg-red-600 font-bold px-2 py-0.5 tracking-wider animate-pulse shrink-0 text-[10px]">

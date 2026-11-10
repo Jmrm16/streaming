@@ -114,7 +114,7 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
                   onClick={() => onSelectChannel && onSelectChannel(channel)}
                 >
                   <div className="media-card-art flex flex-col items-center justify-center p-4 bg-[#1f1f1f] relative overflow-hidden">
-                    <span className="card-netflix">N</span>
+                    <span className="card-netflix">M</span>
                     <span className="absolute top-2 right-2 text-[9px] font-bold text-red-500 bg-red-950/70 border border-red-800/60 px-1.5 py-0.5 rounded">
                       ● VIVO
                     </span>
@@ -176,12 +176,12 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
                       className="w-full h-full object-cover transition-transform group-hover:brightness-105"
                       onError={(e) => {
                         (e.target as HTMLImageElement).src =
-                          'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="600" height="338"%3E%3Crect width="100%25" height="100%25" fill="%23242424"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dominant-baseline="middle" fill="%23e50914" font-family="Arial" font-size="36" font-weight="bold"%3ENETFLIX%3C/text%3E%3C/svg%3E';
+                          'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="600" height="338"%3E%3Crect width="100%25" height="100%25" fill="%23242424"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dominant-baseline="middle" fill="%23e50914" font-family="Arial" font-size="34" font-weight="bold"%3EMAICAOFLIX%3C/text%3E%3C/svg%3E';
                       }}
                     />
 
-                    {/* Iconic Netflix "N" mark */}
-                    <span className="card-netflix">N</span>
+                    {/* Iconic Maicaoflix "M" mark */}
+                    <span className="card-netflix">M</span>
 
                     {/* Top 10 Red Badge for Trending */}
                     {isTop10 && idx < 10 && (
