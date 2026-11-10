@@ -23,13 +23,15 @@ import {
   PanelLeft,
   Menu,
   Activity,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Card, CardContent } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Badge } from './components/ui/badge';
 import { Player } from './components/Player';
-import { MediaDetailModal } from './components/MediaDetailModal';
+import { MediaDetailPage } from './components/MediaDetailPage';
 import { api, Channel, MediaItem, getApiBaseUrl, setApiBaseUrl } from './services/api';
 
 export const App: React.FC = () => {
@@ -81,6 +83,7 @@ export const App: React.FC = () => {
     return localStorage.getItem('xuper_sidebar_collapsed') === 'true';
   });
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [showApiUrl, setShowApiUrl] = useState(false);
   const searchInputRef = React.useRef<HTMLInputElement>(null);
 
   const toggleSidebar = () => {
@@ -265,8 +268,8 @@ export const App: React.FC = () => {
     );
   };
 
-  const toggleFavoriteMedia = (e: React.MouseEvent, item: MediaItem) => {
-    e.stopPropagation();
+  const toggleFavoriteMedia = (e: React.MouseEvent | undefined, item: MediaItem) => {
+    if (e) e.stopPropagation();
     let updated: MediaItem[];
     const exists = favMedia.some((m) => m.id === item.id);
     if (exists) {
@@ -402,6 +405,7 @@ export const App: React.FC = () => {
                 size="sm"
                 title={isCollapsed ? item.label : undefined}
                 onClick={() => {
+                  setSelectedMedia(null);
                   setSearchQuery('');
                   setActiveTab(item.id);
                   if (onNavClick) onNavClick();
@@ -495,8 +499,8 @@ export const App: React.FC = () => {
                   }`}
                 />
               </div>
-              <p className="text-[11px] text-zinc-400 truncate">
-                {apiUrl.replace(/^https?:\/\//, '')}
+              <p className="text-[11px] text-zinc-400 font-medium">
+                {isBackendOnline ? 'Servicio Activo • Ultra HD' : 'Conectando con el servidor...'}
               </p>
             </div>
           </aside>
@@ -560,7 +564,7 @@ export const App: React.FC = () => {
         {isSidebarCollapsed ? (
           <div
             onClick={() => setActiveTab('settings')}
-            title={`Backend: ${apiUrl} (${isBackendOnline ? 'En línea' : 'Desconectado'})`}
+            title={isBackendOnline ? 'Servidor Conectado • Ultra HD' : 'Servidor Desconectado'}
             className="flex flex-col items-center justify-center py-3 border border-zinc-800/80 rounded-xl bg-zinc-900/40 hover:bg-zinc-900/80 cursor-pointer transition-colors"
           >
             <span
@@ -573,13 +577,13 @@ export const App: React.FC = () => {
           </div>
         ) : (
           <div className="border border-zinc-800/80 rounded-xl p-3 bg-zinc-900/40 hover:bg-zinc-900/80 transition-colors">
-            <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center justify-between mb-1">
               <div
                 onClick={() => setActiveTab('settings')}
                 className="flex items-center gap-2 cursor-pointer"
               >
                 <Server className="h-3.5 w-3.5 text-zinc-400" />
-                <span className="text-xs font-semibold text-zinc-300">Backend Cloud</span>
+                <span className="text-xs font-semibold text-zinc-300">Servidor de Streaming</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <Button
@@ -589,7 +593,7 @@ export const App: React.FC = () => {
                     e.stopPropagation();
                     checkBackend();
                   }}
-                  title="Verificar conexión"
+                  title="Comprobar estado"
                   className="h-5 w-5 p-0 text-zinc-500 hover:text-white"
                 >
                   <Activity className="h-3 w-3" />
@@ -605,9 +609,9 @@ export const App: React.FC = () => {
             </div>
             <p
               onClick={() => setActiveTab('settings')}
-              className="text-[10px] text-zinc-400 truncate cursor-pointer hover:text-zinc-200"
+              className="text-[10px] text-zinc-400 cursor-pointer hover:text-zinc-200"
             >
-              {apiUrl.replace(/^https?:\/\//, '')}
+              {isBackendOnline ? 'En línea • Ultra HD 1080p' : 'Reconectando con el servidor...'}
             </p>
           </div>
         )}
@@ -615,7 +619,22 @@ export const App: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col h-full overflow-hidden bg-zinc-950">
-        {/* Header Bar */}
+        {selectedMedia ? (
+          <MediaDetailPage
+            media={selectedMedia}
+            onBack={() => setSelectedMedia(null)}
+            onPlayMovie={(url, title, subtitle) => {
+              setActivePlayback({ url, title, subtitle, isLive: false });
+            }}
+            onPlayEpisode={(url, title, subtitle) => {
+              setActivePlayback({ url, title, subtitle, isLive: false });
+            }}
+            isFavorite={isMediaFav(selectedMedia)}
+            onToggleFavorite={(item) => toggleFavoriteMedia(undefined, item)}
+          />
+        ) : (
+          <>
+            {/* Header Bar */}
         <header className="h-16 border-b border-zinc-800/80 bg-zinc-950/70 backdrop-blur-md px-4 sm:px-6 flex items-center justify-between gap-3 z-10 shrink-0">
           <div className="flex items-center gap-3 flex-1 max-w-xl">
             {/* Mobile Hamburger Menu */}
@@ -1281,15 +1300,25 @@ export const App: React.FC = () => {
                       </div>
 
                       <div className="space-y-2 pt-2">
-                        <label className="text-xs text-zinc-300 font-medium">URL del Servidor</label>
+                        <label className="text-xs text-zinc-300 font-medium">URL del Servidor Privado</label>
                         <div className="flex gap-2">
-                          <Input
-                            value={apiUrl}
-                            onChange={(e) => setApiUrlState(e.target.value)}
-                            placeholder="http://127.0.0.1:8910"
-                            className="text-xs"
-                          />
-                          <Button onClick={handleSaveApiUrl} size="sm">
+                          <div className="relative flex-1">
+                            <Input
+                              type={showApiUrl ? 'text' : 'password'}
+                              value={apiUrl}
+                              onChange={(e) => setApiUrlState(e.target.value)}
+                              placeholder="https://..."
+                              className="text-xs pr-10 font-mono"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowApiUrl(!showApiUrl)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white"
+                            >
+                              {showApiUrl ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                            </button>
+                          </div>
+                          <Button onClick={handleSaveApiUrl} size="sm" className="cursor-pointer">
                             Guardar
                           </Button>
                         </div>
@@ -1321,23 +1350,9 @@ export const App: React.FC = () => {
             </>
           )}
         </div>
-      </main>
-
-      {/* Modal Ficha Técnica de Película o Serie */}
-      {selectedMedia && (
-        <MediaDetailModal
-          media={selectedMedia}
-          onClose={() => setSelectedMedia(null)}
-          onPlayMovie={(url, title, subtitle) => {
-            setSelectedMedia(null);
-            setActivePlayback({ url, title, subtitle, isLive: false });
-          }}
-          onPlayEpisode={(url, title, subtitle) => {
-            setSelectedMedia(null);
-            setActivePlayback({ url, title, subtitle, isLive: false });
-          }}
-        />
-      )}
+      </>
+    )}
+  </main>
 
       {/* Advanced Floating Active Player */}
       {activePlayback && (
