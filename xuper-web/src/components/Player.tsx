@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Check,
   Search,
+  ArrowLeft,
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -246,6 +247,16 @@ export const Player: React.FC<PlayerProps> = ({
     }, 3500);
   };
 
+  const handleContainerClick = () => {
+    setShowControls((prev) => !prev);
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    controlsTimeoutRef.current = setTimeout(() => {
+      if (isPlaying && !showSettingsMenu && !showChannelDrawer) {
+        setShowControls(false);
+      }
+    }, 4000);
+  };
+
   const formatTime = (seconds: number) => {
     if (!seconds || isNaN(seconds) || seconds === Infinity) return '0:00';
     const hrs = Math.floor(seconds / 3600);
@@ -280,7 +291,7 @@ export const Player: React.FC<PlayerProps> = ({
           setIsLoading(false);
           setIsPlaying(true);
         }}
-        onClick={togglePlay}
+        onClick={handleContainerClick}
         className={`w-full h-full cursor-pointer transition-all duration-200 ${
           aspectRatio === 'contain'
             ? 'object-contain'
@@ -309,26 +320,55 @@ export const Player: React.FC<PlayerProps> = ({
         </div>
       )}
 
+      {/* Centered Large Play/Pause Touch Control */}
+      {showControls && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePlay();
+            }}
+            className="pointer-events-auto h-16 w-16 sm:h-20 sm:w-20 rounded-full bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center text-white hover:scale-110 active:scale-95 transition-all shadow-2xl cursor-pointer"
+          >
+            {isPlaying ? (
+              <Pause className="h-8 w-8 sm:h-10 sm:w-10 fill-current" />
+            ) : (
+              <Play className="h-8 w-8 sm:h-10 sm:w-10 fill-current ml-1" />
+            )}
+          </button>
+        </div>
+      )}
+
       {/* Top Header Overlay */}
       <div
-        className={`absolute top-0 left-0 right-0 p-5 bg-gradient-to-b from-black/90 via-black/40 to-transparent flex items-center justify-between transition-opacity duration-300 z-20 ${
+        className={`absolute top-0 left-0 right-0 p-4 sm:p-5 bg-gradient-to-b from-black/90 via-black/40 to-transparent flex items-center justify-between transition-opacity duration-300 z-20 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5 min-w-0 pr-2">
+          {/* Back button for mobile & easy exit */}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            className="rounded-full bg-black/60 hover:bg-zinc-800 text-white h-9 w-9 shrink-0 cursor-pointer"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+
           {isLive ? (
-            <Badge variant="destructive" className="bg-red-600 font-bold px-2 py-0.5 tracking-wider animate-pulse">
+            <Badge variant="destructive" className="bg-red-600 font-bold px-2 py-0.5 tracking-wider animate-pulse shrink-0 text-[10px]">
               EN VIVO
             </Badge>
           ) : (
-            <Badge variant="secondary" className="bg-zinc-800 text-zinc-300 font-bold px-2 py-0.5 tracking-wider">
+            <Badge variant="secondary" className="bg-zinc-800 text-zinc-300 font-bold px-2 py-0.5 tracking-wider shrink-0 text-[10px]">
               VOD
             </Badge>
           )}
 
-          <div>
-            <h2 className="text-base sm:text-lg font-bold text-white tracking-wide">{title}</h2>
-            {subtitle && <p className="text-xs text-zinc-400">{subtitle}</p>}
+          <div className="min-w-0">
+            <h2 className="text-sm sm:text-base md:text-lg font-bold text-white tracking-wide truncate">{title}</h2>
+            {subtitle && <p className="text-[11px] text-zinc-400 truncate">{subtitle}</p>}
           </div>
         </div>
 
@@ -566,7 +606,7 @@ export const Player: React.FC<PlayerProps> = ({
                 step={0.05}
                 value={isMuted ? 0 : volume}
                 onChange={handleVolumeChange}
-                className="w-20 h-1 bg-zinc-700/60 accent-white rounded-lg cursor-pointer"
+                className="hidden md:block w-20 h-1 bg-zinc-700/60 accent-white rounded-lg cursor-pointer"
               />
             </div>
           </div>

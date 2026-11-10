@@ -696,7 +696,7 @@ export const App: React.FC = () => {
         </header>
 
         {/* View Container */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-8">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-6 sm:space-y-8 pb-24 md:pb-8">
           {/* ============================================================ */}
           {/* SEARCH RESULTS VIEW (ACTIVATED GLOBALLY WHEN QUERY >= 2)      */}
           {/* ============================================================ */}
@@ -1350,6 +1350,95 @@ export const App: React.FC = () => {
             </>
           )}
         </div>
+
+        {/* Mobile Phone Native Bottom Bar */}
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-zinc-950/95 backdrop-blur-xl border-t border-zinc-800/80 px-2 py-1.5 flex items-center justify-around shadow-2xl">
+          <button
+            onClick={() => {
+              setSelectedMedia(null);
+              setSearchQuery('');
+              setActiveTab('home');
+            }}
+            className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer ${
+              activeTab === 'home' && !isSearchActive
+                ? 'text-rose-500 font-bold scale-105'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Home className="h-5 w-5" />
+            <span className="text-[10px] mt-0.5">Inicio</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setSelectedMedia(null);
+              setSearchQuery('');
+              setActiveTab('live');
+            }}
+            className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer relative ${
+              activeTab === 'live' && !isSearchActive
+                ? 'text-rose-500 font-bold scale-105'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Tv className="h-5 w-5" />
+            <span className="text-[10px] mt-0.5">En Vivo</span>
+            <span className="absolute top-1 right-2.5 h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />
+          </button>
+
+          <button
+            onClick={() => {
+              setSelectedMedia(null);
+              setSearchQuery('');
+              setActiveTab('movies');
+            }}
+            className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer ${
+              activeTab === 'movies' && !isSearchActive
+                ? 'text-rose-500 font-bold scale-105'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Film className="h-5 w-5" />
+            <span className="text-[10px] mt-0.5">Películas</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setSelectedMedia(null);
+              setSearchQuery('');
+              setActiveTab('series');
+            }}
+            className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer ${
+              activeTab === 'series' && !isSearchActive
+                ? 'text-rose-500 font-bold scale-105'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Clapperboard className="h-5 w-5" />
+            <span className="text-[10px] mt-0.5">Series</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setSelectedMedia(null);
+              setSearchQuery('');
+              setActiveTab('favorites');
+            }}
+            className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer relative ${
+              activeTab === 'favorites' && !isSearchActive
+                ? 'text-rose-500 font-bold scale-105'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Heart className={`h-5 w-5 ${favChannels.length + favMedia.length > 0 ? 'fill-pink-500/20 text-pink-500' : ''}`} />
+            <span className="text-[10px] mt-0.5">Favoritos</span>
+            {favChannels.length + favMedia.length > 0 && (
+              <span className="absolute top-0 right-1.5 min-w-4 h-4 px-1 rounded-full bg-rose-600 text-white text-[9px] font-bold flex items-center justify-center">
+                {favChannels.length + favMedia.length}
+              </span>
+            )}
+          </button>
+        </nav>
       </>
     )}
   </main>
