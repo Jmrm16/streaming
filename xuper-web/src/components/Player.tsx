@@ -26,6 +26,52 @@ import { Badge } from './ui/badge';
 import { Input } from './ui/input';
 import { Channel, SubtitleTrack, AudioLanguage } from '../services/api';
 
+interface SubtitleCue {
+  start: number;
+  end: number;
+  text: string;
+}
+
+function parseVttTime(timeStr: string): number {
+  if (!timeStr) return -1;
+  const cleaned = timeStr.trim().replace(',', '.');
+  const parts = cleaned.split(':');
+  if (parts.length === 3) {
+    return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+  } else if (parts.length === 2) {
+    return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+  }
+  return -1;
+}
+
+function parseVttCues(vttText: string): SubtitleCue[] {
+  const lines = vttText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const result: SubtitleCue[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    if (line.includes('-->')) {
+      const parts = line.split('-->');
+      const start = parseVttTime(parts[0].trim().split(/\s+/)[0]);
+      const end = parseVttTime(parts[1].trim().split(/\s+/)[0]);
+      i++;
+      let cueText = '';
+      while (i < lines.length && lines[i].trim() !== '') {
+        const clean = lines[i].replace(/<[^>]+>/g, '').trim();
+        if (clean) {
+          cueText += (cueText ? '\n' : '') + clean;
+        }
+        i++;
+      }
+      if (start >= 0 && end > start && cueText) {
+        result.push({ start, end, text: cueText });
+      }
+    }
+    i++;
+  }
+  return result;
+}
+
 interface PlayerProps {
   url: string;
   title: string;
@@ -71,6 +117,9 @@ export const Player: React.FC<PlayerProps> = ({
   const [audioTracks, setAudioTracks] = useState<{ id: number; name: string; lang: string }[]>([]);
   const [currentAudioTrack, setCurrentAudioTrack] = useState<number>(0);
   const [selectedSubtitle, setSelectedSubtitle] = useState<string>('none');
+  const [cues, setCues] = useState<SubtitleCue[]>([]);
+  const [activeCueText, setActiveCueText] = useState<string | null>(null);
+  const savedPositionRef = useRef<number>(0);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [showChannelDrawer, setShowChannelDrawer] = useState(false);
   const [channelSearch, setChannelSearch] = useState('');
@@ -84,6 +133,21 @@ export const Player: React.FC<PlayerProps> = ({
 
     setIsLoading(true);
     setErrorMessage(null);
+
+    const resumeTime = savedPositionRef.current > 0 ? savedPositionRef.current : 0;
+
+    // If Hls is already running and only URL changed (e.g. audio stream variant switch):
+    if (hlsRef.current && Hls.isSupported() && (url.includes('.m3u8') || !url.endsWith('.mp4'))) {
+      hlsRef.current.loadSource(url);
+      hlsRef.current.once(Hls.Events.MANIFEST_PARSED, () => {
+        setIsLoading(false);
+        if (resumeTime > 0 && videoRef.current) {
+          videoRef.current.currentTime = resumeTime;
+        }
+        videoRef.current?.play().catch(() => setIsPlaying(false));
+      });
+      return;
+    }
 
     if (hlsRef.current) {
       hlsRef.current.destroy();
@@ -111,6 +175,9 @@ export const Player: React.FC<PlayerProps> = ({
             bitrate: lvl.bitrate || 0,
           }));
           setLevels(lvls);
+        }
+        if (resumeTime > 0) {
+          video.currentTime = resumeTime;
         }
         video.play().catch(() => setIsPlaying(false));
       });
@@ -151,10 +218,17 @@ export const Player: React.FC<PlayerProps> = ({
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl') || url.endsWith('.mp4')) {
       video.src = url;
-      video.addEventListener('loadedmetadata', () => {
-        setIsLoading(false);
-        video.play().catch(() => setIsPlaying(false));
-      });
+      video.addEventListener(
+        'loadedmetadata',
+        () => {
+          setIsLoading(false);
+          if (resumeTime > 0) {
+            video.currentTime = resumeTime;
+          }
+          video.play().catch(() => setIsPlaying(false));
+        },
+        { once: true }
+      );
     }
   };
 
@@ -250,51 +324,59 @@ export const Player: React.FC<PlayerProps> = ({
     }
   }, [audioLanguages, audioTracks.length]);
 
-  // Handle subtitle selection on video textTracks
+  // Fetch and parse subtitle cues for custom elevated overlay
+  useEffect(() => {
+    if (!selectedSubtitle || selectedSubtitle === 'none') {
+      setCues([]);
+      setActiveCueText(null);
+      return;
+    }
+
+    let isMounted = true;
+    fetch(selectedSubtitle)
+      .then((res) => res.text())
+      .then((text) => {
+        if (!isMounted) return;
+        const parsed = parseVttCues(text);
+        setCues(parsed);
+      })
+      .catch((err) => {
+        console.warn('Error fetching subtitle file:', err);
+        if (isMounted) setCues([]);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedSubtitle]);
+
+  // Handle subtitle selection in real time
   const switchSubtitle = (subUrl: string) => {
     setSelectedSubtitle(subUrl);
-    const video = videoRef.current;
-    if (!video) return;
-    const tracks = video.textTracks;
-    for (let i = 0; i < tracks.length; i++) {
-      const t = tracks[i];
-      if (subUrl === 'none') {
-        t.mode = 'disabled';
-      } else {
-        const found = subtitles?.find((s) => s.url === subUrl);
-        if (found && (t.language === found.lang || t.label === found.label)) {
-          t.mode = 'showing';
-        } else {
-          t.mode = 'disabled';
-        }
-      }
+    if (subUrl === 'none') {
+      setCues([]);
+      setActiveCueText(null);
     }
   };
 
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const tracks = video.textTracks;
-    for (let i = 0; i < tracks.length; i++) {
-      const t = tracks[i];
-      if (selectedSubtitle === 'none') {
-        t.mode = 'disabled';
-      } else {
-        const found = subtitles?.find((s) => s.url === selectedSubtitle);
-        if (found && (t.language === found.lang || t.label === found.label)) {
-          t.mode = 'showing';
-        } else {
-          t.mode = 'disabled';
-        }
-      }
-    }
-  }, [selectedSubtitle, subtitles]);
-
   const setAudioTrack = (trackIndex: number) => {
     setCurrentAudioTrack(trackIndex);
-    if (hlsRef.current && hlsRef.current.audioTracks && hlsRef.current.audioTracks.length > trackIndex) {
+
+    // Save exact position before switching audio track
+    if (videoRef.current && videoRef.current.currentTime > 0) {
+      savedPositionRef.current = videoRef.current.currentTime;
+    }
+
+    // 1. Instantaneous in-stream HLS audio track change if supported
+    if (
+      hlsRef.current &&
+      hlsRef.current.audioTracks &&
+      hlsRef.current.audioTracks.length > 1 &&
+      trackIndex < hlsRef.current.audioTracks.length
+    ) {
       hlsRef.current.audioTrack = trackIndex;
     } else if (onSwitchAudioTrack) {
+      // 2. Stream variant switch: resolves new audio URL while preserving currentTime
       onSwitchAudioTrack(trackIndex);
     }
     setShowSettingsMenu(false);
@@ -346,8 +428,21 @@ export const Player: React.FC<PlayerProps> = ({
         crossOrigin="anonymous"
         onTimeUpdate={() => {
           if (videoRef.current) {
-            setProgress(videoRef.current.currentTime);
+            const cur = videoRef.current.currentTime;
+            setProgress(cur);
             setDuration(videoRef.current.duration || 0);
+            savedPositionRef.current = cur;
+
+            // Live check for active subtitle cue
+            if (cues.length > 0 && selectedSubtitle !== 'none') {
+              const match = cues.find((c) => cur >= c.start && cur <= c.end);
+              const txt = match ? match.text : null;
+              if (txt !== activeCueText) {
+                setActiveCueText(txt);
+              }
+            } else if (activeCueText) {
+              setActiveCueText(null);
+            }
           }
         }}
         onWaiting={() => setIsLoading(true)}
@@ -364,18 +459,25 @@ export const Player: React.FC<PlayerProps> = ({
             : 'object-fill'
         }`}
         playsInline
-      >
-        {subtitles.map((sub) => (
-          <track
-            key={sub.url}
-            kind="subtitles"
-            src={sub.url}
-            srcLang={sub.lang}
-            label={sub.label}
-            default={selectedSubtitle === sub.url}
-          />
-        ))}
-      </video>
+      />
+
+      {/* Elevated High-Visibility Netflix-Style Subtitle Overlay */}
+      {activeCueText && selectedSubtitle !== 'none' && (
+        <div
+          className={`absolute left-0 right-0 flex justify-center pointer-events-none z-30 px-6 sm:px-12 transition-all duration-200 ${
+            showControls ? 'bottom-28 sm:bottom-32' : 'bottom-12 sm:bottom-16'
+          }`}
+        >
+          <div
+            className="bg-black/85 text-white font-semibold text-base sm:text-xl md:text-2xl px-4 py-2 rounded-lg shadow-2xl text-center max-w-[90%] sm:max-w-[80%] whitespace-pre-line leading-relaxed tracking-wide border border-white/10 backdrop-blur-sm select-none"
+            style={{
+              textShadow: '0 2px 4px rgba(0,0,0,0.95), 0 0 2px rgba(0,0,0,0.9)',
+            }}
+          >
+            {activeCueText}
+          </div>
+        </div>
+      )}
 
       {/* Loading Spinner Overlay */}
       {isLoading && (
