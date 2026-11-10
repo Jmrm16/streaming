@@ -746,6 +746,7 @@ function rescueSeed(e, r) {
       s &&
         s.length &&
         ((seedPool = s),
+        (seedsAt = Date.now()),
         console.log(
           "[magis] semillas iniciales cargadas desde fallback local: " +
             seedPool.length

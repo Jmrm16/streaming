@@ -75,6 +75,19 @@ const server = http.createServer((req, res) => {
     });
   }
 
+  if (u.pathname === "/status") {
+    return json(res, 200, {
+      returnValue: true,
+      session: {
+        ready: magis.session.ready,
+        userId: magis.session.userId,
+        sn: magis.session.sn,
+        usesSeed: !!magis.session.usesSeed,
+      },
+      seeds: magis.seedStatus ? magis.seedStatus() : null,
+    });
+  }
+
   // API Routes
   if (u.pathname === "/home") {
     const root = u.searchParams.get("root") || "movies";
@@ -141,4 +154,11 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`[Xuper Server] running on http://0.0.0.0:${PORT} (Single-port mode ready for Render & Cloud)`);
+  magis.ensureSession((err, sess) => {
+    if (err) {
+      console.warn(`[Xuper Server] Pre-warm session warning:`, err.message);
+    } else {
+      console.log(`[Xuper Server] Session active (ready: ${sess?.ready}, user: ${sess?.userId}, usingSeed: ${sess?.usesSeed})`);
+    }
+  });
 });
