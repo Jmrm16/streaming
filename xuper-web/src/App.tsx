@@ -33,8 +33,6 @@ import { Input } from './components/ui/input';
 import { Badge } from './components/ui/badge';
 import { Player } from './components/Player';
 import { MediaDetailPage } from './components/MediaDetailPage';
-import { BannerAd } from './components/Ads/BannerAd';
-import { adManager } from './services/adConfig';
 import { api, Channel, MediaItem, SubtitleTrack, AudioLanguage, getApiBaseUrl, setApiBaseUrl } from './services/api';
 
 export const App: React.FC = () => {
@@ -86,22 +84,6 @@ export const App: React.FC = () => {
     anime: true,
     kids: true,
   });
-
-  // Advertising states (Dual mode: Con Anuncios / Sin Anuncios)
-  const [adsEnabled, setAdsEnabled] = useState<boolean>(() => adManager.isAdsEnabled());
-
-  // Keep Monetag official tag in sync with adsEnabled mode
-  useEffect(() => {
-    adManager.syncMonetagTag(adsEnabled);
-  }, [adsEnabled]);
-
-  const toggleAdsMode = () => {
-    setAdsEnabled((prev) => {
-      const next = !prev;
-      adManager.setAdsEnabled(next);
-      return next;
-    });
-  };
 
   // Favorites (Stored in localStorage)
   const [favChannels, setFavChannels] = useState<Channel[]>(() => {
@@ -893,35 +875,6 @@ export const App: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* Ad Mode Toggle Button (Con Anuncios vs Sin Anuncios) */}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={toggleAdsMode}
-              className={`gap-1.5 text-xs font-semibold rounded-xl border transition-all cursor-pointer h-8 px-2.5 sm:px-3 ${
-                adsEnabled
-                  ? 'bg-amber-950/40 border-amber-600/60 text-amber-300 hover:bg-amber-900/60 shadow-sm'
-                  : 'bg-emerald-950/40 border-emerald-600/60 text-emerald-300 hover:bg-emerald-900/60 shadow-sm'
-              }`}
-              title={adsEnabled ? 'Cambiar a Modo VIP Sin Anuncios' : 'Cambiar a Modo Con Anuncios'}
-            >
-              {adsEnabled ? (
-                <>
-                  <Megaphone className="h-3.5 w-3.5 text-amber-400" />
-                  <span className="hidden sm:inline">Con Anuncios</span>
-                  <span className="sm:hidden">Ads</span>
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
-                </>
-              ) : (
-                <>
-                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
-                  <span className="hidden sm:inline">VIP: Sin Anuncios</span>
-                  <span className="sm:hidden">VIP</span>
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                </>
-              )}
-            </Button>
-
             <Button
               variant="outline"
               size="sm"
@@ -1620,11 +1573,6 @@ export const App: React.FC = () => {
                       </div>
                     )}
 
-                  {/* Clean Footer Ad for Normal Page Experience */}
-                  {adsEnabled && (
-                    <BannerAd placement="footer" />
-                  )}
-
                   {filteredMediaList.length === 0 && !isLoading && (
                     <div className="py-20 text-center text-zinc-500">
                       <Film className="h-12 w-12 mx-auto mb-3 opacity-40" />
@@ -1709,50 +1657,6 @@ export const App: React.FC = () => {
                     </CardContent>
                   </Card>
 
-                  {/* Card de Control de Publicidad y Monetización */}
-                  <Card className="border-zinc-800 bg-zinc-900/40">
-                    <CardContent className="p-6 space-y-5">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                        <div className="flex items-center gap-3">
-                          <div className="h-10 w-10 shrink-0 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
-                            <Megaphone className="h-5 w-5" />
-                          </div>
-                          <div>
-                            <h3 className="text-base font-bold text-white">Monetización y Publicidad</h3>
-                            <p className="text-xs text-zinc-400">
-                              Alterna entre el modo con anuncios y el modo VIP limpio.
-                            </p>
-                          </div>
-                        </div>
-
-                        {/* Switch Button */}
-                        <Button
-                          size="sm"
-                          onClick={toggleAdsMode}
-                          className={`gap-2 text-xs font-bold rounded-xl cursor-pointer self-start sm:self-auto ${
-                            adsEnabled
-                              ? 'bg-amber-500 hover:bg-amber-400 text-black shadow-lg shadow-amber-950/40'
-                              : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
-                          }`}
-                        >
-                          {adsEnabled ? 'Anuncios: ACTIVADOS' : 'Anuncios: DESACTIVADOS'}
-                        </Button>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                        <div className="p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl space-y-1">
-                          <span className="text-[10px] uppercase font-bold text-emerald-400">Red Publicitaria Conectada</span>
-                          <p className="text-xs font-semibold text-white">Monetag MultiTag AI (Zona 308489)</p>
-                          <p className="text-[11px] text-zinc-400">Monetización en segundo plano con OnClick Popunder, In-Page Push y Vignettes sin estorbar.</p>
-                        </div>
-                        <div className="p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl space-y-1">
-                          <span className="text-[10px] uppercase font-bold text-sky-400">Push Notifications Activas</span>
-                          <p className="text-xs font-semibold text-white">Service Worker (sw.js)</p>
-                          <p className="text-[11px] text-zinc-400">Genera ingresos recurrentes por suscriptores web sin saturar la pantalla.</p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
                 </div>
               )}
             </>
@@ -1844,7 +1748,6 @@ export const App: React.FC = () => {
           onSelectChannel={(ch) => playChannel(ch)}
           onSwitchAudioTrack={handleSwitchAudioTrack}
           onClose={() => setActivePlayback(null)}
-          adsEnabled={adsEnabled}
         />
       )}
     </div>

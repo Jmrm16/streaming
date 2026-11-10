@@ -25,7 +25,6 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Input } from './ui/input';
 import { Channel, SubtitleTrack, AudioLanguage } from '../services/api';
-import { BannerAd } from './Ads/BannerAd';
 
 interface SubtitleCue {
   start: number;
@@ -84,7 +83,6 @@ interface PlayerProps {
   onSelectChannel?: (channel: Channel) => void;
   onSwitchAudioTrack?: (trackIndex: number) => void;
   onClose: () => void;
-  adsEnabled?: boolean;
 }
 
 export const Player: React.FC<PlayerProps> = ({
@@ -98,14 +96,12 @@ export const Player: React.FC<PlayerProps> = ({
   onSelectChannel,
   onSwitchAudioTrack,
   onClose,
-  adsEnabled = false,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
 
   const [isPlaying, setIsPlaying] = useState(true);
-  const [showPauseBanner, setShowPauseBanner] = useState<boolean>(true);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
@@ -933,11 +929,6 @@ export const Player: React.FC<PlayerProps> = ({
           </div>
         </div>
       </div>
-
-      {/* Pause Screen Display Banner Ad (Solo cuando el video esta en pausa) */}
-      {adsEnabled && !isPlaying && showPauseBanner && (
-        <BannerAd placement="player_pause" onClose={() => setShowPauseBanner(false)} />
-      )}
     </div>
   );
 };
