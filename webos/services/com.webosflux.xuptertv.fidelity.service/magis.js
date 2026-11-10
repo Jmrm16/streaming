@@ -732,30 +732,38 @@ function rescueSeed(e, r) {
   });
 }
 !(function () {
+  var fallbackAt = 0, fallbackSeeds = [];
+  try {
+    var t = path.join(__dirname, "seeds-fallback.json"),
+      n = JSON.parse(fs.readFileSync(t, "utf8"));
+    if (n && n.seeds && n.seeds.length) {
+      fallbackSeeds = n.seeds;
+      fallbackAt = n.at || 0;
+    }
+  } catch (e) {}
+
   try {
     var e = JSON.parse(fs.readFileSync(SEED_FILE, "utf8")),
       r = e && e.seeds ? e.seeds : e;
     (r && r.length && (seedPool = r),
       e && "number" == typeof e.at && (seedsAt = e.at));
   } catch (e) {}
-  if (!seedPool || !seedPool.length)
+
+  if (fallbackSeeds.length && (!seedPool.length || fallbackAt > (seedsAt || 0))) {
+    seedPool = fallbackSeeds;
+    seedsAt = fallbackAt || Date.now();
+    deadSeeds = {};
+    try { fs.unlinkSync(SEED_DEAD_FILE); } catch (e) {}
+    console.log(
+      "[magis] semillas frescas activadas desde fallback local: " +
+        seedPool.length
+    );
+  } else {
     try {
-      var t = path.join(__dirname, "seeds-fallback.json"),
-        n = JSON.parse(fs.readFileSync(t, "utf8")),
-        s = n && n.seeds ? n.seeds : n;
-      s &&
-        s.length &&
-        ((seedPool = s),
-        (seedsAt = Date.now()),
-        console.log(
-          "[magis] semillas iniciales cargadas desde fallback local: " +
-            seedPool.length
-        ));
+      var a = JSON.parse(fs.readFileSync(SEED_DEAD_FILE, "utf8"));
+      a && "object" == typeof a && (deadSeeds = a);
     } catch (e) {}
-  try {
-    var a = JSON.parse(fs.readFileSync(SEED_DEAD_FILE, "utf8"));
-    a && "object" == typeof a && (deadSeeds = a);
-  } catch (e) {}
+  }
 })();
 var sessionStarting = !1,
   sessionWaiters = [];
