@@ -4,7 +4,7 @@ import { Button } from '../ui/button';
 import { BannerAdItem, adManager } from '../../services/adConfig';
 
 interface BannerAdProps {
-  placement?: 'catalog' | 'player_pause' | 'sidebar';
+  placement?: 'catalog' | 'player_pause' | 'sidebar' | 'detail' | 'footer';
   onClose?: () => void;
 }
 
@@ -19,6 +19,68 @@ export const BannerAd: React.FC<BannerAdProps> = ({ placement = 'catalog', onClo
     setIsDismissed(true);
     if (onClose) onClose();
   };
+
+  if (placement === 'detail') {
+    return (
+      <div className="w-full my-6 rounded-2xl border border-amber-500/30 bg-gradient-to-r from-amber-950/20 via-zinc-900 to-zinc-950 p-4 sm:p-5 relative overflow-hidden shadow-xl animate-in fade-in">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="h-11 w-11 shrink-0 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+              <Megaphone className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] uppercase font-extrabold text-amber-400 tracking-wider">
+                  Patrocinador Oficial
+                </span>
+                <span className="text-[10px] text-zinc-500">• {ad.networkBadge}</span>
+              </div>
+              <h4 className="text-sm font-bold text-white truncate">{ad.title}</h4>
+              <p className="text-xs text-zinc-400 truncate">{ad.subtitle}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <a
+              href={ad.targetUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-xs transition-all shadow-md shadow-amber-950/40 flex items-center gap-2 hover:scale-105"
+            >
+              <span>{ad.ctaText}</span>
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (placement === 'footer') {
+    return (
+      <div className="w-full mt-10 mb-6 rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-4 relative overflow-hidden shadow-lg">
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
+          <div className="flex items-center gap-3">
+            <span className="text-[9px] uppercase font-bold text-zinc-500 px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800">
+              PUBLICIDAD
+            </span>
+            <div>
+              <p className="text-xs font-bold text-zinc-200">{ad.title}</p>
+              <p className="text-[11px] text-zinc-500">{ad.subtitle}</p>
+            </div>
+          </div>
+          <a
+            href={ad.targetUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold text-xs transition-colors flex items-center gap-1.5"
+          >
+            <span>{ad.ctaText}</span>
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        </div>
+      </div>
+    );
+  }
 
   if (placement === 'player_pause') {
     return (

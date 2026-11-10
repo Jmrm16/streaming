@@ -17,6 +17,8 @@ import {
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
+import { BannerAd } from './Ads/BannerAd';
+import { adManager } from '../services/adConfig';
 import { api, MediaItem, MediaDetailResponse, Episode, Season, SubtitleTrack, AudioLanguage } from '../services/api';
 
 interface MediaDetailPageProps {
@@ -373,7 +375,10 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
       </div>
 
       {/* Main Details and Episodes Section */}
-      <div className="w-full max-w-7xl mx-auto px-6 py-8 space-y-10">
+      <div className="w-full max-w-7xl mx-auto px-6 py-8 space-y-8">
+        {/* Sponsored Official Banner */}
+        {adManager.isAdsEnabled() && <BannerAd placement="detail" />}
+
         {/* Synopsis & Cast */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-3">

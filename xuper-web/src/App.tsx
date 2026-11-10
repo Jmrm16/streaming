@@ -33,6 +33,7 @@ import { Input } from './components/ui/input';
 import { Badge } from './components/ui/badge';
 import { Player } from './components/Player';
 import { MediaDetailPage } from './components/MediaDetailPage';
+import { BannerAd } from './components/Ads/BannerAd';
 import { adManager } from './services/adConfig';
 import { api, Channel, MediaItem, SubtitleTrack, AudioLanguage, getApiBaseUrl, setApiBaseUrl } from './services/api';
 
@@ -1618,6 +1619,11 @@ export const App: React.FC = () => {
                         </Button>
                       </div>
                     )}
+
+                  {/* Clean Footer Ad for Normal Page Experience */}
+                  {adsEnabled && (
+                    <BannerAd placement="footer" />
+                  )}
 
                   {filteredMediaList.length === 0 && !isLoading && (
                     <div className="py-20 text-center text-zinc-500">
