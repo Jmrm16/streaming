@@ -121,8 +121,8 @@ const server = http.createServer((req, res) => {
     if (trackIndex !== null && trackIndex !== undefined && trackIndex !== "") {
       options.trackIndex = parseInt(trackIndex, 10);
     }
-    return magis.resolve(contentId, seriesId, options, (err, stream) => {
-      if (err) return done(err);
+
+    const handleStream = (stream) => {
       const isTs = stream.mime === "video/mp2t" || /\.ts(?:\?|$)/i.test(stream.url);
       const token = proxy.add(stream.url, stream.headers, stream.duration);
       if (isTs) {
@@ -208,7 +208,20 @@ const server = http.createServer((req, res) => {
       }
 
       done(null, stream);
-    });
+    };
+
+    const tryResolve = (cId, sId, allowSwap) => {
+      magis.resolve(cId, sId, options, (err, stream) => {
+        if (err && allowSwap && sId && sId !== cId) {
+          console.log(`[resolve] Attempt with id=${cId}&series=${sId} failed. Retrying with swapped params id=${sId}&series=${cId}...`);
+          return tryResolve(sId, cId, false);
+        }
+        if (err) return done(err);
+        return handleStream(stream);
+      });
+    };
+
+    return tryResolve(contentId, seriesId, true);
   }
 
   if (u.pathname === "/liveCategories") {
