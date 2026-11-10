@@ -227,12 +227,17 @@ const server = http.createServer((req, res) => {
   if (u.pathname === "/resolveLive") {
     const streamUrl = u.searchParams.get("streamUrl") || "";
     if (streamUrl) {
-      return done(null, { url: streamUrl, proxyPath: streamUrl, isHls: true });
+      const token = proxy.add(streamUrl, {}, 0, null, null, true);
+      return done(null, {
+        url: `${currentBaseUrl}/media/${token}/stream.m3u8`,
+        proxyPath: `${currentBaseUrl}/media/${token}/stream.m3u8`,
+        isHls: true,
+      });
     }
     const channelCode = u.searchParams.get("channelCode") || "";
     return magis.resolveLive(channelCode, (err, stream) => {
       if (err) return done(err);
-      const token = proxy.add(stream.url, stream.headers, 0);
+      const token = proxy.add(stream.url, stream.headers, 0, null, stream.backupUrls, true);
       stream.proxyPath = `${currentBaseUrl}/media/${token}/stream.m3u8`;
       stream.isHls = true;
       done(null, stream);

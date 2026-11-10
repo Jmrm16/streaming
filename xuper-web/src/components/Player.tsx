@@ -155,11 +155,35 @@ export const Player: React.FC<PlayerProps> = ({
     }
 
     if (Hls.isSupported() && (url.includes('.m3u8') || !url.endsWith('.mp4'))) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 60,
-      });
+      const hlsConfig: any = isLive
+        ? {
+            enableWorker: true,
+            lowLatencyMode: false,
+            backBufferLength: 30,
+            liveSyncDurationCount: 3,
+            liveMaxLatencyDurationCount: 6,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+            liveDurationInfinity: true,
+            manifestLoadingTimeOut: 15000,
+            manifestLoadingMaxRetry: 5,
+            levelLoadingTimeOut: 15000,
+            levelLoadingMaxRetry: 5,
+            fragLoadingTimeOut: 20000,
+            fragLoadingMaxRetry: 6,
+            fragLoadingRetryDelay: 800,
+            nudgeOffset: 0.2,
+            nudgeMaxRetry: 5,
+          }
+        : {
+            enableWorker: true,
+            lowLatencyMode: true,
+            backBufferLength: 60,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+          };
+
+      const hls = new Hls(hlsConfig);
       hlsRef.current = hls;
 
       hls.loadSource(url);
@@ -213,6 +237,11 @@ export const Player: React.FC<PlayerProps> = ({
               setErrorMessage('Error fatal al cargar la transmisión. Reintentando...');
               hls.destroy();
               break;
+          }
+        } else if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR && isLive) {
+          // Auto-unstall live TV signal by nudging playback forward past stalled frame
+          if (video && !video.paused) {
+            video.currentTime += 0.2;
           }
         }
       });
