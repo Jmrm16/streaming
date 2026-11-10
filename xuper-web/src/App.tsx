@@ -32,7 +32,7 @@ import { Input } from './components/ui/input';
 import { Badge } from './components/ui/badge';
 import { Player } from './components/Player';
 import { MediaDetailPage } from './components/MediaDetailPage';
-import { api, Channel, MediaItem, getApiBaseUrl, setApiBaseUrl } from './services/api';
+import { api, Channel, MediaItem, SubtitleTrack, AudioLanguage, getApiBaseUrl, setApiBaseUrl } from './services/api';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<
@@ -103,7 +103,36 @@ export const App: React.FC = () => {
     title: string;
     subtitle?: string;
     isLive?: boolean;
+    subtitles?: SubtitleTrack[];
+    audioLanguages?: AudioLanguage[];
+    contentId?: string;
+    seriesId?: string;
   } | null>(null);
+
+  const handleSwitchAudioTrack = async (trackIndex: number) => {
+    if (!activePlayback || !activePlayback.contentId) return;
+    try {
+      const res = await api.resolveMedia(
+        activePlayback.contentId,
+        activePlayback.seriesId,
+        trackIndex
+      );
+      if (res.url) {
+        setActivePlayback((prev) =>
+          prev
+            ? {
+                ...prev,
+                url: res.url,
+                subtitles: res.subtitles || prev.subtitles,
+                audioLanguages: res.audioLanguages || prev.audioLanguages,
+              }
+            : null
+        );
+      }
+    } catch (e) {
+      console.error('Error switching audio track:', e);
+    }
+  };
 
   // Check backend status
   const checkBackend = async () => {
@@ -623,11 +652,28 @@ export const App: React.FC = () => {
           <MediaDetailPage
             media={selectedMedia}
             onBack={() => setSelectedMedia(null)}
-            onPlayMovie={(url, title, subtitle) => {
-              setActivePlayback({ url, title, subtitle, isLive: false });
+            onPlayMovie={(url, title, subtitle, subtitles, audioLanguages, contentId) => {
+              setActivePlayback({
+                url,
+                title,
+                subtitle,
+                isLive: false,
+                subtitles,
+                audioLanguages,
+                contentId,
+              });
             }}
-            onPlayEpisode={(url, title, subtitle) => {
-              setActivePlayback({ url, title, subtitle, isLive: false });
+            onPlayEpisode={(url, title, subtitle, subtitles, audioLanguages, contentId, seriesId) => {
+              setActivePlayback({
+                url,
+                title,
+                subtitle,
+                isLive: false,
+                subtitles,
+                audioLanguages,
+                contentId,
+                seriesId,
+              });
             }}
             isFavorite={isMediaFav(selectedMedia)}
             onToggleFavorite={(item) => toggleFavoriteMedia(undefined, item)}
@@ -1450,8 +1496,11 @@ export const App: React.FC = () => {
           title={activePlayback.title}
           subtitle={activePlayback.subtitle}
           isLive={activePlayback.isLive}
+          subtitles={activePlayback.subtitles}
+          audioLanguages={activePlayback.audioLanguages}
           channels={channels}
           onSelectChannel={(ch) => playChannel(ch)}
+          onSwitchAudioTrack={handleSwitchAudioTrack}
           onClose={() => setActivePlayback(null)}
         />
       )}

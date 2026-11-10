@@ -19,19 +19,23 @@ import {
   Check,
   Search,
   ArrowLeft,
+  Subtitles,
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Input } from './ui/input';
-import { Channel } from '../services/api';
+import { Channel, SubtitleTrack, AudioLanguage } from '../services/api';
 
 interface PlayerProps {
   url: string;
   title: string;
   subtitle?: string;
   isLive?: boolean;
+  subtitles?: SubtitleTrack[];
+  audioLanguages?: AudioLanguage[];
   channels?: Channel[];
   onSelectChannel?: (channel: Channel) => void;
+  onSwitchAudioTrack?: (trackIndex: number) => void;
   onClose: () => void;
 }
 
@@ -40,8 +44,11 @@ export const Player: React.FC<PlayerProps> = ({
   title,
   subtitle,
   isLive = false,
+  subtitles = [],
+  audioLanguages = [],
   channels = [],
   onSelectChannel,
+  onSwitchAudioTrack,
   onClose,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -63,6 +70,7 @@ export const Player: React.FC<PlayerProps> = ({
   const [currentLevel, setCurrentLevel] = useState<number>(-1); // -1 = Auto
   const [audioTracks, setAudioTracks] = useState<{ id: number; name: string; lang: string }[]>([]);
   const [currentAudioTrack, setCurrentAudioTrack] = useState<number>(0);
+  const [selectedSubtitle, setSelectedSubtitle] = useState<string>('none');
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [showChannelDrawer, setShowChannelDrawer] = useState(false);
   const [channelSearch, setChannelSearch] = useState('');
@@ -118,8 +126,8 @@ export const Player: React.FC<PlayerProps> = ({
           setAudioTracks(
             data.audioTracks.map((t, idx) => ({
               id: idx,
-              name: t.name || `Pista ${idx + 1}`,
-              lang: t.lang || '',
+              name: t.name || audioLanguages?.[idx]?.name || `Pista ${idx + 1}`,
+              lang: t.lang || audioLanguages?.[idx]?.code || '',
             }))
           );
         }
@@ -229,10 +237,65 @@ export const Player: React.FC<PlayerProps> = ({
     setShowSettingsMenu(false);
   };
 
+  // Sync external audio languages from API
+  useEffect(() => {
+    if (audioLanguages && audioLanguages.length > 0 && audioTracks.length === 0) {
+      setAudioTracks(
+        audioLanguages.map((a) => ({
+          id: a.id,
+          name: a.name,
+          lang: a.code,
+        }))
+      );
+    }
+  }, [audioLanguages, audioTracks.length]);
+
+  // Handle subtitle selection on video textTracks
+  const switchSubtitle = (subUrl: string) => {
+    setSelectedSubtitle(subUrl);
+    const video = videoRef.current;
+    if (!video) return;
+    const tracks = video.textTracks;
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i];
+      if (subUrl === 'none') {
+        t.mode = 'disabled';
+      } else {
+        const found = subtitles?.find((s) => s.url === subUrl);
+        if (found && (t.language === found.lang || t.label === found.label)) {
+          t.mode = 'showing';
+        } else {
+          t.mode = 'disabled';
+        }
+      }
+    }
+  };
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const tracks = video.textTracks;
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i];
+      if (selectedSubtitle === 'none') {
+        t.mode = 'disabled';
+      } else {
+        const found = subtitles?.find((s) => s.url === selectedSubtitle);
+        if (found && (t.language === found.lang || t.label === found.label)) {
+          t.mode = 'showing';
+        } else {
+          t.mode = 'disabled';
+        }
+      }
+    }
+  }, [selectedSubtitle, subtitles]);
+
   const setAudioTrack = (trackIndex: number) => {
     setCurrentAudioTrack(trackIndex);
-    if (hlsRef.current) {
+    if (hlsRef.current && hlsRef.current.audioTracks && hlsRef.current.audioTracks.length > trackIndex) {
       hlsRef.current.audioTrack = trackIndex;
+    } else if (onSwitchAudioTrack) {
+      onSwitchAudioTrack(trackIndex);
     }
     setShowSettingsMenu(false);
   };
@@ -280,6 +343,7 @@ export const Player: React.FC<PlayerProps> = ({
     >
       <video
         ref={videoRef}
+        crossOrigin="anonymous"
         onTimeUpdate={() => {
           if (videoRef.current) {
             setProgress(videoRef.current.currentTime);
@@ -300,7 +364,18 @@ export const Player: React.FC<PlayerProps> = ({
             : 'object-fill'
         }`}
         playsInline
-      />
+      >
+        {subtitles.map((sub) => (
+          <track
+            key={sub.url}
+            kind="subtitles"
+            src={sub.url}
+            srcLang={sub.lang}
+            label={sub.label}
+            default={selectedSubtitle === sub.url}
+          />
+        ))}
+      </video>
 
       {/* Loading Spinner Overlay */}
       {isLoading && (
@@ -501,7 +576,7 @@ export const Player: React.FC<PlayerProps> = ({
             </div>
           </div>
 
-          {audioTracks.length > 1 && (
+          {audioTracks.length > 0 && (
             <div className="pt-2 border-t border-zinc-800">
               <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2 px-1">
                 Idioma / Audio
@@ -517,6 +592,38 @@ export const Player: React.FC<PlayerProps> = ({
                   >
                     <span>{track.name}</span>
                     {currentAudioTrack === track.id && <Check className="h-3.5 w-3.5 text-rose-500" />}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {subtitles.length > 0 && (
+            <div className="pt-2 border-t border-zinc-800">
+              <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2 px-1 flex items-center justify-between">
+                <span>Subtítulos</span>
+                <span className="text-[10px] text-zinc-500 font-normal lowercase">{subtitles.length} disponibles</span>
+              </h4>
+              <div className="space-y-1 max-h-36 overflow-y-auto">
+                <Button
+                  variant={selectedSubtitle === 'none' ? 'secondary' : 'ghost'}
+                  size="sm"
+                  onClick={() => switchSubtitle('none')}
+                  className="w-full justify-between text-xs h-7 px-2 font-medium"
+                >
+                  <span>Desactivados</span>
+                  {selectedSubtitle === 'none' && <Check className="h-3.5 w-3.5 text-rose-500" />}
+                </Button>
+                {subtitles.map((sub) => (
+                  <Button
+                    key={sub.url}
+                    variant={selectedSubtitle === sub.url ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => switchSubtitle(sub.url)}
+                    className="w-full justify-between text-xs h-7 px-2 font-medium"
+                  >
+                    <span>{sub.label}</span>
+                    {selectedSubtitle === sub.url && <Check className="h-3.5 w-3.5 text-rose-500" />}
                   </Button>
                 ))}
               </div>
@@ -624,12 +731,44 @@ export const Player: React.FC<PlayerProps> = ({
               <RefreshCw className="h-4 w-4" />
             </Button>
 
+            {/* Subtitles Button (if available) */}
+            {subtitles.length > 0 && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  if (selectedSubtitle === 'none') {
+                    switchSubtitle(subtitles[0].url);
+                  } else {
+                    const currIdx = subtitles.findIndex((s) => s.url === selectedSubtitle);
+                    if (currIdx === subtitles.length - 1) {
+                      switchSubtitle('none');
+                    } else {
+                      switchSubtitle(subtitles[currIdx + 1].url);
+                    }
+                  }
+                }}
+                className={`h-8 w-8 cursor-pointer ${
+                  selectedSubtitle !== 'none'
+                    ? 'text-rose-400 bg-rose-500/10 hover:bg-rose-500/20'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+                title={`Subtítulos: ${
+                  selectedSubtitle === 'none'
+                    ? 'Desactivados (clic para activar)'
+                    : subtitles.find((s) => s.url === selectedSubtitle)?.label || 'Activados'
+                }`}
+              >
+                <Subtitles className="h-4 w-4" />
+              </Button>
+            )}
+
             {/* PiP */}
             <Button
               variant="ghost"
               size="icon"
               onClick={togglePiP}
-              className="text-zinc-300 hover:text-white h-8 w-8"
+              className="text-zinc-300 hover:text-white h-8 w-8 cursor-pointer"
               title="Picture in Picture"
             >
               <PictureInPicture className="h-4 w-4" />

@@ -17,13 +17,28 @@ import {
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { api, MediaItem, MediaDetailResponse, Episode, Season } from '../services/api';
+import { api, MediaItem, MediaDetailResponse, Episode, Season, SubtitleTrack, AudioLanguage } from '../services/api';
 
 interface MediaDetailPageProps {
   media: MediaItem;
   onBack: () => void;
-  onPlayEpisode: (url: string, title: string, subtitle?: string) => void;
-  onPlayMovie: (url: string, title: string, subtitle?: string) => void;
+  onPlayEpisode: (
+    url: string,
+    title: string,
+    subtitle?: string,
+    subtitles?: SubtitleTrack[],
+    audioLanguages?: AudioLanguage[],
+    contentId?: string,
+    seriesId?: string
+  ) => void;
+  onPlayMovie: (
+    url: string,
+    title: string,
+    subtitle?: string,
+    subtitles?: SubtitleTrack[],
+    audioLanguages?: AudioLanguage[],
+    contentId?: string
+  ) => void;
   isFavorite?: boolean;
   onToggleFavorite?: (item: MediaItem) => void;
 }
@@ -161,7 +176,14 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
     try {
       const res = await api.resolveMedia(media.id);
       if (res.url) {
-        onPlayMovie(res.url, media.title, media.year || 'Película');
+        onPlayMovie(
+          res.url,
+          media.title,
+          media.year || 'Película',
+          res.subtitles,
+          res.audioLanguages,
+          media.id
+        );
       } else {
         alert('No se pudo obtener el enlace de reproducción.');
       }
@@ -182,7 +204,11 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
         onPlayEpisode(
           res.url,
           media.title,
-          `Temporada ${selectedSeasonNumber} • Episodio ${ep.number} - ${cleanEpTitle}`
+          `Temporada ${selectedSeasonNumber} • Episodio ${ep.number} - ${cleanEpTitle}`,
+          res.subtitles,
+          res.audioLanguages,
+          ep.id,
+          selectedSeasonId
         );
       } else {
         alert('No se pudo obtener el enlace del episodio.');

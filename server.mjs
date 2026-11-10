@@ -65,7 +65,17 @@ const server = http.createServer((req, res) => {
         })
       : json(res, 200, { returnValue: true, ...data });
 
-  // Health check for Render
+  // Health check & root status for Render
+  if (u.pathname === "/" || u.pathname === "") {
+    return json(res, 200, {
+      name: "XUPER Streaming Cloud API",
+      status: "online",
+      version: "1.0.0",
+      sessionReady: magis.session.ready,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   if (u.pathname === "/health" || u.pathname === "/ping") {
     return json(res, 200, {
       returnValue: true,
@@ -106,7 +116,12 @@ const server = http.createServer((req, res) => {
   if (u.pathname === "/resolve") {
     const contentId = u.searchParams.get("contentId") || u.searchParams.get("id") || "";
     const seriesId = u.searchParams.get("seriesContentId") || u.searchParams.get("series") || "";
-    return magis.resolve(contentId, seriesId, (err, stream) => {
+    const trackIndex = u.searchParams.get("trackIndex") || u.searchParams.get("track");
+    const options = {};
+    if (trackIndex !== null && trackIndex !== undefined && trackIndex !== "") {
+      options.trackIndex = parseInt(trackIndex, 10);
+    }
+    return magis.resolve(contentId, seriesId, options, (err, stream) => {
       if (err) return done(err);
       const isTs = stream.mime === "video/mp2t" || /\.ts(?:\?|$)/i.test(stream.url);
       const token = proxy.add(stream.url, stream.headers, stream.duration);
@@ -117,6 +132,63 @@ const server = http.createServer((req, res) => {
       } else {
         stream.proxyPath = `${currentBaseUrl}/media/${token}/stream.mp4`;
       }
+
+      // Proxy and format subtitles (support WebVTT and SRT)
+      if (Array.isArray(stream.subtitles) && stream.subtitles.length > 0) {
+        const langNames = {
+          es: "Español",
+          spa: "Español",
+          esp: "Español",
+          "es-lat": "Español (Latino)",
+          "es-es": "Español (Castellano)",
+          en: "Inglés",
+          eng: "Inglés",
+          pt: "Portugués",
+          por: "Portugués",
+          fr: "Francés",
+          it: "Italiano",
+          de: "Alemán",
+        };
+        stream.subtitles = stream.subtitles.map((sub) => {
+          const subToken = proxy.addSubtitleToken(sub.url);
+          const langCode = (sub.lang || "es").toLowerCase();
+          const label = langNames[langCode] || (sub.lang ? sub.lang.toUpperCase() : "Subtítulo");
+          return {
+            lang: langCode,
+            label,
+            format: "vtt",
+            url: `${currentBaseUrl}/sub/${subToken}.vtt`,
+            srtUrl: `${currentBaseUrl}/sub/${subToken}.srt`,
+          };
+        });
+      } else {
+        stream.subtitles = [];
+      }
+
+      // Parse audio language tracks
+      if (typeof stream.audio === "string" && stream.audio.trim()) {
+        const parts = stream.audio.split(/[,\/|]/).map((s) => s.trim()).filter(Boolean);
+        const langMap = {
+          spa: "Español (Latino)",
+          es: "Español",
+          esp: "Español",
+          lat: "Español (Latino)",
+          latino: "Español (Latino)",
+          eng: "Inglés",
+          en: "Inglés",
+          ingles: "Inglés",
+          por: "Portugués",
+          pt: "Portugués",
+        };
+        stream.audioLanguages = parts.map((code, idx) => ({
+          id: idx,
+          code: code.toLowerCase(),
+          name: langMap[code.toLowerCase()] || code.toUpperCase(),
+        }));
+      } else {
+        stream.audioLanguages = [];
+      }
+
       done(null, stream);
     });
   }

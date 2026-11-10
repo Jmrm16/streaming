@@ -11,7 +11,7 @@ var http = require("http"),
   order = [],
   subtitleTokens = {},
   subtitleOrder = [],
-  MAX_SUBTITLES = 12,
+  MAX_SUBTITLES = 64,
   server = null,
   port = 0,
   httpAgent = new http.Agent({
@@ -144,18 +144,27 @@ function add(e, t, r, n, o, live) {
   }
   return s;
 }
-function addSubtitle(e) {
+function addSubtitleToken(e) {
   var t = crypto.randomBytes(12).toString("hex");
-  for (
-    subtitleTokens[t] = { url: e, at: Date.now() }, subtitleOrder.push(t);
-    subtitleOrder.length > MAX_SUBTITLES;
-  ) {
+  subtitleTokens[t] = { url: e, at: Date.now() };
+  subtitleOrder.push(t);
+  while (subtitleOrder.length > MAX_SUBTITLES) {
     var r = subtitleOrder.shift();
     r && delete subtitleTokens[r];
   }
+  return t;
+}
+function addSubtitle(e) {
+  var t = addSubtitleToken(e);
   return baseUrl() + "/sub/" + t + ".srt";
 }
-function sendSubtitle(e, t, r) {
+function srtToVtt(str) {
+  str = String(str || "").replace(/^\uFEFF/, "");
+  str = str.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  str = str.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2");
+  return "WEBVTT\n\n" + str.trim() + "\n";
+}
+function sendSubtitle(e, t, r, isVtt) {
   resolveHostIp(r, function (e) {
     var n = urlmod.parse(r.url || ""),
       o = "https:" === n.protocol,
@@ -180,42 +189,64 @@ function sendSubtitle(e, t, r) {
       },
       c = !1,
       p = (o ? https : http).request(u, function (e) {
-        var r = [];
-        (e.on("data", function (e) {
-          r.push(e);
-        }),
-          e.on("end", function () {
-            if (!c) {
-              var n = Buffer.concat(r),
-                o = e.statusCode >= 200 && e.statusCode < 300;
-              (t.writeHead(o ? 200 : 502, {
-                "Content-Type": "text/plain; charset=utf-8",
-                "Content-Length": n.length,
-                "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "private, max-age=300",
-              }),
-                t.end(n));
+        var chunks = [];
+        e.on("data", function (chunk) {
+          chunks.push(chunk);
+        });
+        e.on("end", function () {
+          if (!c) {
+            var raw = Buffer.concat(chunks);
+            var ok = e.statusCode >= 200 && e.statusCode < 300;
+            if (!ok) {
+              try {
+                t.writeHead(502, {
+                  "Content-Type": "text/plain",
+                  "Access-Control-Allow-Origin": "*",
+                });
+                t.end("subtitle upstream error " + e.statusCode);
+              } catch (err) {}
+              return;
             }
-          }));
+            if (isVtt) {
+              var vttText = srtToVtt(raw.toString("utf8"));
+              var vttBuf = Buffer.from(vttText, "utf8");
+              t.writeHead(200, {
+                "Content-Type": "text/vtt; charset=utf-8",
+                "Content-Length": vttBuf.length,
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=3600",
+              });
+              t.end(vttBuf);
+            } else {
+              t.writeHead(200, {
+                "Content-Type": "text/plain; charset=utf-8",
+                "Content-Length": raw.length,
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=3600",
+              });
+              t.end(raw);
+            }
+          }
+        });
       });
-    (p.setTimeout(2e4, function () {
+    p.setTimeout(2e4, function () {
       try {
         p.abort();
       } catch (e) {}
-    }),
-      p.on("error", function () {
-        if (!c) {
-          c = !0;
-          try {
-            (t.writeHead(502, {
-              "Content-Type": "text/plain",
-              "Access-Control-Allow-Origin": "*",
-            }),
-              t.end("subtitle upstream error"));
-          } catch (e) {}
-        }
-      }),
-      p.end());
+    });
+    p.on("error", function () {
+      if (!c) {
+        c = !0;
+        try {
+          t.writeHead(502, {
+            "Content-Type": "text/plain",
+            "Access-Control-Allow-Origin": "*",
+          });
+          t.end("subtitle upstream error");
+        } catch (e) {}
+      }
+    });
+    p.end();
   });
 }
 function isCacheFlyHost(e, t) {
@@ -828,11 +859,12 @@ function handler(e, t) {
       }),
       void t.end("aborted")
     );
-  var r = /^\/sub\/([a-f0-9]{24})\.srt$/.exec(e.url || "");
+  var r = /^\/sub\/([a-f0-9]{24})\.(srt|vtt)$/.exec(e.url || "");
   if (r) {
     var n = subtitleTokens[r[1]];
+    var isVtt = r[2] === "vtt";
     return n
-      ? void sendSubtitle(e, t, n)
+      ? void sendSubtitle(e, t, n, isVtt)
       : (t.writeHead(410, {
           "Content-Type": "text/plain",
           "Access-Control-Allow-Origin": "*",
@@ -923,6 +955,7 @@ module.exports = {
   start: start,
   add: add,
   addSubtitle: addSubtitle,
+  addSubtitleToken: addSubtitleToken,
   baseUrl: baseUrl,
   port: function () {
     return port;

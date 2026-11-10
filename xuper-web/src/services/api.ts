@@ -63,6 +63,33 @@ export interface MediaDetailResponse {
   seasons: Season[];
 }
 
+export interface SubtitleTrack {
+  lang: string;
+  label: string;
+  format: string;
+  url: string;
+  srtUrl?: string;
+}
+
+export interface AudioLanguage {
+  id: number;
+  code: string;
+  name: string;
+}
+
+export interface ResolveResponse {
+  url: string;
+  codec?: string;
+  mime?: string;
+  isHls?: boolean;
+  subtitles?: SubtitleTrack[];
+  audioLanguages?: AudioLanguage[];
+  availableTracks?: any[];
+  trackIndex?: number;
+  contentId?: string;
+  seriesId?: string;
+}
+
 export const api = {
   async ping(): Promise<boolean> {
     try {
@@ -169,16 +196,31 @@ export const api = {
     }
   },
 
-  async resolveMedia(contentId: string, seriesId?: string): Promise<{ url: string; codec?: string }> {
+  async resolveMedia(
+    contentId: string,
+    seriesId?: string,
+    trackIndex?: number
+  ): Promise<ResolveResponse> {
     const params = new URLSearchParams();
     params.set('id', contentId);
     if (seriesId) params.set('series', seriesId);
+    if (trackIndex !== undefined && trackIndex !== null) {
+      params.set('trackIndex', String(trackIndex));
+    }
 
     const res = await fetch(`${getApiBaseUrl()}/resolve?${params.toString()}`);
     const data = await res.json();
     return {
       url: data.proxyPath || data.url || '',
       codec: data.codec,
+      mime: data.mime,
+      isHls: data.isHls,
+      subtitles: data.subtitles || [],
+      audioLanguages: data.audioLanguages || [],
+      availableTracks: data.availableTracks || [],
+      trackIndex: data.trackIndex,
+      contentId,
+      seriesId,
     };
   },
 };
