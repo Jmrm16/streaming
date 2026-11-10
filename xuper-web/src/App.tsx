@@ -160,43 +160,68 @@ export const App: React.FC = () => {
     loadTabData();
   }, [activeTab]);
 
-  const loadTabData = async () => {
-    setIsLoading(true);
-    if (activeTab === 'home') {
-      const [feat, chans, movs, sers] = await Promise.all([
-        api.getHome('featured'),
-        api.getLiveChannels(undefined, 1, 30),
-        api.getHome('movies'),
-        api.getHome('series'),
-      ]);
-      setHomeFeatured(feat);
-      setChannels(chans);
-      setMovies(movs);
-      setSeries(sers);
-    } else if (activeTab === 'live') {
-      const [cats, chans] = await Promise.all([
-        api.getLiveCategories(),
-        api.getLiveChannels(selectedCategory === 'all' ? undefined : selectedCategory, 1, 250),
-      ]);
-      setCategories([{ id: 'all', name: 'Todos los Canales' }, ...cats]);
-      setChannels(chans);
-      if (chans.length > allChannelsCache.length) {
-        setAllChannelsCache(chans);
-      }
-    } else if (activeTab === 'movies') {
-      const items = await api.getHome('movies');
-      setMovies(items);
-    } else if (activeTab === 'series') {
-      const items = await api.getHome('series');
-      setSeries(items);
-    } else if (activeTab === 'anime') {
-      const items = await api.getHome('anime');
-      setAnime(items);
-    } else if (activeTab === 'kids') {
-      const items = await api.getHome('kids');
-      setKids(items);
+  const loadTabData = async (forceRefresh = false) => {
+    if (forceRefresh) {
+      api.clearCache();
     }
-    setIsLoading(false);
+
+    // Check if the current tab already has cached data so switching is instantaneous
+    const hasData =
+      (activeTab === 'home' && homeFeatured.length > 0) ||
+      (activeTab === 'movies' && movies.length > 0) ||
+      (activeTab === 'series' && series.length > 0) ||
+      (activeTab === 'anime' && anime.length > 0) ||
+      (activeTab === 'kids' && kids.length > 0) ||
+      (activeTab === 'live' && channels.length > 0) ||
+      activeTab === 'favorites' ||
+      activeTab === 'settings';
+
+    if (!hasData || forceRefresh) {
+      setIsLoading(true);
+    }
+
+    try {
+      if (activeTab === 'home') {
+        const [feat, chans, movs, sers] = await Promise.all([
+          api.getHome('featured'),
+          api.getLiveChannels(undefined, 1, 30),
+          api.getHome('movies'),
+          api.getHome('series'),
+        ]);
+        if (feat.length) setHomeFeatured(feat);
+        if (chans.length) setChannels(chans);
+        if (movs.length) setMovies(movs);
+        if (sers.length) setSeries(sers);
+      } else if (activeTab === 'live') {
+        const [cats, chans] = await Promise.all([
+          api.getLiveCategories(),
+          api.getLiveChannels(selectedCategory === 'all' ? undefined : selectedCategory, 1, 250),
+        ]);
+        if (cats.length) setCategories([{ id: 'all', name: 'Todos los Canales' }, ...cats]);
+        if (chans.length) {
+          setChannels(chans);
+          if (chans.length > allChannelsCache.length) {
+            setAllChannelsCache(chans);
+          }
+        }
+      } else if (activeTab === 'movies') {
+        const items = await api.getHome('movies');
+        if (items.length) setMovies(items);
+      } else if (activeTab === 'series') {
+        const items = await api.getHome('series');
+        if (items.length) setSeries(items);
+      } else if (activeTab === 'anime') {
+        const items = await api.getHome('anime');
+        if (items.length) setAnime(items);
+      } else if (activeTab === 'kids') {
+        const items = await api.getHome('kids');
+        if (items.length) setKids(items);
+      }
+    } catch (err) {
+      console.error('Error loading tab data:', err);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Real Global Search Handler with Debounce
@@ -720,7 +745,7 @@ export const App: React.FC = () => {
             <Button
               variant="outline"
               size="sm"
-              onClick={loadTabData}
+              onClick={() => loadTabData(true)}
               className="gap-2 text-xs border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800 text-zinc-300 hover:text-white cursor-pointer"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
@@ -1190,6 +1215,21 @@ export const App: React.FC = () => {
                     ))}
                   </div>
 
+                  {/* Channels Loading Skeletons */}
+                  {isLoading && channels.length === 0 && (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4 animate-in fade-in duration-150">
+                      {Array.from({ length: 18 }).map((_, i) => (
+                        <div
+                          key={i}
+                          className="h-28 rounded-xl bg-zinc-900/60 border border-zinc-800/60 animate-pulse p-3 flex flex-col justify-between"
+                        >
+                          <div className="h-4 bg-zinc-800 rounded w-2/3" />
+                          <div className="h-3 bg-zinc-800/50 rounded w-1/3" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {channels.length === 0 && !isLoading && (
                     <div className="py-20 text-center text-zinc-500">
                       <Tv className="h-12 w-12 mx-auto mb-3 opacity-40" />
@@ -1313,6 +1353,24 @@ export const App: React.FC = () => {
                       </Card>
                     ))}
                   </div>
+
+                  {/* Catalog Loading Skeletons */}
+                  {isLoading && currentMediaList.length === 0 && (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4 animate-in fade-in duration-150">
+                      {Array.from({ length: 12 }).map((_, i) => (
+                        <div
+                          key={i}
+                          className="rounded-xl overflow-hidden bg-zinc-900/60 border border-zinc-800/60 animate-pulse"
+                        >
+                          <div className="aspect-[2/3] bg-zinc-800/50" />
+                          <div className="p-3 space-y-2">
+                            <div className="h-3 bg-zinc-800 rounded w-3/4" />
+                            <div className="h-2 bg-zinc-800/50 rounded w-1/2" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   {currentMediaList.length === 0 && !isLoading && (
                     <div className="py-20 text-center text-zinc-500">

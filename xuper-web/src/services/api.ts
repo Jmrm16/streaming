@@ -90,7 +90,32 @@ export interface ResolveResponse {
   seriesId?: string;
 }
 
+// In-Memory Fast Cache with 10-minute TTL to prevent freezing and redundant requests
+const apiCache = new Map<string, { at: number; data: any }>();
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+async function fetchWithCache<T>(key: string, url: string, timeoutMs = 8000): Promise<T | null> {
+  const cached = apiCache.get(key);
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+    return cached.data as T;
+  }
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return cached ? (cached.data as T) : null;
+    const data = await res.json();
+    apiCache.set(key, { at: Date.now(), data });
+    return data as T;
+  } catch (err) {
+    if (cached) return cached.data as T;
+    return null;
+  }
+}
+
 export const api = {
+  clearCache(): void {
+    apiCache.clear();
+  },
+
   async ping(): Promise<boolean> {
     try {
       const res = await fetch(`${getApiBaseUrl()}/ping`, { signal: AbortSignal.timeout(3000) });
@@ -102,39 +127,33 @@ export const api = {
   },
 
   async getLiveCategories(): Promise<{ id: string; name: string }[]> {
-    try {
-      const res = await fetch(`${getApiBaseUrl()}/liveCategories`);
-      const data = await res.json();
-      if (data.categories && Array.isArray(data.categories)) {
-        return data.categories.map((c: any) => ({
-          id: String(c.id || c.columnId || c.code),
-          name: c.name || c.title || 'General',
-        }));
-      }
-      return [];
-    } catch (e) {
-      console.error('Error fetching categories:', e);
-      return [];
+    const key = `categories`;
+    const data = await fetchWithCache<{ categories?: any[] }>(key, `${getApiBaseUrl()}/liveCategories`);
+    if (data && data.categories && Array.isArray(data.categories)) {
+      return data.categories.map((c: any) => ({
+        id: String(c.id || c.columnId || c.code),
+        name: c.name || c.title || 'General',
+      }));
     }
+    return [];
   },
 
   async getLiveChannels(columnId?: string, pageNum = 1, pageSize = 200): Promise<Channel[]> {
-    try {
-      const params = new URLSearchParams();
-      if (columnId && columnId !== 'all') params.set('columnId', columnId);
-      params.set('pageNum', String(pageNum));
-      params.set('pageSize', String(pageSize));
+    const col = columnId && columnId !== 'all' ? columnId : 'all';
+    const key = `channels_${col}_p${pageNum}_s${pageSize}`;
+    const params = new URLSearchParams();
+    if (columnId && columnId !== 'all') params.set('columnId', columnId);
+    params.set('pageNum', String(pageNum));
+    params.set('pageSize', String(pageSize));
 
-      const res = await fetch(`${getApiBaseUrl()}/liveChannels?${params.toString()}`);
-      const data = await res.json();
-      if (data.channels && Array.isArray(data.channels)) {
-        return data.channels;
-      }
-      return [];
-    } catch (e) {
-      console.error('Error fetching live channels:', e);
-      return [];
+    const data = await fetchWithCache<{ channels?: Channel[] }>(
+      key,
+      `${getApiBaseUrl()}/liveChannels?${params.toString()}`
+    );
+    if (data && data.channels && Array.isArray(data.channels)) {
+      return data.channels;
     }
+    return [];
   },
 
   async resolveLive(channelCode: string, streamUrl?: string): Promise<{ url: string }> {
@@ -142,46 +161,49 @@ export const api = {
     if (channelCode) params.set('channelCode', channelCode);
     if (streamUrl) params.set('streamUrl', streamUrl);
 
-    const res = await fetch(`${getApiBaseUrl()}/resolveLive?${params.toString()}`);
-    const data = await res.json();
-    return {
-      url: data.proxyPath || data.url || '',
-    };
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/resolveLive?${params.toString()}`, {
+        signal: AbortSignal.timeout(9000),
+      });
+      const data = await res.json();
+      return {
+        url: data.proxyPath || data.url || '',
+      };
+    } catch (e) {
+      console.error('Error in resolveLive:', e);
+      return { url: '' };
+    }
   },
 
   async getHome(
     root: 'featured' | 'movies' | 'series' | 'anime' | 'kids' = 'movies',
     page = 1
   ): Promise<MediaItem[]> {
-    try {
-      const res = await fetch(`${getApiBaseUrl()}/home?root=${root}&page=${page}`);
-      const data = await res.json();
-      if (data.items && Array.isArray(data.items)) {
-        return data.items;
-      }
-      return [];
-    } catch (e) {
-      console.error('Error fetching catalog:', e);
-      return [];
+    const key = `home_${root}_p${page}`;
+    const data = await fetchWithCache<{ items?: MediaItem[] }>(
+      key,
+      `${getApiBaseUrl()}/home?root=${root}&page=${page}`
+    );
+    if (data && data.items && Array.isArray(data.items)) {
+      return data.items;
     }
+    return [];
   },
 
   async getDetail(id: string): Promise<MediaDetailResponse | null> {
-    try {
-      const res = await fetch(`${getApiBaseUrl()}/detail?id=${encodeURIComponent(id)}`);
-      const data = await res.json();
-      if (data.returnValue && data.item) {
-        return {
-          item: data.item,
-          episodes: data.episodes || [],
-          seasons: data.seasons || [],
-        };
-      }
-      return null;
-    } catch (e) {
-      console.error('Error fetching media detail:', e);
-      return null;
+    const key = `detail_${id}`;
+    const data = await fetchWithCache<{ returnValue?: boolean; item?: MediaItem; episodes?: Episode[]; seasons?: Season[] }>(
+      key,
+      `${getApiBaseUrl()}/detail?id=${encodeURIComponent(id)}`
+    );
+    if (data && data.returnValue && data.item) {
+      return {
+        item: data.item,
+        episodes: data.episodes || [],
+        seasons: data.seasons || [],
+      };
     }
+    return null;
   },
 
   async search(query: string): Promise<MediaItem[]> {
