@@ -92,6 +92,11 @@ export const App: React.FC = () => {
   const [adsEnabled, setAdsEnabled] = useState<boolean>(() => adManager.isAdsEnabled());
   const [showInterstitial, setShowInterstitial] = useState<boolean>(false);
 
+  // Keep Monetag official tag in sync with adsEnabled mode
+  useEffect(() => {
+    adManager.syncMonetagTag(adsEnabled);
+  }, [adsEnabled]);
+
   const toggleAdsMode = () => {
     setAdsEnabled((prev) => {
       const next = !prev;

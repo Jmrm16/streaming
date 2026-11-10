@@ -102,6 +102,12 @@ export const SAMPLE_INTERSTITIAL_ADS: InterstitialAdItem[] = [
   },
 ];
 
+export const MONETAG_CONFIG = {
+  scriptSrc: 'https://quge5.com/88/tag.min.js',
+  zoneId: '308489',
+  swDomain: '5gvci.com',
+};
+
 export const adManager = {
   isAdsEnabled(): boolean {
     const saved = localStorage.getItem('xuper_ads_enabled');
@@ -111,6 +117,37 @@ export const adManager = {
 
   setAdsEnabled(enabled: boolean): void {
     localStorage.setItem('xuper_ads_enabled', String(enabled));
+    this.syncMonetagTag(enabled);
+  },
+
+  syncMonetagTag(enabled: boolean): void {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    const SCRIPT_ID = 'monetag-tag-script';
+    const existing = document.getElementById(SCRIPT_ID);
+
+    if (enabled) {
+      if (!existing) {
+        const s = document.createElement('script');
+        s.id = SCRIPT_ID;
+        s.src = MONETAG_CONFIG.scriptSrc;
+        s.setAttribute('data-zone', MONETAG_CONFIG.zoneId);
+        s.async = true;
+        s.setAttribute('data-cfasync', 'false');
+        (document.head || document.documentElement).appendChild(s);
+      }
+    } else {
+      if (existing) {
+        existing.remove();
+      }
+      try {
+        const adElements = document.querySelectorAll(
+          'iframe[src*="5gvci"], iframe[src*="quge5"], div[id*="zone_"], div[class*="monetag"]'
+        );
+        adElements.forEach((el) => el.remove());
+      } catch (e) {
+        // ignore
+      }
+    }
   },
 
   getAdNetwork(): 'monetag' | 'adsterra' | 'exoclick' | 'custom' {
