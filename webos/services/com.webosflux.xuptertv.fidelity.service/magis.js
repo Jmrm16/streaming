@@ -484,6 +484,7 @@ function call(e, r, t, n) {
             );
         if (
           a &&
+          !1 !== t.baseFields &&
           ("aaa100028" === i || "aaa100027" === i || l || u) &&
           !t._sessionRetried
         ) {
@@ -492,6 +493,15 @@ function call(e, r, t, n) {
               (i || a.message) +
               "). Renovando sesión limpia..."
           );
+          if (session.usesSeed && session.seed) {
+            var d0 = t._seedTried || {};
+            d0[seedIdentity(session.seed)] = !0;
+            return rescueSeed(d0, function (s, o) {
+              t._seedTried = d0;
+              t._sessionRetried = !0;
+              call(e, r, t, n);
+            });
+          }
           resetSessionAfterLiveFailure();
           return ensureSession(function (s) {
             if (s) return n(a);
@@ -501,6 +511,7 @@ function call(e, r, t, n) {
         }
         if (
           a &&
+          !1 !== t.baseFields &&
           (i === GEO_BLOCKED || l || u) &&
           (t._seedTries || 0) < SEED_RESCUE_ROUNDS
         ) {
@@ -517,7 +528,7 @@ function call(e, r, t, n) {
               if (o) {
                 t._seedTried = d;
                 t._seedTries = (t._seedTries || 0) + 1;
-                t._sessionRetried = !1;
+                t._sessionRetried = !0;
                 console.log(
                   "[magis] " +
                     (i || "sesión caída") +

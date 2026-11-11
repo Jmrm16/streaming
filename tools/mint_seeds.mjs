@@ -81,7 +81,7 @@ function mintOne() {
             userId: String(r2.userId).trim(),
             userToken: String(r2.userToken).trim(),
             mintedAt: now,
-            exp: now + 30 * 86400,
+            exp: now + 12 * 3600,
           });
         }
       );
@@ -117,8 +117,20 @@ async function main() {
   };
 
   const targetPath = path.join(svcDir, "seeds-fallback.json");
-  fs.writeFileSync(targetPath, JSON.stringify(payload, null, 1), "utf8");
+  const jsonStr = JSON.stringify(payload, null, 1);
+  fs.writeFileSync(targetPath, jsonStr, "utf8");
   console.log(`[Mint] ¡ÉXITO! ${seeds.length} semillas guardadas en: ${targetPath}`);
+
+  try {
+    const res = await fetch("https://streaming-qste.onrender.com/feedSeeds", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: jsonStr,
+    });
+    console.log(`[Mint] Enviadas en caliente a Render (/feedSeeds): HTTP ${res.status}`);
+  } catch (e) {
+    console.warn(`[Mint] No se pudo enviar en caliente a Render:`, e.message);
+  }
 }
 
 main().catch((err) => {

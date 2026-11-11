@@ -377,4 +377,15 @@ server.listen(PORT, "0.0.0.0", () => {
       console.log(`[Xuper Server] Session active (ready: ${sess?.ready}, user: ${sess?.userId}, usingSeed: ${sess?.usesSeed})`);
     }
   });
+
+  // Periodic background seed sync from GitHub (every 20 minutes) so Render always has the latest seeds minted by GitHub Actions
+  setInterval(() => {
+    if (magis.refreshSeeds) {
+      magis.refreshSeeds((err, updated) => {
+        if (!err && updated) {
+          console.log(`[Xuper Server] Background seed sync updated pool from GitHub.`);
+        }
+      });
+    }
+  }, 20 * 60 * 1000);
 });
