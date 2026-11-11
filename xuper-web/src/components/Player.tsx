@@ -191,20 +191,25 @@ export const Player: React.FC<PlayerProps> = ({
             enableWorker: true,
             lowLatencyMode: false,
             backBufferLength: 30,
-            liveSyncDurationCount: 3,
-            liveMaxLatencyDurationCount: 8,
-            maxBufferLength: 30,
-            maxMaxBufferLength: 60,
+            liveSyncDurationCount: 4,
+            liveMaxLatencyDurationCount: 12,
+            maxLiveSyncPlaybackRate: 1.05,
+            maxBufferLength: 45,
+            maxMaxBufferLength: 90,
+            maxBufferHole: 0.5,
+            highBufferWatchdogPeriod: 2,
             liveDurationInfinity: true,
-            manifestLoadingTimeOut: 20000,
-            manifestLoadingMaxRetry: 6,
-            levelLoadingTimeOut: 20000,
-            levelLoadingMaxRetry: 6,
-            fragLoadingTimeOut: 25000,
-            fragLoadingMaxRetry: 8,
-            fragLoadingRetryDelay: 1000,
-            nudgeOffset: 0.2,
-            nudgeMaxRetry: 5,
+            manifestLoadingTimeOut: 15000,
+            manifestLoadingMaxRetry: 8,
+            manifestLoadingRetryDelay: 800,
+            levelLoadingTimeOut: 15000,
+            levelLoadingMaxRetry: 8,
+            levelLoadingRetryDelay: 800,
+            fragLoadingTimeOut: 20000,
+            fragLoadingMaxRetry: 10,
+            fragLoadingRetryDelay: 600,
+            nudgeOffset: 0.25,
+            nudgeMaxRetry: 10,
           }
         : {
             enableWorker: true,
@@ -249,9 +254,15 @@ export const Player: React.FC<PlayerProps> = ({
       });
 
       hls.on(Hls.Events.LEVEL_UPDATED, (_, data) => {
+        networkRetryRef.current = 0;
         if (data.details && data.details.totalduration) {
           setDuration(data.details.totalduration);
         }
+      });
+
+      hls.on(Hls.Events.FRAG_LOADED, () => {
+        networkRetryRef.current = 0;
+        setIsLoading(false);
       });
 
       hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_, data) => {
@@ -269,16 +280,17 @@ export const Player: React.FC<PlayerProps> = ({
 
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (data.fatal) {
+          const maxRetries = isLive ? 8 : 4;
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              if (networkRetryRef.current < 3) {
+              if (networkRetryRef.current < maxRetries) {
                 networkRetryRef.current += 1;
-                console.warn(`HLS Network Error, attempting recovery (${networkRetryRef.current}/3)...`);
+                console.warn(`HLS Network Error, attempting recovery (${networkRetryRef.current}/${maxRetries})...`);
                 setTimeout(() => {
                   if (hlsRef.current === hls) {
                     hls.startLoad();
                   }
-                }, 1000 * networkRetryRef.current);
+                }, Math.min(2500, 600 * networkRetryRef.current));
               } else {
                 console.error('Fatal HLS Network Error after retries:', data);
                 setIsLoading(false);
@@ -306,9 +318,21 @@ export const Player: React.FC<PlayerProps> = ({
               break;
           }
         } else if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR && isLive) {
-          // Auto-unstall live TV signal by nudging playback forward past stalled frame
+          // Auto-unstall live TV signal by jumping across any buffer hole or nudging forward
           if (video && !video.paused) {
-            video.currentTime += 0.2;
+            const ct = video.currentTime;
+            const buf = video.buffered;
+            let jumped = false;
+            for (let i = 0; i < buf.length; i++) {
+              if (buf.start(i) > ct + 0.05) {
+                video.currentTime = buf.start(i) + 0.1;
+                jumped = true;
+                break;
+              }
+            }
+            if (!jumped) {
+              video.currentTime = ct + 0.25;
+            }
           }
         }
       });

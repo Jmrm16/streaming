@@ -618,7 +618,7 @@ function forward(e, t, r, n) {
                 forward(e, t, r, n)
               );
           }
-          r && (r._redirects = 0);
+          r && ((r._redirects = 0), (r._freshRetry = !1), (r._noKeepAlive = !1));
           var a = (o.headers["content-type"] || "").toLowerCase(),
             i = "video/mp2t";
           -1 !== a.indexOf("mp4")
@@ -804,7 +804,7 @@ function forward(e, t, r, n) {
           try {
             c.socket.setNoDelay(!0);
           } catch (e) {}
-        (c.setTimeout(15e3, function () {
+        (c.setTimeout(r && r.isLive ? 6500 : 15e3, function () {
           /* Antes, un CDN con la IP filtrada se quedaba 25 s colgado y luego
              devolvía 504 sin probar nada más. Ahora el tiempo agotado entra
              en la misma cadena de rescate que un error de conexión. */
@@ -820,6 +820,14 @@ function forward(e, t, r, n) {
             (stats.errors++,
               (stats.lastError = String((o && (o.code || o.message)) || "error")),
               (stats.lastAt = Date.now()));
+            if (!t.headersSent && r && !r._freshRetry) {
+              return (
+                (r._freshRetry = !0),
+                (r._noKeepAlive = !0),
+                p(),
+                forward(e, t, r, n)
+              );
+            }
             if (r && r.url) {
               var s = urlmod.parse(r.url).hostname,
                 a = dnsx.cached(s);
@@ -1037,8 +1045,8 @@ function handler(e, t) {
             backupIndex: 0,
             isLive: s.isLive,
             _isHlsChild: !0,
-            _segBuf: !!s.isLive,
-            _noKeepAlive: !!s.isLive,
+            _segBuf: !1,
+            _noKeepAlive: !1,
           },
           o[1]
         )
@@ -1070,7 +1078,6 @@ function handler(e, t) {
       }),
       void t.end("expired")
     );
-  c.isLive && (c._noKeepAlive = !0),
   -1 !== c.url.indexOf(".m3u8") || -1 === u.indexOf(".m3u8")
     ? forward(e, t, c, l)
     : sendVirtualHls(e, t, l, c);
