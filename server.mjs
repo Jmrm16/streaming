@@ -142,7 +142,7 @@ const server = http.createServer((req, res) => {
       options.trackIndex = parseInt(trackIndex, 10);
     }
 
-    const handleStream = (stream) => {
+    let handleStream = (stream) => {
       const isTs = stream.mime === "video/mp2t" || /\.ts(?:\?|$)/i.test(stream.url);
       const token = proxy.add(stream.url, stream.headers, stream.duration);
       if (isTs) {
@@ -227,13 +227,15 @@ const server = http.createServer((req, res) => {
         stream.audioLanguages = [];
       }
 
-      done(null, stream);
+      safeDone(null, stream);
     };
 
     let hasResponded = false;
+    let timer = null;
     const safeDone = (err, data) => {
       if (!hasResponded) {
         hasResponded = true;
+        if (timer) clearTimeout(timer);
         done(err, data);
       }
     };
@@ -254,18 +256,12 @@ const server = http.createServer((req, res) => {
       });
     };
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       if (!hasResponded) {
         console.warn(`[resolve] Timeout resolving id=${contentId}`);
         safeDone(new Error("Timeout al resolver transmisión en el servidor"));
       }
     }, 14000);
-
-    const origHandleStream = handleStream;
-    handleStream = (stream) => {
-      clearTimeout(timer);
-      origHandleStream(stream);
-    };
 
     return tryResolve(contentId, seriesId, true);
   }
