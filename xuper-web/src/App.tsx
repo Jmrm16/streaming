@@ -927,8 +927,8 @@ export const App: React.FC = () => {
                 onClick={() => setIsSettingsModalOpen(true)}
                 title={
                   isBackendOnline
-                    ? 'Servidor Backend Activo • Ultra HD'
-                    : 'Servidor Backend Desconectado (Clic para configurar)'
+                    ? 'Señal Activa • Ultra HD'
+                    : 'Señal Desconectada (Clic para verificar)'
                 }
                 className="flex items-center gap-1.5 px-2 py-1 rounded bg-black/40 border border-zinc-800 hover:border-zinc-700 transition-colors text-[11px] cursor-pointer"
               >
@@ -987,7 +987,7 @@ export const App: React.FC = () => {
                         className="w-full px-4 py-2 text-left text-zinc-300 hover:text-white hover:bg-zinc-800 flex items-center gap-2"
                       >
                         <Server className="w-4 h-4 text-red-500" />
-                        <span>Configuración del Servidor</span>
+                        <span>Estado del Servicio</span>
                       </button>
                     </div>
 
