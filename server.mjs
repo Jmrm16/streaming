@@ -56,14 +56,26 @@ const server = http.createServer((req, res) => {
     return proxy.handler(req, res);
   }
 
-  const done = (err, data) =>
-    err
-      ? json(res, 502, {
-          returnValue: false,
-          errorText: String(err.message || err),
-          errorCode: err.portalCode || 1,
-        })
-      : json(res, 200, { returnValue: true, ...data });
+  const done = (err, data) => {
+    if (err) {
+      if (
+        (err.portalCode === "aaa100028" ||
+          err.portalCode === "aaa100027" ||
+          /未登录|sesi[oó]n|login|token/i.test(err.message || "")) &&
+        magis.resetSession
+      ) {
+        console.warn("[server] Session dead detected in response. Resetting session...");
+        magis.resetSession();
+        magis.ensureSession(() => {});
+      }
+      return json(res, 502, {
+        returnValue: false,
+        errorText: String(err.message || err),
+        errorCode: err.portalCode || 1,
+      });
+    }
+    return json(res, 200, { returnValue: true, ...data });
+  };
 
   // Health check & root status for Render
   if (u.pathname === "/" || u.pathname === "") {
@@ -224,17 +236,42 @@ const server = http.createServer((req, res) => {
     return tryResolve(contentId, seriesId, true);
   }
 
+  if (u.pathname === "/resetSession") {
+    if (magis.resetSession) magis.resetSession();
+    return magis.ensureSession((err) => {
+      done(err, { message: "Session reset and initialized", session: magis.session });
+    });
+  }
+
   if (u.pathname === "/liveCategories") {
-    return magis.getLiveCategories((err, categories) => done(err, { categories }));
+    const fetchCats = (retry = true) => {
+      magis.getLiveCategories((err, categories) => {
+        if (err && retry && (/aaa100028|aaa100027|未登录/i.test(err.message || "") || err.portalCode === "aaa100028")) {
+          console.warn("[liveCategories] Session dead. Resetting session and retrying...");
+          if (magis.resetSession) magis.resetSession();
+          return magis.ensureSession(() => fetchCats(false));
+        }
+        done(err, { categories: categories || [] });
+      });
+    };
+    return fetchCats(true);
   }
 
   if (u.pathname === "/liveChannels") {
     const colId = u.searchParams.get("columnId") || null;
     const pageNum = parseInt(u.searchParams.get("pageNum") || "1", 10);
     const pageSize = parseInt(u.searchParams.get("pageSize") || "250", 10);
-    return magis.getLiveChannels(colId, pageNum, pageSize, (err, channels) =>
-      done(err, { channels: channels || [] })
-    );
+    const fetchChs = (retry = true) => {
+      magis.getLiveChannels(colId, pageNum, pageSize, (err, channels) => {
+        if (err && retry && (/aaa100028|aaa100027|未登录/i.test(err.message || "") || err.portalCode === "aaa100028")) {
+          console.warn("[liveChannels] Session dead. Resetting session and retrying...");
+          if (magis.resetSession) magis.resetSession();
+          return magis.ensureSession(() => fetchChs(false));
+        }
+        done(err, { channels: channels || [] });
+      });
+    };
+    return fetchChs(true);
   }
 
   if (u.pathname === "/resolveLive") {
@@ -248,13 +285,21 @@ const server = http.createServer((req, res) => {
       });
     }
     const channelCode = u.searchParams.get("channelCode") || "";
-    return magis.resolveLive(channelCode, (err, stream) => {
-      if (err) return done(err);
-      const token = proxy.add(stream.url, stream.headers, 0, null, stream.backupUrls, true);
-      stream.proxyPath = `${currentBaseUrl}/media/${token}/stream.m3u8`;
-      stream.isHls = true;
-      done(null, stream);
-    });
+    const fetchResolve = (retry = true) => {
+      magis.resolveLive(channelCode, (err, stream) => {
+        if (err && retry && (/aaa100028|aaa100027|未登录/i.test(err.message || "") || err.portalCode === "aaa100028")) {
+          console.warn("[resolveLive] Session dead. Resetting session and retrying...");
+          if (magis.resetSession) magis.resetSession();
+          return magis.ensureSession(() => fetchResolve(false));
+        }
+        if (err) return done(err);
+        const token = proxy.add(stream.url, stream.headers, 0, null, stream.backupUrls, true);
+        stream.proxyPath = `${currentBaseUrl}/media/${token}/stream.m3u8`;
+        stream.isHls = true;
+        done(null, stream);
+      });
+    };
+    return fetchResolve(true);
   }
 
   json(res, 404, { returnValue: false, errorText: "not found" });

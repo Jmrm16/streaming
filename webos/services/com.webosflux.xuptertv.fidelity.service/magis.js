@@ -486,25 +486,23 @@ function call(e, r, t, n) {
         if (
           a &&
           ("aaa100028" === i || "aaa100027" === i || l || u) &&
-          !t._sessionRetried &&
-          !session.usesSeed
-        )
-          return (
-            console.log(
-              "[magis] sesión no iniciada (" +
-                (i || a.message) +
-                "). Renovando sesión limpia..."
-            ),
-            (session.ready = !1),
-            (session.userId = ""),
-            (session.userToken = ""),
-            (session.snToken = ""),
-            (session.at = 0),
-            ensureSession(function (s) {
-              if (s) return n(a);
-              ((t._sessionRetried = !0), call(e, r, t, n));
-            })
+          !t._sessionRetried
+        ) {
+          console.log(
+            "[magis] sesión no iniciada (" +
+              (i || a.message) +
+              "). Renovando sesión limpia..."
           );
+          if (session.usesSeed && session.seed) {
+            markSeedDead(session.seed);
+          }
+          resetSessionAfterLiveFailure();
+          return ensureSession(function (s) {
+            if (s) return n(a);
+            t._sessionRetried = !0;
+            call(e, r, t, n);
+          });
+        }
         if (
           a &&
           (i === GEO_BLOCKED || l || u) &&
@@ -520,10 +518,10 @@ function call(e, r, t, n) {
               session.seed &&
               (d[seedIdentity(session.seed)] = !0),
             rescueSeed(d, function (s, o) {
-              if (!o) return n(a);
-              ((t._seedTried = d),
-                (t._seedTries = (t._seedTries || 0) + 1),
-                (t._sessionRetried = !1),
+              if (o) {
+                t._seedTried = d;
+                t._seedTries = (t._seedTries || 0) + 1;
+                t._sessionRetried = !1;
                 console.log(
                   "[magis] " +
                     (i || "sesión caída") +
@@ -532,8 +530,15 @@ function call(e, r, t, n) {
                     "/" +
                     SEED_RESCUE_ROUNDS +
                     ")"
-                ),
-                call(e, r, t, n));
+                );
+                return call(e, r, t, n);
+              }
+              resetSessionAfterLiveFailure();
+              ensureSession(function (s) {
+                if (s) return n(a);
+                t._seedTries = (t._seedTries || 0) + 1;
+                call(e, r, t, n);
+              });
             })
           );
         }
@@ -2047,6 +2052,7 @@ module.exports = {
   call: call,
   post: post,
   ensureSession: ensureSession,
+  resetSession: resetSessionAfterLiveFailure,
   session: session,
   seedStatus: function () {
     var e,
