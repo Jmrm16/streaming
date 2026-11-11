@@ -665,7 +665,7 @@ export const App: React.FC = () => {
                           <Tv className="w-4 h-4 text-red-500" />
                           <span>TV en vivo</span>
                         </div>
-                        <Badge variant="outline" className="bg-red-950/80 border-red-800/80 text-red-400 text-[10px] px-2 py-0.5 uppercase font-bold animate-pulse">
+                        <Badge variant="outline" className="bg-red-950/80 border-red-800/80 text-red-400 text-[10px] px-2 py-0.5 uppercase font-bold">
                           ● DIRECTO
                         </Badge>
                       </button>
@@ -934,7 +934,7 @@ export const App: React.FC = () => {
               >
                 <span
                   className={`w-2 h-2 rounded-full ${
-                    isBackendOnline ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'
+                    isBackendOnline ? 'bg-emerald-500' : 'bg-red-500'
                   }`}
                 />
                 <span className="hidden lg:inline text-zinc-400 font-medium">
@@ -1514,7 +1514,7 @@ export const App: React.FC = () => {
                       <div>
                         <h1 className="browse-view-title text-2xl sm:text-3xl font-bold flex items-center gap-2.5">
                           <span>Televisión en Vivo</span>
-                          <span className="text-red-500 font-bold text-xs uppercase bg-red-950/60 border border-red-800/60 px-2 py-0.5 rounded animate-pulse">
+                          <span className="text-red-500 font-bold text-xs uppercase bg-red-950/60 border border-red-800/60 px-2 py-0.5 rounded">
                             ● DIRECTO
                           </span>
                         </h1>

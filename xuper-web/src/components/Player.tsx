@@ -938,7 +938,7 @@ export const Player: React.FC<PlayerProps> = ({
           <MaicaoflixLogo width={100} height={22} className="hidden sm:block ml-1 mr-2" />
 
           {isLive ? (
-            <Badge variant="destructive" className="bg-red-600 font-bold px-2 py-0.5 tracking-wider animate-pulse shrink-0 text-[10px]">
+            <Badge variant="destructive" className="bg-red-600 font-bold px-2 py-0.5 tracking-wider shrink-0 text-[10px]">
               EN VIVO
             </Badge>
           ) : (

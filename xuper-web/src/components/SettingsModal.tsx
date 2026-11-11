@@ -50,7 +50,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div className="flex items-center gap-2">
               <span
                 className={`w-2.5 h-2.5 rounded-full ${
-                  isBackendOnline ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'
+                  isBackendOnline ? 'bg-emerald-500' : 'bg-red-500'
                 }`}
               />
               <span
