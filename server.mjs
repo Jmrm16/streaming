@@ -347,7 +347,7 @@ const server = http.createServer((req, res) => {
         isHls: true,
       });
     }
-    const channelCode = u.searchParams.get("channelCode") || "";
+    const channelCode = u.searchParams.get("channelCode") || u.searchParams.get("id") || "";
     const fetchResolve = (retry = true) => {
       magis.resolveLive(channelCode, (err, stream) => {
         if (err && retry && (/aaa100028|aaa100027|未登录/i.test(err.message || "") || err.portalCode === "aaa100028")) {

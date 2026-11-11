@@ -7,22 +7,22 @@ var http = require("http"),
   tsIndexer = require("./ts-indexer"),
   dnsx = require("./dnsx"),
   upstream = require("./upstream"),
-  MAX_TOKENS = 6,
+  MAX_TOKENS = 200,
   tokens = {},
   order = [],
   subtitleTokens = {},
   subtitleOrder = [],
-  MAX_SUBTITLES = 64,
+  MAX_SUBTITLES = 500,
   server = null,
   port = 0,
   httpAgent = new http.Agent({
     keepAlive: !0,
-    maxSockets: 4,
+    maxSockets: 32,
     keepAliveMsecs: 15e3,
   }),
   httpsAgent = new https.Agent({
     keepAlive: !0,
-    maxSockets: 4,
+    maxSockets: 32,
     keepAliveMsecs: 15e3,
     rejectUnauthorized: !1,
   }),
@@ -518,7 +518,7 @@ function rewriteHlsManifest(e, t, r) {
   return n.join("\n");
 }
 function forward(e, t, r, n) {
-  activeToken !== n && (killActiveStreams(), (activeToken = n));
+  activeToken = n;
   var o = {};
   (e.headers.range && (o.Range = e.headers.range),
     e.headers["if-range"] && (o["If-Range"] = e.headers["if-range"]),
@@ -553,6 +553,23 @@ function forward(e, t, r, n) {
               c.socket.setTimeout(0);
             } catch (e) {}
           if (
+            [301, 302, 303, 307, 308].indexOf(o.statusCode) !== -1 &&
+            o.headers &&
+            o.headers.location &&
+            !t.headersSent &&
+            (r._redirects || 0) < 5
+          ) {
+            var redirUrl = urlmod.resolve(r.url || "", o.headers.location);
+            return (
+              o.resume(),
+              (r._redirects = (r._redirects || 0) + 1),
+              (r.url = redirUrl),
+              (r.resolvedIp = ""),
+              p(),
+              forward(e, t, r, n)
+            );
+          }
+          if (
             !r._maskSni &&
             isCacheFlyHost(urlmod.parse(r.url || "").hostname, s) &&
             (403 === o.statusCode || 451 === o.statusCode)
@@ -569,6 +586,39 @@ function forward(e, t, r, n) {
               p(),
               forward(e, t, r, n)
             );
+          if (
+            o.statusCode >= 400 &&
+            !t.headersSent &&
+            r &&
+            !r._isHlsChild &&
+            r.backupUrls &&
+            r.backupIndex < r.backupUrls.length
+          ) {
+            var bItem = r.backupUrls[r.backupIndex++],
+              bUrl = bItem && "string" == typeof bItem ? bItem : bItem && bItem.url;
+            if (bUrl)
+              return (
+                o.resume(),
+                console.log(
+                  "[proxy] upstream respondió HTTP " +
+                    o.statusCode +
+                    " en " +
+                    r.url +
+                    ", reintentando con CDN alternativa: " +
+                    bUrl
+                ),
+                (r.url = bUrl),
+                bItem && bItem.headers && (r.headers = bItem.headers),
+                (r.resolvedIp = ""),
+                (r._redirects = 0),
+                (r._retriedProtocol = !1),
+                (r._maskSni = !1),
+                (r._dnsRetry = !1),
+                p(),
+                forward(e, t, r, n)
+              );
+          }
+          r && (r._redirects = 0);
           var a = (o.headers["content-type"] || "").toLowerCase(),
             i = "video/mp2t";
           -1 !== a.indexOf("mp4")
@@ -766,6 +816,7 @@ function forward(e, t, r, n) {
           p();
         }),
           (retryUpstream = function (o) {
+            if (e.aborted || t.finished) return void p();
             (stats.errors++,
               (stats.lastError = String((o && (o.code || o.message)) || "error")),
               (stats.lastAt = Date.now()));
@@ -982,9 +1033,10 @@ function handler(e, t) {
             url: a,
             headers: s.headers,
             duration: 0,
-            backupUrls: s.backupUrls,
-            backupIndex: s.backupIndex,
+            backupUrls: [],
+            backupIndex: 0,
             isLive: s.isLive,
+            _isHlsChild: !0,
             _segBuf: !!s.isLive,
             _noKeepAlive: !!s.isLive,
           },

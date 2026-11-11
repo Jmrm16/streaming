@@ -108,14 +108,18 @@ interface PlayerProps {
   onClose: () => void;
 }
 
+const EMPTY_SUBTITLES: SubtitleTrack[] = [];
+const EMPTY_AUDIO_LANGUAGES: AudioLanguage[] = [];
+const EMPTY_CHANNELS: Channel[] = [];
+
 export const Player: React.FC<PlayerProps> = ({
   url,
   title,
   subtitle,
   isLive = false,
-  subtitles = [],
-  audioLanguages = [],
-  channels = [],
+  subtitles = EMPTY_SUBTITLES,
+  audioLanguages = EMPTY_AUDIO_LANGUAGES,
+  channels = EMPTY_CHANNELS,
   onSelectChannel,
   onSwitchAudioTrack,
   onClose,
@@ -123,6 +127,9 @@ export const Player: React.FC<PlayerProps> = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const audioLanguagesRef = useRef<AudioLanguage[]>(audioLanguages);
+  audioLanguagesRef.current = audioLanguages;
+  const networkRetryRef = useRef<number>(0);
 
   // Playback states
   const [isPlaying, setIsPlaying] = useState(true);
@@ -221,6 +228,7 @@ export const Player: React.FC<PlayerProps> = ({
       hls.attachMedia(video);
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
+        networkRetryRef.current = 0;
         setIsLoading(false);
         if (data.levels && data.levels.length > 0) {
           const lvls = data.levels.map((lvl, index) => ({
@@ -248,11 +256,12 @@ export const Player: React.FC<PlayerProps> = ({
 
       hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_, data) => {
         if (data.audioTracks && data.audioTracks.length > 0) {
+          const langs = audioLanguagesRef.current;
           setAudioTracks(
             data.audioTracks.map((t, idx) => ({
               id: idx,
-              name: t.name || audioLanguages?.[idx]?.name || `Pista ${idx + 1}`,
-              lang: t.lang || audioLanguages?.[idx]?.code || '',
+              name: t.name || langs?.[idx]?.name || `Pista ${idx + 1}`,
+              lang: t.lang || langs?.[idx]?.code || '',
             }))
           );
         }
@@ -262,8 +271,24 @@ export const Player: React.FC<PlayerProps> = ({
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              console.warn('HLS Network Error, attempting recovery...');
-              hls.startLoad();
+              if (networkRetryRef.current < 3) {
+                networkRetryRef.current += 1;
+                console.warn(`HLS Network Error, attempting recovery (${networkRetryRef.current}/3)...`);
+                setTimeout(() => {
+                  if (hlsRef.current === hls) {
+                    hls.startLoad();
+                  }
+                }, 1000 * networkRetryRef.current);
+              } else {
+                console.error('Fatal HLS Network Error after retries:', data);
+                setIsLoading(false);
+                setErrorAlert({
+                  open: true,
+                  message:
+                    'No se pudo conectar con la señal de video en este momento. Intenta recargar o cambiar de canal.',
+                });
+                hls.destroy();
+              }
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
               console.warn('HLS Media Error, attempting recovery...');
@@ -271,6 +296,7 @@ export const Player: React.FC<PlayerProps> = ({
               break;
             default:
               console.error('Fatal HLS Error:', data);
+              setIsLoading(false);
               setErrorAlert({
                 open: true,
                 message:
@@ -301,7 +327,7 @@ export const Player: React.FC<PlayerProps> = ({
         { once: true }
       );
     }
-  }, [url, isLive, audioLanguages]);
+  }, [url, isLive]);
 
   // Resilient play with unmuted -> muted autoplay fallback
   const attemptPlay = (video: HTMLVideoElement) => {
@@ -313,6 +339,9 @@ export const Player: React.FC<PlayerProps> = ({
           setAutoplayBlocked(false);
         })
         .catch((err) => {
+          if (err?.name === 'AbortError') {
+            return;
+          }
           console.warn('Browser blocked unmuted playback, retrying muted:', err);
           video.muted = true;
           setIsMuted(true);
@@ -323,6 +352,9 @@ export const Player: React.FC<PlayerProps> = ({
               setAutoplayBlocked(true);
             })
             .catch((err2) => {
+              if (err2?.name === 'AbortError') {
+                return;
+              }
               console.warn('Muted autoplay also rejected:', err2);
               setIsPlaying(false);
             });

@@ -1755,7 +1755,7 @@ function getLiveChannels(e, r, t, n) {
       call(
         "v6/getLiveData",
         {
-          columnId: e || 76182,
+          columnId: e && e !== "all" ? parseInt(e, 10) || e : 76182,
           dataVersion: "",
           pageSize: t,
           pageNum: r,
@@ -1941,16 +1941,18 @@ function liveCdnsOf(e) {
           (s(o.main_addr, d), o.spared_addr && s(o.spared_addr, d));
       }
   }
-  for (var c = 0; c < r.length; c++) {
-    var f = r[c];
-    if (f && "live" === f.tag)
-      for (var m = f.url_list || [], p = 0; p < m.length; p++) {
-        var v = m[p],
-          h = (v && v.url) || "";
-        h &&
-          -1 !== h.indexOf("token=") &&
-          (s(f.main_addr, h), f.spared_addr && s(f.spared_addr, h));
-      }
+  if (!t.length) {
+    for (var c = 0; c < r.length; c++) {
+      var f = r[c];
+      if (f && "live" === f.tag)
+        for (var m = f.url_list || [], p = 0; p < m.length; p++) {
+          var v = m[p],
+            h = (v && v.url) || "";
+          h &&
+            -1 !== h.indexOf("token=") &&
+            (s(f.main_addr, h), f.spared_addr && s(f.spared_addr, h));
+        }
+    }
   }
   return t;
 }
@@ -2014,37 +2016,43 @@ function resolveLive(e, r, force) {
           var l = liveCdnsOf(i);
           if (!l.length) return t(new Error("CDN de vivo vacía"));
           !(function (t) {
-            for (
-              var o = t[0],
-                i = "http://" + o.cflHost + "/live/" + s + ".m3u8",
-                l = o.authBase.match(/token=([0-9a-fA-F]{32})/),
+            function makeLiveHeaders(cdnEntry) {
+              var l = (cdnEntry.authBase || "").match(/token=([0-9a-fA-F]{32})/),
                 u = l ? l[1] : "",
                 d = Math.floor(Date.now()),
                 c = signO3(u, d),
                 f =
-                  o.authBase +
+                  cdnEntry.authBase +
                   "&sign2_method=sign_o3&instance=0&start_moment=" +
                   d +
                   "&sign2=" +
-                  c,
-                m = [],
-                p = 1;
-              p < t.length;
-              p++
-            )
-              m.push("http://" + t[p].cflHost + "/live/" + s + ".m3u8");
-            var v = {
-              url: i,
-              backupUrls: m,
-              mime: "application/x-mpegurl",
-              headers: {
+                  c;
+              return {
                 "Content-Auth": f,
                 "Content-License": a,
                 "User-Agent": "Ranger/4.9.4-17294ac0",
                 App: "com.android.msandroid",
                 "App-Version": "49902",
                 "X-Buffer": "0",
-              },
+              };
+            }
+            for (
+              var o = t[0],
+                i = "http://" + o.cflHost + "/live/" + s + ".m3u8",
+                m = [],
+                p = 1;
+              p < t.length;
+              p++
+            )
+              m.push({
+                url: "http://" + t[p].cflHost + "/live/" + s + ".m3u8",
+                headers: makeLiveHeaders(t[p]),
+              });
+            var v = {
+              url: i,
+              backupUrls: m,
+              mime: "application/x-mpegurl",
+              headers: makeLiveHeaders(o),
               name: text(
                 (n && n.name) ||
                   (liveChannelCache[e] &&
