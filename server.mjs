@@ -144,7 +144,7 @@ const server = http.createServer((req, res) => {
 
     let handleStream = (stream) => {
       const isTs = stream.mime === "video/mp2t" || /\.ts(?:\?|$)/i.test(stream.url);
-      const token = proxy.add(stream.url, stream.headers, stream.duration);
+      const token = proxy.add(stream.url, stream.headers, stream.duration, "", stream.backupUrls, false);
       if (isTs) {
         stream.proxyPath = `${currentBaseUrl}/media/${token}/stream.m3u8`;
         stream.mime = "application/vnd.apple.mpegurl";

@@ -1560,6 +1560,8 @@ function mediaInfo(e, r, t) {
   });
 }
 function resolve(e, r, t, n) {
+  var origContentId = trim(e),
+    origSeriesId = trim(r);
   ("function" == typeof t && ((n = t), (t = {})),
     (t = t || {}),
     (xQualityPref =
@@ -1624,7 +1626,11 @@ function resolve(e, r, t, n) {
           codec: E,
           quality: trim(l.quality),
           duration: durationSeconds(
-            l.duration || a.duration || (s && s.duration)
+            l.duration ||
+              a.duration ||
+              (s && s.duration) ||
+              (itemCache[origContentId] && itemCache[origContentId].duration) ||
+              (itemCache[origSeriesId] && itemCache[origSeriesId].duration)
           ),
           selectedTrack: trackSummary(l),
           availableTracks: u,

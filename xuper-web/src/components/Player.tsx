@@ -178,6 +178,11 @@ export const Player: React.FC<PlayerProps> = ({
     if (isLive) {
       savedPositionRef.current = 0;
     }
+    if (isLive || savedPositionRef.current === 0) {
+      setDuration(0);
+      setProgress(0);
+      setBufferedEnd(0);
+    }
 
     // Always clean up previous instance so Live TV and VOD get their exact configurations
     if (hlsRef.current) {
@@ -253,10 +258,17 @@ export const Player: React.FC<PlayerProps> = ({
         attemptPlay(video);
       });
 
+      hls.on(Hls.Events.LEVEL_LOADED, (_, data) => {
+        networkRetryRef.current = 0;
+        if (data.details && data.details.totalduration && isFinite(data.details.totalduration)) {
+          setDuration((prev) => Math.max(prev, data.details.totalduration));
+        }
+      });
+
       hls.on(Hls.Events.LEVEL_UPDATED, (_, data) => {
         networkRetryRef.current = 0;
-        if (data.details && data.details.totalduration) {
-          setDuration(data.details.totalduration);
+        if (data.details && data.details.totalduration && isFinite(data.details.totalduration)) {
+          setDuration((prev) => Math.max(prev, data.details.totalduration));
         }
       });
 
@@ -789,7 +801,10 @@ export const Player: React.FC<PlayerProps> = ({
           if (videoRef.current) {
             const cur = videoRef.current.currentTime;
             setProgress(cur);
-            setDuration(videoRef.current.duration || 0);
+            const vidDur = videoRef.current.duration;
+            if (vidDur && isFinite(vidDur) && vidDur > 0) {
+              setDuration((prev) => Math.max(prev, vidDur));
+            }
             savedPositionRef.current = cur;
 
             // Buffered range indicator
@@ -1064,19 +1079,24 @@ export const Player: React.FC<PlayerProps> = ({
       >
         {/* Timeline Seekbar (for VOD/Movies/Series) */}
         {!isLive && duration > 0 && duration !== Infinity && (
-          <div className="mb-3 space-y-1">
-            <div className="relative w-full h-1.5 bg-zinc-800/80 hover:h-2.5 rounded-lg cursor-pointer group transition-all">
+          <div className="mb-3 space-y-1.5">
+            <div className="relative w-full h-1.5 bg-zinc-700/70 hover:h-2 rounded-full cursor-pointer group transition-all flex items-center">
               {/* Buffered progress */}
               {bufferedEnd > 0 && (
                 <div
-                  className="absolute top-0 bottom-0 left-0 bg-zinc-600/50 rounded-lg pointer-events-none"
+                  className="absolute top-0 bottom-0 left-0 bg-zinc-400/35 rounded-full pointer-events-none transition-all duration-150"
                   style={{ width: `${Math.min(100, (bufferedEnd / duration) * 100)}%` }}
                 />
               )}
               {/* Played progress */}
               <div
-                className="absolute top-0 bottom-0 left-0 bg-[#e50914] rounded-lg pointer-events-none"
+                className="absolute top-0 bottom-0 left-0 bg-[#e50914] rounded-full pointer-events-none"
                 style={{ width: `${Math.min(100, (progress / duration) * 100)}%` }}
+              />
+              {/* Scrubber Thumb */}
+              <div
+                className="absolute h-3.5 w-3.5 rounded-full bg-[#e50914] shadow-md pointer-events-none -translate-x-1/2 transition-transform group-hover:scale-125"
+                style={{ left: `${Math.min(100, Math.max(0, (progress / duration) * 100))}%` }}
               />
               <input
                 type="range"
@@ -1092,7 +1112,7 @@ export const Player: React.FC<PlayerProps> = ({
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
               />
             </div>
-            <div className="flex justify-between text-xs text-zinc-400 font-mono">
+            <div className="flex justify-between text-xs text-zinc-300 font-mono">
               <span>{formatTime(progress)}</span>
               <span>{formatTime(duration)}</span>
             </div>

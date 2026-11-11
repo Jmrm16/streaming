@@ -143,6 +143,9 @@ function add(e, t, r, n, o, live) {
           (a.resolvedIp = dnsx.dial(i.hostname, t.ips));
       }));
   }
+  if (!a.isLive && -1 === String(e || "").indexOf(".m3u8") && /\.ts(?:\?|$)/i.test(String(e || ""))) {
+    ensureVodMap(a, function () {});
+  }
   return s;
 }
 function addSubtitleToken(e) {
@@ -331,32 +334,305 @@ function sourceLength(e, t) {
           n.end());
       }));
 }
-function readRange(e, t, r, n) {
+function readRangeWithMeta(e, t, r, n, attempt) {
+  attempt = attempt || 0;
   resolveHostIp(e, function (o) {
     var s = mediaRequest(e, "GET", { Range: "bytes=" + t + "-" + r }, o),
-      a = (s.secure ? https : http).request(s.options, function (e) {
-        var t = [];
-        (e.on("data", function (e) {
-          t.push(e);
-        }),
-          e.on("end", function () {
-            n(
-              e.statusCode >= 200 && e.statusCode < 300
-                ? null
-                : new Error("rango rechazado"),
-              Buffer.concat(t)
-            );
-          }));
+      done = !1,
+      finish = function (err, buf, total) {
+        if (!done) {
+          done = !0;
+          n(err, buf, total);
+        }
+      },
+      retryOrFail = function (err) {
+        if (done) return;
+        if (attempt < 4 && e.backupUrls && e.backupIndex < e.backupUrls.length) {
+          var bItem = e.backupUrls[e.backupIndex++],
+            bUrl = bItem && "string" == typeof bItem ? bItem : bItem && bItem.url;
+          if (bUrl) {
+            e.url = bUrl;
+            if (bItem && bItem.headers) e.headers = bItem.headers;
+            e.resolvedIp = "";
+            return void readRangeWithMeta(e, t, r, n, attempt + 1);
+          }
+        }
+        finish(err || new Error("rango rechazado"));
+      },
+      a = (s.secure ? https : http).request(s.options, function (res) {
+        if (
+          [301, 302, 303, 307, 308].indexOf(res.statusCode) !== -1 &&
+          res.headers &&
+          res.headers.location &&
+          attempt < 5
+        ) {
+          res.resume();
+          e.url = urlmod.resolve(e.url || "", res.headers.location);
+          e.resolvedIp = "";
+          return void readRangeWithMeta(e, t, r, n, attempt + 1);
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          res.resume();
+          return void retryOrFail(new Error("HTTP " + res.statusCode));
+        }
+        var cr = /\/(\d+)$/.exec(String(res.headers["content-range"] || "")),
+          total = cr ? parseInt(cr[1], 10) : parseInt(res.headers["content-length"], 10) || 0,
+          chunks = [];
+        res.on("data", function (c) {
+          chunks.push(c);
+        });
+        res.on("end", function () {
+          if (total > 0 && !e.contentLength) e.contentLength = total;
+          finish(null, Buffer.concat(chunks), total || e.contentLength || 0);
+        });
+        res.on("error", retryOrFail);
       });
-    (a.setTimeout(25e3, function () {
+    a.setTimeout(2e4, function () {
       try {
         a.abort();
-      } catch (e) {}
-    }),
-      a.on("error", function (e) {
-        n(e);
-      }),
-      a.end());
+      } catch (err) {}
+      retryOrFail(new Error("timeout en readRange"));
+    });
+    a.on("error", retryOrFail);
+    a.end();
+  });
+}
+function readRange(e, t, r, n) {
+  readRangeWithMeta(e, t, r, function (err, buf) {
+    n(err, buf);
+  });
+}
+function ptsAtTs(t, r) {
+  return (
+    536870912 * (14 & t[r]) +
+    4194304 * t[r + 1] +
+    16384 * (254 & t[r + 2]) +
+    128 * t[r + 3] +
+    (254 & t[r + 4]) / 2
+  );
+}
+function detectTsVideoPid(buf) {
+  var pmtPid = -1,
+    videoPid = -1;
+  for (var i = 0; i + 188 <= buf.length; i += 188) {
+    if (buf[i] !== 0x47) continue;
+    var pusi = !!(buf[i + 1] & 0x40),
+      pid = ((buf[i + 1] & 0x1f) << 8) | buf[i + 2],
+      afc = (buf[i + 3] >> 4) & 3;
+    if (afc === 0 || afc === 2) continue;
+    var p = i + 4 + (afc === 3 ? 1 + buf[i + 4] : 0);
+    if (p >= i + 188) continue;
+    if (pid === 0) {
+      var sec = pusi ? p + 1 + buf[p] : p;
+      if (sec + 12 <= i + 188 && buf[sec] === 0) {
+        var secLen = ((buf[sec + 1] & 0x0f) << 8) | buf[sec + 2],
+          endSec = Math.min(i + 188, sec + 3 + secLen - 4);
+        for (var k = sec + 8; k + 3 < endSec; k += 4) {
+          var progNum = (buf[k] << 8) | buf[k + 1];
+          if (progNum !== 0) {
+            pmtPid = ((buf[k + 2] & 0x1f) << 8) | buf[k + 3];
+            break;
+          }
+        }
+      }
+    } else if (pid === pmtPid && pmtPid > 0) {
+      var psec = pusi ? p + 1 + buf[p] : p;
+      if (psec + 16 <= i + 188 && buf[psec] === 2) {
+        var psecLen = ((buf[psec + 1] & 0x0f) << 8) | buf[psec + 2],
+          progInfoLen = ((buf[psec + 10] & 0x0f) << 8) | buf[psec + 11],
+          pend = Math.min(i + 188, psec + 3 + psecLen - 4);
+        for (var m = psec + 12 + progInfoLen; m + 4 < pend; ) {
+          var stype = buf[m],
+            epid = ((buf[m + 1] & 0x1f) << 8) | buf[m + 2],
+            esLen = ((buf[m + 3] & 0x0f) << 8) | buf[m + 4];
+          if (stype === 27 || stype === 36 || stype === 2) {
+            videoPid = epid;
+            return videoPid;
+          }
+          m += 5 + esLen;
+        }
+      }
+    }
+  }
+  return videoPid;
+}
+function extractPtsFromTs(buf, findLast, videoPid) {
+  var found = -1,
+    fallback = -1;
+  for (var i = 0; i + 188 <= buf.length; i += 188) {
+    if (buf[i] !== 0x47 || !(buf[i + 1] & 0x40)) continue;
+    var pid = ((buf[i + 1] & 0x1f) << 8) | buf[i + 2],
+      afc = (buf[i + 3] >> 4) & 3;
+    if (afc === 0 || afc === 2) continue;
+    var p = i + 4 + (afc === 3 ? 1 + buf[i + 4] : 0);
+    if (
+      p + 13 < i + 188 &&
+      buf[p] === 0 &&
+      buf[p + 1] === 0 &&
+      buf[p + 2] === 1 &&
+      buf[p + 7] & 0x80
+    ) {
+      var pts = ptsAtTs(buf, p + 9);
+      if (fallback === -1 || findLast) fallback = pts;
+      if (!videoPid || videoPid < 0 || pid === videoPid) {
+        found = pts;
+        if (!findLast) return found;
+      }
+    }
+  }
+  return found !== -1 ? found : fallback;
+}
+function findKeyframePatOffset(buf, fromOffset, videoPid) {
+  var startAligned = Math.max(0, Math.floor(fromOffset / 188) * 188),
+    lastPat = -1;
+  for (var i = startAligned; i + 188 <= buf.length; i += 188) {
+    if (buf[i] !== 0x47) continue;
+    var pid = ((buf[i + 1] & 0x1f) << 8) | buf[i + 2];
+    if (pid === 0) {
+      lastPat = i;
+      continue;
+    }
+    if (lastPat === -1) continue;
+    if (videoPid && videoPid > 0 && pid !== videoPid) continue;
+    var afc = (buf[i + 3] >> 4) & 3;
+    if ((afc === 2 || afc === 3) && buf[i + 4] > 0 && buf[i + 5] & 0x40) {
+      return lastPat;
+    }
+    if (afc === 0 || afc === 2) continue;
+    var payStart = i + 4 + (afc === 3 ? 1 + buf[i + 4] : 0);
+    for (var e = payStart; e + 5 < i + 188; e++) {
+      if (
+        buf[e] === 0 &&
+        buf[e + 1] === 0 &&
+        (buf[e + 2] === 1 || (buf[e + 2] === 0 && buf[e + 3] === 1))
+      ) {
+        var nalByte = buf[e + (buf[e + 2] === 1 ? 3 : 4)],
+          h265Type = (nalByte >> 1) & 63,
+          h264Type = nalByte & 31;
+        if (h265Type === 19 || h265Type === 20 || h265Type === 21 || h264Type === 5) {
+          return lastPat;
+        }
+      }
+    }
+  }
+  for (var j = startAligned; j + 188 <= buf.length; j += 188) {
+    if (buf[j] === 0x47 && (((buf[j + 1] & 0x1f) << 8) | buf[j + 2]) === 0) {
+      return j;
+    }
+  }
+  return startAligned;
+}
+function ensureVodMap(n, callback) {
+  if (n.vodMap) return callback(null, n.vodMap);
+  if (n.vodMapWaiters) return void n.vodMapWaiters.push(callback);
+  n.vodMapWaiters = [callback];
+  var notify = function (err, map) {
+    var list = n.vodMapWaiters || [];
+    n.vodMapWaiters = null;
+    for (var idx = 0; idx < list.length; idx++) {
+      list[idx](err, map);
+    }
+  };
+  var headSpan = 188 * 350;
+  readRangeWithMeta(n, 0, headSpan - 1, function (err, headBuf, totalBytes) {
+    if (err || !totalBytes || totalBytes < 1880) {
+      return notify(err || new Error("no se pudo obtener el tamaño del video"));
+    }
+    var totalPackets = Math.floor(totalBytes / 188),
+      alignedTotal = totalPackets * 188,
+      videoPid = detectTsVideoPid(headBuf),
+      firstPts = extractPtsFromTs(headBuf, !1, videoPid),
+      fracs = [0.25, 0.5, 0.75, 1.0],
+      points = [{ byte: 0, pts: firstPts, sec: 0 }],
+      pending = fracs.length;
+    fracs.forEach(function (f) {
+      var probePackets = f === 1.0 ? 450 : 300,
+        startPkt =
+          f === 1.0
+            ? Math.max(0, totalPackets - probePackets)
+            : Math.floor(totalPackets * f),
+        startByte = startPkt * 188,
+        endByte = Math.min(alignedTotal - 1, (startPkt + probePackets) * 188 - 1);
+      readRange(n, startByte, endByte, function (pErr, pBuf) {
+        if (!pErr && pBuf && pBuf.length >= 188) {
+          var pts = extractPtsFromTs(pBuf, f === 1.0, videoPid);
+          if (pts !== -1 && firstPts !== -1) {
+            var adjPts = pts < firstPts ? pts + 8589934592 : pts,
+              sec = (adjPts - firstPts) / 9e4;
+            if (sec > 0) {
+              points.push({
+                byte: f === 1.0 ? alignedTotal : startByte,
+                pts: adjPts,
+                sec: sec,
+              });
+            }
+          }
+        }
+        if (--pending === 0) {
+          points.sort(function (a, b) {
+            return a.byte - b.byte;
+          });
+          var cleaned = [points[0]];
+          for (var pi = 1; pi < points.length; pi++) {
+            if (
+              points[pi].byte > cleaned[cleaned.length - 1].byte &&
+              points[pi].sec > cleaned[cleaned.length - 1].sec
+            ) {
+              cleaned.push(points[pi]);
+            }
+          }
+          var totalDuration =
+            cleaned.length > 1
+              ? cleaned[cleaned.length - 1].sec
+              : n.duration > 0
+                ? n.duration
+                : Math.max(60, Math.round(alignedTotal / 18e4));
+          if (cleaned[cleaned.length - 1].byte < alignedTotal) {
+            cleaned.push({
+              byte: alignedTotal,
+              pts: firstPts + totalDuration * 9e4,
+              sec: totalDuration,
+            });
+          }
+          var segCount = Math.max(1, Math.ceil(totalDuration / HLS_SEGMENT_SECONDS)),
+            nomBytes = new Array(segCount + 1);
+          nomBytes[0] = 0;
+          nomBytes[segCount] = alignedTotal;
+          for (var k = 1; k < segCount; k++) {
+            var targetSec = k * HLS_SEGMENT_SECONDS,
+              p0 = cleaned[0],
+              p1 = cleaned[cleaned.length - 1];
+            for (var ci = 0; ci < cleaned.length - 1; ci++) {
+              if (targetSec >= cleaned[ci].sec && targetSec <= cleaned[ci + 1].sec) {
+                p0 = cleaned[ci];
+                p1 = cleaned[ci + 1];
+                break;
+              }
+            }
+            var ratio =
+                p1.sec > p0.sec ? (targetSec - p0.sec) / (p1.sec - p0.sec) : k / segCount,
+              interpByte = p0.byte + ratio * (p1.byte - p0.byte),
+              alignedByte = Math.floor(interpByte / 188) * 188;
+            if (alignedByte <= nomBytes[k - 1]) {
+              alignedByte = nomBytes[k - 1] + 188;
+            }
+            nomBytes[k] = Math.min(alignedTotal - (segCount - k) * 188, alignedByte);
+          }
+          var boundaries = { 0: 0 };
+          boundaries[segCount] = alignedTotal;
+          n.duration = totalDuration;
+          n.vodMap = {
+            totalSize: alignedTotal,
+            totalDuration: totalDuration,
+            segmentCount: segCount,
+            videoPid: videoPid,
+            nomBytes: nomBytes,
+            boundaries: boundaries,
+          };
+          notify(null, n.vodMap);
+        }
+      });
+    });
   });
 }
 function createAudioPidTransform(audioTrackIndex) {
@@ -432,8 +708,8 @@ function transformTsBuffer(buf, audioTrackIndex) {
 function sendVirtualHls(e, t, r, n) {
   var parsedReq = urlmod.parse(e.url, true);
   var audioTrack = parseInt(parsedReq.query.audio || "0", 10);
-  sourceLength(n, function (o, s) {
-    if (o)
+  ensureVodMap(n, function (err, map) {
+    if (err || !map)
       return (
         t.writeHead(502, {
           "Content-Type": "text/plain",
@@ -441,43 +717,99 @@ function sendVirtualHls(e, t, r, n) {
         }),
         void t.end("no se pudo crear el manifiesto HLS")
       );
-    n.indexer ||
-      ((n.indexer = tsIndexer.create(s, function (e, t, r) {
-        readRange(n, e, t, r);
-      })),
-      n.indexer.start());
-    var a = n.indexer;
-    if (a.segments.length || a.complete) {
-      for (
-        var i = [
-            "#EXTM3U",
-            "#EXT-X-VERSION:4",
-            a.complete ? "#EXT-X-PLAYLIST-TYPE:VOD" : "#EXT-X-PLAYLIST-TYPE:EVENT",
-            "#EXT-X-TARGETDURATION:" + HLS_SEGMENT_SECONDS,
-            "#EXT-X-MEDIA-SEQUENCE:0",
-          ],
-          l = 0;
-        l < a.segments.length;
-        l++
-      ) {
-        var u = a.segments[l];
-        (i.push("#EXTINF:" + u.duration.toFixed(3) + ","),
-          i.push("#EXT-X-BYTERANGE:" + (u.end - u.start + 1) + "@" + u.start),
-          i.push(audioTrack > 0 ? "stream.ts?audio=" + audioTrack : "stream.ts"));
-      }
-      a.complete && i.push("#EXT-X-ENDLIST");
-      var c = i.join("\n") + "\n";
-      (t.writeHead(200, {
-        "Content-Type": "application/vnd.apple.mpegurl",
-        "Content-Length": Buffer.byteLength(c),
+    var lines = [
+      "#EXTM3U",
+      "#EXT-X-VERSION:3",
+      "#EXT-X-PLAYLIST-TYPE:VOD",
+      "#EXT-X-TARGETDURATION:" + HLS_SEGMENT_SECONDS,
+      "#EXT-X-MEDIA-SEQUENCE:0",
+    ];
+    for (var k = 0; k < map.segmentCount; k++) {
+      var segDur =
+        k === map.segmentCount - 1
+          ? Math.max(0.5, map.totalDuration - k * HLS_SEGMENT_SECONDS)
+          : HLS_SEGMENT_SECONDS;
+      lines.push("#EXTINF:" + segDur.toFixed(3) + ",");
+      lines.push(
+        audioTrack > 0 ? "seg-" + k + ".ts?audio=" + audioTrack : "seg-" + k + ".ts"
+      );
+    }
+    lines.push("#EXT-X-ENDLIST");
+    var body = lines.join("\n") + "\n";
+    t.writeHead(200, {
+      "Content-Type": "application/vnd.apple.mpegurl",
+      "Content-Length": Buffer.byteLength(body),
+      "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "no-store",
+    });
+    t.end(body);
+  });
+}
+function sendVirtualTsSegment(e, t, r, n, segIdx) {
+  var parsedReq = urlmod.parse(e.url, true);
+  var audioTrack = parseInt(parsedReq.query.audio || "0", 10);
+  ensureVodMap(n, function (err, map) {
+    if (err || !map || segIdx < 0 || segIdx >= map.segmentCount) {
+      t.writeHead(404, {
+        "Content-Type": "text/plain",
         "Access-Control-Allow-Origin": "*",
-        "Cache-Control": "no-store",
-      }),
-        t.end(c));
-    } else
-      a.when(function () {
-        sendVirtualHls(e, t, r, n);
       });
+      return void t.end("segment not found");
+    }
+    var hasStart = "number" == typeof map.boundaries[segIdx],
+      hasEnd = "number" == typeof map.boundaries[segIdx + 1],
+      lookahead = 188 * 5500,
+      reqStart = hasStart ? map.boundaries[segIdx] : map.nomBytes[segIdx],
+      reqEnd = hasEnd
+        ? map.boundaries[segIdx + 1] - 1
+        : Math.min(map.totalSize - 1, map.nomBytes[segIdx + 1] + lookahead - 1);
+    if (reqEnd <= reqStart) {
+      reqEnd = Math.min(map.totalSize - 1, reqStart + 188 * 1000 - 1);
+    }
+    readRange(n, reqStart, reqEnd, function (rErr, buf) {
+      if (rErr || !buf || !buf.length) {
+        if (!t.headersSent) {
+          t.writeHead(502, {
+            "Content-Type": "text/plain",
+            "Access-Control-Allow-Origin": "*",
+          });
+          t.end("segment upstream error");
+        }
+        return;
+      }
+      var sliceStart = hasStart ? 0 : findKeyframePatOffset(buf, 0, map.videoPid);
+      if (!hasStart) {
+        map.boundaries[segIdx] = reqStart + sliceStart;
+      }
+      var sliceEnd = buf.length;
+      if (!hasEnd) {
+        var nomEndRel = Math.max(
+          sliceStart + 188,
+          map.nomBytes[segIdx + 1] - reqStart
+        );
+        if (nomEndRel < buf.length) {
+          sliceEnd = findKeyframePatOffset(buf, nomEndRel, map.videoPid);
+          if (sliceEnd <= sliceStart) {
+            sliceEnd = buf.length;
+          } else {
+            map.boundaries[segIdx + 1] = reqStart + sliceEnd;
+          }
+        }
+      }
+      var segBuf = buf.slice(sliceStart, sliceEnd);
+      if (audioTrack > 0) {
+        segBuf = transformTsBuffer(segBuf, audioTrack);
+      }
+      if (!t.headersSent) {
+        t.writeHead(200, {
+          "Content-Type": "video/mp2t",
+          "Content-Length": segBuf.length,
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "public, max-age=300",
+        });
+        t.end(segBuf);
+      }
+    });
   });
 }
 function base64Url(e) {
@@ -1078,6 +1410,10 @@ function handler(e, t) {
       }),
       void t.end("expired")
     );
+  var segMatch = /^seg-(\d+)\.ts$/i.exec(u);
+  if (segMatch && -1 === c.url.indexOf(".m3u8")) {
+    return void sendVirtualTsSegment(e, t, l, c, parseInt(segMatch[1], 10));
+  }
   -1 !== c.url.indexOf(".m3u8") || -1 === u.indexOf(".m3u8")
     ? forward(e, t, c, l)
     : sendVirtualHls(e, t, l, c);
