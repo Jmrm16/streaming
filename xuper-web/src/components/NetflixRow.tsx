@@ -161,22 +161,29 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
             })
           : items.map((item, idx) => {
               const fav = isFavorite ? isFavorite(item.id) : false;
-              const artworkUrl = item.backdrop || item.landscape || item.poster;
+              const artworkUrl = item.poster || item.landscape || item.backdrop;
               return (
                 <div
                   key={item.id || idx}
                   className="media-card group cursor-pointer"
                   onClick={() => onSelectMedia(item)}
                 >
-                  <div className="media-card-art relative">
+                  <div className="media-card-art is-poster relative">
                     <img
                       src={artworkUrl}
                       alt={item.title}
                       loading="lazy"
                       className="w-full h-full object-cover transition-transform group-hover:brightness-105"
                       onError={(e) => {
-                        (e.target as HTMLImageElement).src =
-                          'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="600" height="338"%3E%3Crect width="100%25" height="100%25" fill="%23242424"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dominant-baseline="middle" fill="%23e50914" font-family="Arial" font-size="34" font-weight="bold"%3EMAICAOFLIX%3C/text%3E%3C/svg%3E';
+                        const img = e.target as HTMLImageElement;
+                        const fallback = item.landscape || item.backdrop;
+                        if (fallback && img.src !== fallback && !img.dataset.retried) {
+                          img.dataset.retried = '1';
+                          img.src = fallback;
+                          return;
+                        }
+                        img.src =
+                          'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="400" height="600"%3E%3Crect width="100%25" height="100%25" fill="%23242424"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dominant-baseline="middle" fill="%23e50914" font-family="Arial" font-size="28" font-weight="bold"%3EMAICAOFLIX%3C/text%3E%3C/svg%3E';
                       }}
                     />
 

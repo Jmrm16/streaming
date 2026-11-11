@@ -31,7 +31,7 @@
 .zentix-episode-title { flex: 1; color: #eee; font-weight: 500; }
 .zentix-episode-number { font-size: 20px; width: 24px; text-align: center; }
 .zentix-quality { display: flex; align-items: center; gap: 12px; color: #bbb; margin-top: 20px; font-size: 13px; }
-.zentix-app .media-card-art { display: block; }
+.zentix-app .media-card-art.is-poster { display: block; }
 .zentix-app button:disabled { opacity: .6; }
 .zentix-app .notification-link { width: 100%; text-align: left; }
 .zentix-app .detail-hero .detail-title { overflow-wrap: anywhere; }

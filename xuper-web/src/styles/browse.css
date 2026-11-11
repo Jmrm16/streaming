@@ -540,6 +540,10 @@
   overflow: hidden;
   background: #242424;
 }
+.media-card-art.is-poster {
+  aspect-ratio: 2/3;
+  border-radius: 6px;
+}
 .media-card-art img,.media-card>img {
   display: block;
   width: 100%;
@@ -548,6 +552,17 @@
   aspect-ratio: 16/9;
   transition: filter .2s;
   border-radius: 4px;
+}
+.media-card-art.is-poster img {
+  aspect-ratio: 2/3;
+  object-fit: cover;
+  border-radius: 6px;
+}
+.media-card-art:not(.is-poster) img {
+  object-fit: contain;
+  width: auto;
+  height: 48px;
+  aspect-ratio: auto;
 }
 .media-card:hover .media-card-art img {
   filter: brightness(1.06);

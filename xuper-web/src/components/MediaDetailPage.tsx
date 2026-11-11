@@ -292,6 +292,7 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
     seasonEpisodes.length > 0;
 
   const artworkUrl = currentItem.backdrop || currentItem.landscape || currentItem.poster;
+  const posterUrl = currentItem.poster || currentItem.landscape || currentItem.backdrop;
 
   // Filter similar titles (excluding current)
   const similarTitles = useMemo(() => {
@@ -366,103 +367,115 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
         <div className="absolute inset-0 bg-gradient-to-r from-[#141414]/95 via-[#141414]/50 to-transparent" />
 
         {/* Hero Info Overlay */}
-        <div className="relative z-10 w-full max-w-7xl mx-auto px-4 sm:px-8 py-12 space-y-4">
-          <p className="netflix-series-label flex items-center gap-2">
-            <span className="text-red-600 font-black text-2xl">M</span>
-            <span className="tracking-[4px] text-xs font-bold text-zinc-300">
-              {isSeries ? 'S E R I E' : 'P E L Í C U L A'}
-            </span>
-          </p>
+        <div className="relative z-10 w-full max-w-7xl mx-auto px-4 sm:px-8 py-12 flex flex-col sm:flex-row items-start sm:items-end gap-6 sm:gap-8">
+          {posterUrl && (
+            <img
+              src={posterUrl}
+              alt={currentItem.title}
+              className="hidden sm:block w-36 md:w-44 lg:w-48 aspect-[2/3] object-cover rounded-lg shadow-2xl border border-white/10 shrink-0 select-none"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = 'none';
+              }}
+            />
+          )}
+          <div className="space-y-4 flex-1 min-w-0">
+            <p className="netflix-series-label flex items-center gap-2">
+              <span className="text-red-600 font-black text-2xl">M</span>
+              <span className="tracking-[4px] text-xs font-bold text-zinc-300">
+                {isSeries ? 'S E R I E' : 'P E L Í C U L A'}
+              </span>
+            </p>
 
-          <h1 className="text-3xl sm:text-5xl md:text-6xl font-black text-white tracking-tight leading-tight max-w-4xl drop-shadow-xl">
-            {currentItem.title}
-          </h1>
+            <h1 className="text-3xl sm:text-5xl md:text-6xl font-black text-white tracking-tight leading-tight max-w-4xl drop-shadow-xl">
+              {currentItem.title}
+            </h1>
 
-          {/* Badges line */}
-          <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-300 pt-1">
-            <span className="match-score text-emerald-400 font-bold">
-              {currentItem.score ? `${currentItem.score} ★ Calificación` : '98% para ti'}
-            </span>
-            {currentItem.year && currentItem.year !== '—' && (
-              <span className="text-zinc-200 font-semibold">{currentItem.year}</span>
-            )}
-            <span className="maturity-badge border border-zinc-600 px-1.5 py-0.5 text-xs text-zinc-300 rounded">
-              +16
-            </span>
-            {currentItem.duration && <span>{currentItem.duration}</span>}
-            <span className="border border-zinc-700 px-1.5 py-0.5 rounded text-[11px] font-mono text-zinc-300">
-              4K Ultra HD
-            </span>
-            <span className="border border-zinc-700 px-1.5 py-0.5 rounded text-[11px] font-mono text-zinc-300">
-              5.1 Estéreo
-            </span>
-          </div>
+            {/* Badges line */}
+            <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-300 pt-1">
+              <span className="match-score text-emerald-400 font-bold">
+                {currentItem.score ? `${currentItem.score} ★ Calificación` : '98% para ti'}
+              </span>
+              {currentItem.year && currentItem.year !== '—' && (
+                <span className="text-zinc-200 font-semibold">{currentItem.year}</span>
+              )}
+              <span className="maturity-badge border border-zinc-600 px-1.5 py-0.5 text-xs text-zinc-300 rounded">
+                +16
+              </span>
+              {currentItem.duration && <span>{currentItem.duration}</span>}
+              <span className="border border-zinc-700 px-1.5 py-0.5 rounded text-[11px] font-mono text-zinc-300">
+                4K Ultra HD
+              </span>
+              <span className="border border-zinc-700 px-1.5 py-0.5 rounded text-[11px] font-mono text-zinc-300">
+                5.1 Estéreo
+              </span>
+            </div>
 
-          {/* Action Buttons */}
-          <div className="flex items-center gap-4 pt-3">
-            {isSeries ? (
-              <button
-                type="button"
-                disabled={isResolving || initialLoading || seasonEpisodes.length === 0}
-                onClick={() => seasonEpisodes[0] && handlePlayEpisode(seasonEpisodes[0])}
-                className="featured-play cursor-pointer inline-flex items-center justify-center gap-2.5 px-8 py-3 rounded-md bg-white text-black font-bold text-lg hover:bg-white/85 transition-colors shadow-2xl disabled:opacity-50"
-              >
-                {isResolving && !resolvingEpId ? (
-                  <>
-                    <Loader2 className="w-6 h-6 animate-spin text-black" />
-                    <span>Cargando...</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-6 h-6 fill-current" />
-                    <span>Reproducir</span>
-                  </>
-                )}
-              </button>
-            ) : (
-              <button
-                type="button"
-                disabled={isResolving || initialLoading}
-                onClick={handlePlayMovie}
-                className="featured-play cursor-pointer inline-flex items-center justify-center gap-2.5 px-8 py-3 rounded-md bg-white text-black font-bold text-lg hover:bg-white/85 transition-colors shadow-2xl disabled:opacity-50"
-              >
-                {isResolving ? (
-                  <>
-                    <Loader2 className="w-6 h-6 animate-spin text-black" />
-                    <span>Cargando...</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-6 h-6 fill-current" />
-                    <span>Reproducir</span>
-                  </>
-                )}
-              </button>
-            )}
+            {/* Action Buttons */}
+            <div className="flex items-center gap-4 pt-3">
+              {isSeries ? (
+                <button
+                  type="button"
+                  disabled={isResolving || initialLoading || seasonEpisodes.length === 0}
+                  onClick={() => seasonEpisodes[0] && handlePlayEpisode(seasonEpisodes[0])}
+                  className="featured-play cursor-pointer inline-flex items-center justify-center gap-2.5 px-8 py-3 rounded-md bg-white text-black font-bold text-lg hover:bg-white/85 transition-colors shadow-2xl disabled:opacity-50"
+                >
+                  {isResolving && !resolvingEpId ? (
+                    <>
+                      <Loader2 className="w-6 h-6 animate-spin text-black" />
+                      <span>Cargando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-6 h-6 fill-current" />
+                      <span>Reproducir</span>
+                    </>
+                  )}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={isResolving || initialLoading}
+                  onClick={handlePlayMovie}
+                  className="featured-play cursor-pointer inline-flex items-center justify-center gap-2.5 px-8 py-3 rounded-md bg-white text-black font-bold text-lg hover:bg-white/85 transition-colors shadow-2xl disabled:opacity-50"
+                >
+                  {isResolving ? (
+                    <>
+                      <Loader2 className="w-6 h-6 animate-spin text-black" />
+                      <span>Cargando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-6 h-6 fill-current" />
+                      <span>Reproducir</span>
+                    </>
+                  )}
+                </button>
+              )}
 
-            {onToggleFavorite && (
-              <button
-                type="button"
-                className={`featured-info cursor-pointer inline-flex items-center justify-center gap-2 px-6 py-3 rounded-md border text-base font-bold transition-colors backdrop-blur-md ${
-                  isFavorite
-                    ? 'border-pink-800/80 bg-pink-950/60 text-pink-300 hover:bg-pink-900/60'
-                    : 'border-zinc-600 bg-zinc-800/70 text-white hover:bg-zinc-700/80'
-                }`}
-                onClick={() => onToggleFavorite(media)}
-              >
-                {isFavorite ? (
-                  <>
-                    <Check className="w-5 h-5 text-pink-400" />
-                    <span>En Mi lista</span>
-                  </>
-                ) : (
-                  <>
-                    <Plus className="w-5 h-5 text-white" />
-                    <span>Mi lista</span>
-                  </>
-                )}
-              </button>
-            )}
+              {onToggleFavorite && (
+                <button
+                  type="button"
+                  className={`featured-info cursor-pointer inline-flex items-center justify-center gap-2 px-6 py-3 rounded-md border text-base font-bold transition-colors backdrop-blur-md ${
+                    isFavorite
+                      ? 'border-pink-800/80 bg-pink-950/60 text-pink-300 hover:bg-pink-900/60'
+                      : 'border-zinc-600 bg-zinc-800/70 text-white hover:bg-zinc-700/80'
+                  }`}
+                  onClick={() => onToggleFavorite(media)}
+                >
+                  {isFavorite ? (
+                    <>
+                      <Check className="w-5 h-5 text-pink-400" />
+                      <span>En Mi lista</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-5 h-5 text-white" />
+                      <span>Mi lista</span>
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </section>
@@ -656,12 +669,23 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
                   className="media-card group cursor-pointer"
                   onClick={() => onSelectMedia && onSelectMedia(item)}
                 >
-                  <div className="media-card-art relative">
+                  <div className="media-card-art is-poster relative">
                     <img
-                      src={item.backdrop || item.landscape || item.poster}
+                      src={item.poster || item.landscape || item.backdrop}
                       alt={item.title}
                       className="w-full h-full object-cover transition-transform group-hover:brightness-105"
                       loading="lazy"
+                      onError={(e) => {
+                        const img = e.target as HTMLImageElement;
+                        const fallback = item.landscape || item.backdrop;
+                        if (fallback && img.src !== fallback && !img.dataset.retried) {
+                          img.dataset.retried = '1';
+                          img.src = fallback;
+                          return;
+                        }
+                        img.src =
+                          'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="400" height="600"%3E%3Crect width="100%25" height="100%25" fill="%23242424"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dominant-baseline="middle" fill="%23e50914" font-family="Arial" font-size="28" font-weight="bold"%3EMAICAOFLIX%3C/text%3E%3C/svg%3E';
+                      }}
                     />
                     <span className="card-netflix">M</span>
                   </div>
