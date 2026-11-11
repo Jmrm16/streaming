@@ -2,13 +2,13 @@ name: seeds
 
 on:
   schedule:
-    - cron: "0 */3 * * *"
+    - cron: "45 * * * *"
   workflow_dispatch:
     inputs:
       count:
         description: "Semillas nuevas a acuñar"
         required: false
-        default: "25"
+        default: "30"
 
 permissions:
   contents: write
@@ -41,22 +41,24 @@ jobs:
       - name: Acunar semillas
         run: |
           node tools/mint-seeds.js \
-            --count "${{ inputs.count || '25' }}" \
+            --count "${{ inputs.count || '30' }}" \
             --pool webos/services/com.webosflux.xuptertv.fidelity.service/seeds-fallback.json \
             --out webos/services/com.webosflux.xuptertv.fidelity.service/seeds-fallback.json \
             --soft-fail
 
-      - name: Publicar pool en GitHub y enviar en caliente a Render
+      - name: Enviar en caliente a Render y publicar en rama seeds
         run: |
-          git config user.name "xupertv-seeds"
-          git config user.email "seeds@users.noreply.github.com"
-          git add webos/services/com.webosflux.xuptertv.fidelity.service/seeds-fallback.json
-          if git diff --cached --quiet; then
-            echo "sin cambios en el pool"
-            exit 0
-          fi
           curl -s -X POST "https://streaming-qste.onrender.com/feedSeeds" \
             -H "Content-Type: application/json" \
             --data-binary "@webos/services/com.webosflux.xuptertv.fidelity.service/seeds-fallback.json" || true
+
+          git config user.name "xupertv-seeds"
+          git config user.email "seeds@users.noreply.github.com"
+
+          cp webos/services/com.webosflux.xuptertv.fidelity.service/seeds-fallback.json /tmp/seeds-latest.json
+          git checkout --orphan seeds-temp
+          git rm -rf .
+          cp /tmp/seeds-latest.json seeds.json
+          git add seeds.json
           git commit -m "seeds: pool $(date -u +%Y-%m-%dT%H:%MZ)"
-          git push origin HEAD:main
+          git push -f origin seeds-temp:seeds

@@ -45,13 +45,12 @@ function mintOne() {
 
     magis.call("v3/snToken", n, { baseFields: false, urgent: true }, (err, r) => {
       if (err) return reject(err);
-      const snToken = (r && r.snToken || "").trim();
-      let sn = (r && r.sn || "").trim();
+      const snToken = ((r && r.snToken) || "").trim();
+      let sn = ((r && r.sn) || "").trim();
       if (!sn) {
         sn = crypto.createHash("md5").update(snToken + SNTOKEN_SALT).digest("hex");
       }
 
-      // CRITICAL: magis.session.sn is read by deviceDict() for v8/active
       magis.session.sn = String(sn).toLowerCase();
       magis.session.snToken = snToken;
 
@@ -81,7 +80,7 @@ function mintOne() {
             userId: String(r2.userId).trim(),
             userToken: String(r2.userToken).trim(),
             mintedAt: now,
-            exp: now + 12 * 3600,
+            exp: now + 8 * 3600,
           });
         }
       );
@@ -90,8 +89,8 @@ function mintOne() {
 }
 
 async function main() {
-  const TARGET_COUNT = 25;
-  console.log(`[Mint] Generando ${TARGET_COUNT} semillas frescas para Render / Cloud...`);
+  const TARGET_COUNT = 15;
+  console.log(`[Mint] Generando ${TARGET_COUNT} semillas frescas locales + sincronizando nube...`);
   const seeds = [];
 
   for (let i = 0; i < TARGET_COUNT; i++) {
@@ -99,11 +98,34 @@ async function main() {
       const seed = await mintOne();
       seeds.push(seed);
       console.log(`[Mint] (${i + 1}/${TARGET_COUNT}) Semilla creada: user=${seed.userId} token=${seed.userToken.slice(0, 8)}...`);
-      await new Promise((res) => setTimeout(res, 400));
+      await new Promise((res) => setTimeout(res, 350));
     } catch (e) {
       console.warn(`[Mint] Advertencia en ciclo ${i + 1}:`, e.message || e);
-      await new Promise((res) => setTimeout(res, 800));
+      await new Promise((res) => setTimeout(res, 600));
     }
+  }
+
+  try {
+    const cloudRes = await fetch("https://raw.githubusercontent.com/cristianco7/XUPER-HYDRA-PORT-WEBOS/seeds/seeds.json");
+    if (cloudRes.ok) {
+      const cloudJson = await cloudRes.json();
+      const cloudList = Array.isArray(cloudJson?.seeds) ? cloudJson.seeds : [];
+      const nowSec = Math.floor(Date.now() / 1000);
+      for (const s of cloudList) {
+        if (s && s.sn && s.userId && s.userToken && (!s.exp || s.exp - nowSec > 900)) {
+          seeds.push({
+            sn: String(s.sn).toLowerCase(),
+            userId: String(s.userId),
+            userToken: String(s.userToken),
+            mintedAt: s.mintedAt || nowSec,
+            exp: s.exp || nowSec + 8 * 3600,
+          });
+        }
+      }
+      console.log(`[Mint] Semillas activas fusionadas desde la nube: ${cloudList.length}`);
+    }
+  } catch (e) {
+    console.warn(`[Mint] No se pudo consultar pool secundario:`, e.message);
   }
 
   if (seeds.length === 0) {
@@ -131,6 +153,7 @@ async function main() {
   } catch (e) {
     console.warn(`[Mint] No se pudo enviar en caliente a Render:`, e.message);
   }
+  process.exit(0);
 }
 
 main().catch((err) => {
