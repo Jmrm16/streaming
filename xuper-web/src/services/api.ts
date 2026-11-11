@@ -15,7 +15,29 @@ export interface Channel {
   category?: string;
   epgTitle?: string;
   isFav?: boolean;
+  isAdult?: boolean;
 }
+
+const ADULT_CHANNEL_REGEX =
+  /\b(18\+|playboy|venus|sextreme|sexy\s*hot|brazzers|penthouse|hustler|dorcel|private\s*tv|redlight|vivid\s*red|vivid\s*touch|pop\s*adult|1pon|heyzo|tokyo\s*hot|wowgirls|female\s*sex|carib\s*(fhd|uhd)|nyokei|europe\s*sexy|rainbow\s*(look|tv|movie)|songshi|pandora\s*perfect|cinema\s*vip\s*18)\b/i;
+
+export const isAdultCategory = (cat?: { id?: string | number; name?: string } | null): boolean => {
+  if (!cat) return false;
+  const idStr = String(cat.id || '').trim();
+  const nameStr = String(cat.name || '').trim();
+  if (idStr === '76208' || idStr === 'ddc200aa-b664-11ed-8b54-768dd7bc60d3') return true;
+  return /(?:^|\b)(18\+|\+18|adultos?|xxx)(?:\b|$)/i.test(nameStr);
+};
+
+export const isAdultChannel = (ch?: Channel | null): boolean => {
+  if (!ch) return false;
+  if (ch.isAdult) return true;
+  const cat = String(ch.category || '').trim();
+  if (cat === '18+' || cat === '+18' || /adultos?|xxx/i.test(cat)) return true;
+  const combined = `${ch.name || ''} ${ch.channelCode || ''}`;
+  if (/adult\s*swim/i.test(combined)) return false;
+  return ADULT_CHANNEL_REGEX.test(combined);
+};
 
 export interface Episode {
   id: string;
@@ -174,7 +196,13 @@ export const api = {
       forceRefresh
     );
     if (data && data.channels && Array.isArray(data.channels)) {
-      return data.channels;
+      const fromAdultCat = col === '76208' || col === 'ddc200aa-b664-11ed-8b54-768dd7bc60d3';
+      return data.channels.map((ch) => {
+        const adult = fromAdultCat || isAdultChannel(ch);
+        return adult
+          ? { ...ch, isAdult: true, category: ch.category || '18+' }
+          : ch;
+      });
     }
     return [];
   },

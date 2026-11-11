@@ -23,6 +23,7 @@ import {
   Home,
   Smile,
   Settings,
+  Lock,
 } from 'lucide-react';
 import { MaicaoflixLogo } from './components/MaicaoflixLogo';
 import { NetflixRow } from './components/NetflixRow';
@@ -50,6 +51,8 @@ import {
   AudioLanguage,
   getApiBaseUrl,
   setApiBaseUrl,
+  isAdultCategory,
+  isAdultChannel,
 } from './services/api';
 
 type TabView = 'home' | 'series' | 'movies' | 'live' | 'anime' | 'kids' | 'favorites';
@@ -123,6 +126,22 @@ export const App: React.FC = () => {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [alertModal, setAlertModal] = useState<{ open: boolean; title: string; description: string } | null>(null);
   const [toastMessage, setToastMessage] = useState('');
+
+  // Parental Control (+18 Live TV Security)
+  const [adultPin, setAdultPin] = useState<string>(() => {
+    return localStorage.getItem('maicaoflix_adult_pin') || '1234';
+  });
+  const [hideAdultCategory, setHideAdultCategory] = useState<boolean>(() => {
+    return localStorage.getItem('maicaoflix_hide_adult') === '1';
+  });
+  const [isAdultUnlocked, setIsAdultUnlocked] = useState<boolean>(false);
+  const [pinModal, setPinModal] = useState<{
+    open: boolean;
+    pendingCategoryId?: string;
+    pendingChannel?: Channel;
+  }>({ open: false });
+  const [pinInput, setPinInput] = useState<string>('');
+  const [pinError, setPinError] = useState<string>('');
 
   // Dedicated Detail Page & Playback
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
@@ -340,7 +359,7 @@ export const App: React.FC = () => {
   }, [loadInitialData]);
 
   // Category change for Live TV
-  const handleCategorySelect = async (catId: string) => {
+  const loadCategoryChannels = async (catId: string) => {
     setSelectedCategory(catId);
     setIsLoading(true);
     try {
@@ -350,6 +369,46 @@ export const App: React.FC = () => {
       console.error('Error fetching category channels:', err);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleCategorySelect = async (catId: string) => {
+    const catObj = categories.find((c) => c.id === catId);
+    if (isAdultCategory(catObj || { id: catId }) && !isAdultUnlocked) {
+      setPinInput('');
+      setPinError('');
+      setPinModal({ open: true, pendingCategoryId: catId });
+      return;
+    }
+    await loadCategoryChannels(catId);
+  };
+
+  const handleLockAdultSection = async () => {
+    setIsAdultUnlocked(false);
+    showToast('Sección +18 bloqueada con éxito.');
+    const currentCatObj = categories.find((c) => c.id === selectedCategory);
+    if (isAdultCategory(currentCatObj || { id: selectedCategory })) {
+      await loadCategoryChannels('all');
+    }
+  };
+
+  const handleVerifyAdultPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pinInput.trim() !== adultPin) {
+      setPinError('Código PIN incorrecto. Inténtalo de nuevo.');
+      return;
+    }
+    const targetCat = pinModal.pendingCategoryId;
+    const targetCh = pinModal.pendingChannel;
+    setIsAdultUnlocked(true);
+    setPinModal({ open: false });
+    setPinInput('');
+    setPinError('');
+    showToast('Control Parental: Sección +18 desbloqueada temporalmente.');
+    if (targetCat) {
+      await loadCategoryChannels(targetCat);
+    } else if (targetCh) {
+      await playChannel(targetCh, true);
     }
   };
 
@@ -393,7 +452,13 @@ export const App: React.FC = () => {
   };
 
   // Live TV playback
-  const playChannel = async (channel: Channel) => {
+  const playChannel = async (channel: Channel, bypassPinCheck = false) => {
+    if (!bypassPinCheck && !isAdultUnlocked && isAdultChannel(channel)) {
+      setPinInput('');
+      setPinError('');
+      setPinModal({ open: true, pendingChannel: channel });
+      return;
+    }
     try {
       const code = channel.channelCode || channel.id || '';
       const res = await api.resolveLive(code, channel.streamUrl);
@@ -466,8 +531,9 @@ export const App: React.FC = () => {
 
         const chMatches = channels.filter(
           (c) =>
-            c.name.toLowerCase().includes(q) ||
-            (c.category && c.category.toLowerCase().includes(q))
+            (isAdultUnlocked || !isAdultChannel(c)) &&
+            (c.name.toLowerCase().includes(q) ||
+              (c.category && c.category.toLowerCase().includes(q)))
         );
         setChannelSearchResults(chMatches);
       } catch (err) {
@@ -478,7 +544,25 @@ export const App: React.FC = () => {
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [searchQuery, channels]);
+  }, [searchQuery, channels, isAdultUnlocked]);
+
+  const visibleCategories = useMemo(() => {
+    return categories.filter((cat) => !(hideAdultCategory && isAdultCategory(cat)));
+  }, [categories, hideAdultCategory]);
+
+  const visibleLiveChannels = useMemo(() => {
+    if (isAdultUnlocked) return channels;
+    return channels.filter((c) => !isAdultChannel(c));
+  }, [channels, isAdultUnlocked]);
+
+  const homeLiveChannels = useMemo(() => {
+    return channels.filter((c) => !isAdultChannel(c));
+  }, [channels]);
+
+  const visibleFavChannels = useMemo(() => {
+    if (isAdultUnlocked) return favChannels;
+    return favChannels.filter((c) => !isAdultChannel(c));
+  }, [favChannels, isAdultUnlocked]);
 
   const isSearchActive = searchQuery.trim().length >= 1;
   const totalSearchResults = searchResults.length + channelSearchResults.length;
@@ -534,6 +618,13 @@ export const App: React.FC = () => {
     setSelectedMedia(null);
     if (window.location.hash.startsWith('#detalle')) {
       window.location.hash = '';
+    }
+    if (tab !== 'live' && isAdultUnlocked) {
+      setIsAdultUnlocked(false);
+      const currentCatObj = categories.find((c) => c.id === selectedCategory);
+      if (isAdultCategory(currentCatObj || { id: selectedCategory })) {
+        loadCategoryChannels('all');
+      }
     }
     setActiveTab(tab);
     setSelectedGenre('all');
@@ -1285,12 +1376,12 @@ export const App: React.FC = () => {
                       />
 
                       {/* Row 2: Canales en Vivo Populares */}
-                      {channels.length > 0 && (
+                      {homeLiveChannels.length > 0 && (
                         <NetflixRow
                           heading="Canales de Televisión en Vivo"
                           items={[]}
                           isChannelRow={true}
-                          channels={channels.slice(0, 20)}
+                          channels={homeLiveChannels.slice(0, 20)}
                           isFavorite={isChannelFav}
                           onToggleFavoriteChannel={toggleFavoriteChannel}
                           onSelectMedia={() => {}}
@@ -1538,13 +1629,23 @@ export const App: React.FC = () => {
                           </span>
                         </h1>
                         <p className="text-xs text-zinc-400 mt-1">
-                          {channels.length} canales disponibles en alta definición
+                          {visibleLiveChannels.length} canales disponibles en alta definición
                         </p>
                       </div>
+                      {isAdultUnlocked && (
+                        <button
+                          type="button"
+                          onClick={handleLockAdultSection}
+                          className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-amber-950/70 hover:bg-amber-900/80 border border-amber-700/70 text-amber-300 text-xs font-bold transition-colors cursor-pointer self-start sm:self-auto"
+                        >
+                          <Lock className="w-3.5 h-3.5" />
+                          <span>Bloquear sección +18</span>
+                        </button>
+                      )}
                     </div>
 
                     {/* Category Scrolling Pills */}
-                    {categories.length > 0 && (
+                    {visibleCategories.length > 0 && (
                       <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
                         <button
                           type="button"
@@ -1555,28 +1656,34 @@ export const App: React.FC = () => {
                               : 'bg-[#242424] text-zinc-300 hover:text-white border border-zinc-800'
                           }`}
                         >
-                          Todos ({categories.length})
+                          Todos ({visibleCategories.length})
                         </button>
-                        {categories.map((cat) => (
-                          <button
-                            key={cat.id}
-                            type="button"
-                            onClick={() => handleCategorySelect(cat.id)}
-                            className={`text-xs px-3.5 py-1.5 rounded-full font-semibold transition-all cursor-pointer whitespace-nowrap ${
-                              selectedCategory === cat.id
-                                ? 'bg-white text-black font-bold shadow'
-                                : 'bg-[#242424] text-zinc-300 hover:text-white border border-zinc-800'
-                            }`}
-                          >
-                            {cat.name}
-                          </button>
-                        ))}
+                        {visibleCategories.map((cat) => {
+                          const adultCat = isAdultCategory(cat);
+                          return (
+                            <button
+                              key={cat.id}
+                              type="button"
+                              onClick={() => handleCategorySelect(cat.id)}
+                              className={`text-xs px-3.5 py-1.5 rounded-full font-semibold transition-all cursor-pointer whitespace-nowrap inline-flex items-center gap-1.5 ${
+                                selectedCategory === cat.id
+                                  ? 'bg-white text-black font-bold shadow'
+                                  : adultCat && !isAdultUnlocked
+                                  ? 'bg-zinc-900/90 text-amber-400 hover:text-amber-300 border border-amber-800/60'
+                                  : 'bg-[#242424] text-zinc-300 hover:text-white border border-zinc-800'
+                              }`}
+                            >
+                              {adultCat && !isAdultUnlocked && <Lock className="w-3 h-3" />}
+                              <span>{cat.name}</span>
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
 
                     {/* Channels Grid */}
                     <div className="results-grid">
-                      {channels.map((ch, idx) => (
+                      {visibleLiveChannels.map((ch, idx) => (
                         <div
                           key={ch.channelCode || ch.id || idx}
                           className="media-card group cursor-pointer"
@@ -1629,7 +1736,7 @@ export const App: React.FC = () => {
                       ))}
                     </div>
 
-                    {channels.length === 0 && !isLoading && (
+                    {visibleLiveChannels.length === 0 && !isLoading && (
                       <div className="empty-state py-20 text-center text-zinc-500 space-y-3">
                         <Tv className="w-12 h-12 mx-auto opacity-30 text-zinc-500" />
                         <h2 className="empty-title text-xl font-bold text-white">
@@ -1652,7 +1759,7 @@ export const App: React.FC = () => {
                   <div className="catalog-content is-filtered pt-24 px-4 sm:px-8 space-y-8">
                     <div className="pb-2 border-b border-zinc-900">
                       <h1 className="browse-view-title text-2xl sm:text-3xl font-bold">
-                        Mi Lista ({favChannels.length + favMedia.length})
+                        Mi Lista ({visibleFavChannels.length + favMedia.length})
                       </h1>
                       <p className="text-xs text-zinc-400 mt-1">
                         Tus canales, películas y series favoritas guardados en este navegador.
@@ -1660,14 +1767,14 @@ export const App: React.FC = () => {
                     </div>
 
                     {/* Saved Channels Section */}
-                    {favChannels.length > 0 && (
+                    {visibleFavChannels.length > 0 && (
                       <div className="space-y-3">
                         <h3 className="text-sm font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-2">
                           <Tv className="w-4 h-4 text-red-600" />
-                          <span>Canales Guardados ({favChannels.length})</span>
+                          <span>Canales Guardados ({visibleFavChannels.length})</span>
                         </h3>
                         <div className="results-grid">
-                          {favChannels.map((ch, idx) => (
+                          {visibleFavChannels.map((ch, idx) => (
                             <div
                               key={ch.channelCode || ch.id || idx}
                               className="media-card group cursor-pointer"
@@ -1764,7 +1871,7 @@ export const App: React.FC = () => {
                       </div>
                     )}
 
-                    {favChannels.length === 0 && favMedia.length === 0 && (
+                    {visibleFavChannels.length === 0 && favMedia.length === 0 && (
                       <div className="empty-state py-24 text-center text-zinc-500 space-y-4">
                         <Heart className="w-12 h-12 mx-auto text-zinc-600" />
                         <h2 className="empty-title text-xl font-bold text-white">
@@ -1893,7 +2000,7 @@ export const App: React.FC = () => {
           isLive={activePlayback.isLive}
           subtitles={activePlayback.subtitles}
           audioLanguages={activePlayback.audioLanguages}
-          channels={channels}
+          channels={visibleLiveChannels}
           onSelectChannel={(ch) => playChannel(ch)}
           onSwitchAudioTrack={handleSwitchAudioTrack}
           onClose={() => setActivePlayback(null)}
@@ -1907,7 +2014,102 @@ export const App: React.FC = () => {
         onSaveApiUrl={saveApiUrl}
         isBackendOnline={isBackendOnline}
         onCheckBackend={checkBackend}
+        adultPin={adultPin}
+        onUpdateAdultPin={(newPin) => {
+          setAdultPin(newPin);
+          localStorage.setItem('maicaoflix_adult_pin', newPin);
+          showToast('PIN de Control Parental actualizado.');
+        }}
+        hideAdultCategory={hideAdultCategory}
+        onToggleHideAdultCategory={(hide) => {
+          setHideAdultCategory(hide);
+          localStorage.setItem('maicaoflix_hide_adult', hide ? '1' : '0');
+          if (hide) {
+            setIsAdultUnlocked(false);
+            const currentCatObj = categories.find((c) => c.id === selectedCategory);
+            if (isAdultCategory(currentCatObj || { id: selectedCategory })) {
+              loadCategoryChannels('all');
+            }
+          }
+          showToast(hide ? 'Sección +18 ocultada del catálogo.' : 'Sección +18 visible con PIN.');
+        }}
       />
+
+      {/* Parental Control (+18) PIN Modal */}
+      {pinModal.open && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setPinModal({ open: false })}
+        >
+          <div
+            className="w-full max-w-sm bg-[#181818] border border-zinc-800 rounded-xl overflow-hidden shadow-2xl p-6 space-y-4 animate-in fade-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-full bg-amber-950/80 border border-amber-700/70 flex items-center justify-center text-amber-400">
+                  <Lock className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Control Parental (+18)</h3>
+                  <p className="text-[11px] text-zinc-400">Contenido restringido para mayores de edad</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPinModal({ open: false })}
+                className="w-7 h-7 rounded-full bg-zinc-800 hover:bg-zinc-700 flex items-center justify-center text-zinc-300 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleVerifyAdultPin} className="space-y-4">
+              <p className="text-xs text-zinc-300 leading-relaxed">
+                Ingresa el código PIN de 4 dígitos para desbloquear la sección <strong className="text-amber-400">18+</strong> de TV en Vivo:
+              </p>
+
+              <Input
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                autoFocus
+                placeholder="••••"
+                value={pinInput}
+                onChange={(e) => {
+                  setPinInput(e.target.value.replace(/\D/g, '').slice(0, 4));
+                  setPinError('');
+                }}
+                className="bg-black/70 border-zinc-700 text-white text-center text-xl tracking-[0.6em] font-mono h-12"
+              />
+
+              {pinError && (
+                <p className="text-xs text-red-400 font-semibold text-center">{pinError}</p>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPinModal({ open: false })}
+                  className="text-zinc-400 hover:text-white text-xs cursor-pointer"
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={pinInput.length < 4}
+                  className="bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs px-5 cursor-pointer"
+                >
+                  Desbloquear +18
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Global Alert Dialog (Shadcn) */}
       {alertModal && (
