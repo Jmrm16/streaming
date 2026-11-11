@@ -613,10 +613,10 @@ export const App: React.FC = () => {
             <button
               type="button"
               onClick={() => navigateTab('home')}
-              className="browse-brand cursor-pointer shrink-0 transition-opacity hover:opacity-90 flex items-center mr-2 sm:mr-6"
+              className="browse-brand cursor-pointer shrink-0 transition-opacity hover:opacity-90 flex items-center mr-3 sm:mr-6"
               aria-label="MAICAOFLIX, ir a inicio"
             >
-              <MaicaoflixLogo width={118} height={26} className="sm:w-[138px] sm:h-[30px]" />
+              <MaicaoflixLogo width={122} height={26} className="sm:w-[138px] sm:h-[30px]" />
             </button>
 
             {/* Mobile Nav Drawer Trigger (Shadcn Sheet) */}

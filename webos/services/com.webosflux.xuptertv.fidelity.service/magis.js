@@ -35,20 +35,19 @@ var crypto = require("crypto"),
   SEARCH_TTL = 18e4,
   SLB_TTL = 3e5,
   SEED_URL =
-    "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-xuper/seeds/seeds.json",
+    process.env.SEED_URL ||
+    "https://raw.githubusercontent.com/Jmrm16/streaming/main/webos/services/com.webosflux.xuptertv.fidelity.service/seeds-fallback.json",
   SEED_FILE = "/tmp/xuper-seeds.json",
   SEED_DEAD_FILE = "/tmp/xuper-seeds-dead.json",
   SEED_MAX = 200,
   SEED_MIN_LIFE_MS = 3e5,
-  SEED_RESCUE_ROUNDS = 3,
+  SEED_RESCUE_ROUNDS = 4,
   SEED_POOL_FRESH_MS = 6e5,
   SEED_REFRESH_COOLDOWN_MS = 1e4,
   SEED_FAILED_COOLDOWN_MS = 3e4,
-  DEAD_SEED_MS = 216e5,
+  DEAD_SEED_MS = 18e4,
   GEO_BLOCKED = "portal100024",
   SESSION_DEAD = {
-    aaa100027: 1,
-    aaa100028: 1,
     aaa100080: 1,
     aaa100082: 1,
     aaa100083: 1,
@@ -493,9 +492,6 @@ function call(e, r, t, n) {
               (i || a.message) +
               "). Renovando sesión limpia..."
           );
-          if (session.usesSeed && session.seed) {
-            markSeedDead(session.seed);
-          }
           resetSessionAfterLiveFailure();
           return ensureSession(function (s) {
             if (s) return n(a);
@@ -594,8 +590,22 @@ function seedIsUsable(e) {
   );
 }
 function usableSeeds() {
-  for (var e = [], r = 0; r < seedPool.length; r++)
-    seedIsUsable(seedPool[r]) && e.push(seedPool[r]);
+  var e = [];
+  for (var r = 0; r < seedPool.length; r++) {
+    if (seedIsUsable(seedPool[r])) e.push(seedPool[r]);
+  }
+  // Auto-revive: si todas las semillas cayeron en cuarentena, reciclarlas todas inmediatamente
+  if (!e.length && seedPool.length > 0) {
+    console.warn("[magis] Pool de semillas temporalmente agotado. Auto-resucitando todas las semillas del pool...");
+    deadSeeds = {};
+    try { fs.unlinkSync(SEED_DEAD_FILE); } catch (err) {}
+    for (var i = 0; i < seedPool.length; i++) {
+      var s = seedPool[i];
+      if (s && trim(s.userId) && trim(s.userToken)) {
+        e.push(s);
+      }
+    }
+  }
   return e;
 }
 function storeSeeds(e) {
@@ -703,7 +713,8 @@ function pickSeed(e) {
     ((r[t] = r[n]), (r[n] = s));
   }
   for (var a = 0; a < r.length; a++) if (!e[seedIdentity(r[a])]) return r[a];
-  return null;
+  // Si todas ya fueron probadas en esta solicitud específica, recircular
+  return r[0] || null;
 }
 function adoptSeed(e) {
   ((e = e || {}),
@@ -2053,6 +2064,24 @@ module.exports = {
   post: post,
   ensureSession: ensureSession,
   resetSession: resetSessionAfterLiveFailure,
+  resetSeeds: function () {
+    deadSeeds = {};
+    try { fs.unlinkSync(SEED_DEAD_FILE); } catch (e) {}
+    try {
+      var fallbackPath = path.join(__dirname, "seeds-fallback.json");
+      if (fs.existsSync(fallbackPath)) {
+        var n = JSON.parse(fs.readFileSync(fallbackPath, "utf8"));
+        if (n && n.seeds && n.seeds.length) {
+          storeSeeds(n.seeds);
+        }
+      }
+    } catch (e) {}
+    resetSessionAfterLiveFailure();
+    console.log("[magis] Pool de semillas restaurado limpiamente. Total disponibles: " + seedPool.length);
+    return usableSeeds().length;
+  },
+  storeSeeds: storeSeeds,
+  refreshSeeds: refreshSeeds,
   session: session,
   seedStatus: function () {
     var e,

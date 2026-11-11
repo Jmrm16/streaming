@@ -269,7 +269,7 @@ export const api = {
 
     // Automatic Client-Side Fallback: If initial resolve failed (e.g. portal100008, 502 Bad Gateway)
     // and we have a seriesId distinct from contentId, automatically retry with swapped IDs
-    if ((!data?.returnValue || !data?.url) && seriesId && seriesId !== contentId) {
+    if ((!data?.returnValue || (!data?.url && !data?.proxyPath)) && seriesId && seriesId !== contentId) {
       console.warn('[api] Initial resolve returned error/empty url. Retrying with swapped params id=' + seriesId + '&series=' + contentId);
       try {
         const fallbackRes = await fetch(buildUrl(seriesId, contentId));
@@ -280,6 +280,27 @@ export const api = {
         }
       } catch (fallbackErr) {
         console.error('[api] Swapped IDs fallback also failed:', fallbackErr);
+      }
+    }
+
+    // Self-healing session/seed reset retry if still failing
+    if (!data?.returnValue || (!data?.url && !data?.proxyPath)) {
+      try {
+        console.warn('[api] Triggering automatic /resetSeeds recovery and retrying resolve...');
+        await fetch(`${getApiBaseUrl()}/resetSeeds`);
+        const retryRes = await fetch(buildUrl(contentId, seriesId));
+        const retryData = await retryRes.json();
+        if (retryData && (retryData.url || retryData.proxyPath)) {
+          data = retryData;
+        } else if (seriesId && seriesId !== contentId) {
+          const retrySwapRes = await fetch(buildUrl(seriesId, contentId));
+          const retrySwapData = await retrySwapRes.json();
+          if (retrySwapData && (retrySwapData.url || retrySwapData.proxyPath)) {
+            data = retrySwapData;
+          }
+        }
+      } catch (e) {
+        console.error('[api] Self-healing resolve retry failed:', e);
       }
     }
 

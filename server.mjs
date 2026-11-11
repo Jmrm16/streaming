@@ -68,6 +68,14 @@ const server = http.createServer((req, res) => {
         magis.resetSession();
         magis.ensureSession(() => {});
       }
+      if (
+        (err.portalCode === "portal100024" ||
+          /bloqueo|semilla/i.test(err.message || "")) &&
+        magis.resetSeeds
+      ) {
+        console.warn("[server] Region block or seed exhaustion detected. Auto-resetting seeds pool...");
+        magis.resetSeeds();
+      }
       return json(res, 502, {
         returnValue: false,
         errorText: String(err.message || err),
@@ -222,18 +230,77 @@ const server = http.createServer((req, res) => {
       done(null, stream);
     };
 
+    let hasResponded = false;
+    const safeDone = (err, data) => {
+      if (!hasResponded) {
+        hasResponded = true;
+        done(err, data);
+      }
+    };
+
     const tryResolve = (cId, sId, allowSwap) => {
       magis.resolve(cId, sId, options, (err, stream) => {
         if (err && allowSwap && sId && sId !== cId) {
           console.log(`[resolve] Attempt with id=${cId}&series=${sId} failed. Retrying with swapped params id=${sId}&series=${cId}...`);
           return tryResolve(sId, cId, false);
         }
-        if (err) return done(err);
+        if (err) {
+          if (/未登录|sesi[oó]n|login|aaa100028/i.test(err.message || "")) {
+            if (magis.resetSession) magis.resetSession();
+          }
+          return safeDone(err);
+        }
         return handleStream(stream);
       });
     };
 
+    const timer = setTimeout(() => {
+      if (!hasResponded) {
+        console.warn(`[resolve] Timeout resolving id=${contentId}`);
+        safeDone(new Error("Timeout al resolver transmisión en el servidor"));
+      }
+    }, 14000);
+
+    const origHandleStream = handleStream;
+    handleStream = (stream) => {
+      clearTimeout(timer);
+      origHandleStream(stream);
+    };
+
     return tryResolve(contentId, seriesId, true);
+  }
+
+  if (u.pathname === "/resetSeeds") {
+    const available = magis.resetSeeds ? magis.resetSeeds() : 0;
+    return magis.ensureSession((err) => {
+      done(err, {
+        message: "Seed pool reset and refreshed",
+        availableSeeds: available,
+        status: magis.seedStatus ? magis.seedStatus() : null,
+      });
+    });
+  }
+
+  if (u.pathname === "/feedSeeds" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      try {
+        const payload = JSON.parse(body);
+        const seeds = Array.isArray(payload) ? payload : (payload.seeds || []);
+        if (seeds && seeds.length && magis.storeSeeds) {
+          magis.storeSeeds(seeds);
+          if (magis.resetSession) magis.resetSession();
+          return magis.ensureSession((err) => {
+            done(err, { message: "Seeds fed successfully", added: seeds.length });
+          });
+        }
+        return done(new Error("No valid seeds array provided"));
+      } catch (err) {
+        return done(err);
+      }
+    });
+    return;
   }
 
   if (u.pathname === "/resetSession") {

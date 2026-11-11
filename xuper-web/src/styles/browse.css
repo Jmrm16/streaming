@@ -27,11 +27,16 @@
   background-color: #141414;
 }
 .browse-brand {
-  width: 93px;
+  width: auto;
+  min-width: max-content;
+  display: flex;
+  align-items: center;
 }
+.browse-brand svg,
 .browse-brand img {
-  width: 93px;
+  width: auto;
   height: auto;
+  max-width: 160px;
 }
 .primary-navigation {
   display: flex;
