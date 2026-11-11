@@ -70,7 +70,7 @@ const server = http.createServer((req, res) => {
     return json(res, 200, {
       name: "Streaming Cloud API",
       status: "online",
-      version: "1.0.0",
+      version: "1.1.0",
       sessionReady: magis.session.ready,
       timestamp: new Date().toISOString(),
     });

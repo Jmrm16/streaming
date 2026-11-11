@@ -621,24 +621,80 @@ export const Player: React.FC<PlayerProps> = ({
     }
   };
 
-  const handleMouseMove = () => {
-    setShowControls(true);
+  // Controls timer management
+  const resetControlsTimer = useCallback(() => {
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     controlsTimeoutRef.current = setTimeout(() => {
       if (isPlaying && !showSettingsDialog && !showChannelDrawer) {
         setShowControls(false);
       }
-    }, 3500);
+    }, 4500);
+  }, [isPlaying, showSettingsDialog, showChannelDrawer]);
+
+  const wakeControls = useCallback(() => {
+    setShowControls(true);
+    resetControlsTimer();
+  }, [resetControlsTimer]);
+
+  // Double tap to seek state & visual feedback
+  const [seekFeedback, setSeekFeedback] = useState<{
+    side: 'left' | 'right';
+    label: string;
+  } | null>(null);
+  const seekFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTapRef = useRef<{ time: number; x: number }>({ time: 0, x: 0 });
+
+  const showDoubleTapFeedback = (side: 'left' | 'right', label: string) => {
+    setSeekFeedback({ side, label });
+    if (seekFeedbackTimerRef.current) clearTimeout(seekFeedbackTimerRef.current);
+    seekFeedbackTimerRef.current = setTimeout(() => {
+      setSeekFeedback(null);
+    }, 750);
+  };
+
+  const handleScreenInteraction = (clientX?: number) => {
+    const now = Date.now();
+    const timeSinceLastTap = now - lastTapRef.current.time;
+
+    // Double tap handling if clientX is provided and not live stream
+    if (clientX !== undefined && timeSinceLastTap < 320 && !isLive && duration > 0) {
+      const screenWidth = window.innerWidth || document.documentElement.clientWidth;
+      if (clientX < screenWidth * 0.38) {
+        // Double tap left: Rewind 10s
+        skipSeconds(-10);
+        showDoubleTapFeedback('left', '-10s');
+        lastTapRef.current = { time: 0, x: 0 };
+        wakeControls();
+        return;
+      } else if (clientX > screenWidth * 0.62) {
+        // Double tap right: Fast forward 10s
+        skipSeconds(10);
+        showDoubleTapFeedback('right', '+10s');
+        lastTapRef.current = { time: 0, x: 0 };
+        wakeControls();
+        return;
+      }
+    }
+
+    if (clientX !== undefined) {
+      lastTapRef.current = { time: now, x: clientX };
+    }
+
+    // Single click / tap toggle
+    if (!showControls) {
+      wakeControls();
+    } else {
+      setShowControls(false);
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    }
+  };
+
+  const handleMouseMove = () => {
+    wakeControls();
   };
 
   const handleContainerClick = () => {
-    setShowControls((prev) => !prev);
-    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
-    controlsTimeoutRef.current = setTimeout(() => {
-      if (isPlaying && !showSettingsDialog && !showChannelDrawer) {
-        setShowControls(false);
-      }
-    }, 4000);
+    handleScreenInteraction();
   };
 
   const formatTime = (seconds: number) => {
@@ -660,6 +716,12 @@ export const Player: React.FC<PlayerProps> = ({
     <div
       ref={containerRef}
       onMouseMove={handleMouseMove}
+      onTouchStart={handleMouseMove}
+      onClick={(e) => {
+        if (e.target === containerRef.current) {
+          handleScreenInteraction();
+        }
+      }}
       className="fixed inset-0 z-50 bg-black flex items-center justify-center select-none overflow-hidden font-sans"
     >
       <video
@@ -696,8 +758,7 @@ export const Player: React.FC<PlayerProps> = ({
           setIsLoading(false);
           setIsPlaying(true);
         }}
-        onClick={handleContainerClick}
-        className={`w-full h-full cursor-pointer transition-all duration-200 ${
+        className={`w-full h-full transition-all duration-200 pointer-events-none select-none ${
           aspectRatio === 'contain'
             ? 'object-contain'
             : aspectRatio === 'cover'
@@ -705,6 +766,39 @@ export const Player: React.FC<PlayerProps> = ({
             : 'object-fill'
         }`}
       />
+
+      {/* Interactive Fullscreen Touch & Click Surface Layer */}
+      <div
+        className="absolute inset-0 z-10 cursor-pointer"
+        onClick={(e) => {
+          handleScreenInteraction(e.clientX);
+        }}
+        onTouchEnd={(e) => {
+          if (e.changedTouches && e.changedTouches[0]) {
+            handleScreenInteraction(e.changedTouches[0].clientX);
+          } else {
+            handleScreenInteraction();
+          }
+        }}
+      />
+
+      {/* Double Tap Seek Feedback Ripple */}
+      {seekFeedback && (
+        <div
+          className={`absolute top-1/2 -translate-y-1/2 z-30 pointer-events-none flex flex-col items-center justify-center ${
+            seekFeedback.side === 'left' ? 'left-12 sm:left-24' : 'right-12 sm:right-24'
+          }`}
+        >
+          <div className="flex flex-col items-center justify-center w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-black/75 backdrop-blur-md border border-white/20 animate-pulse shadow-2xl text-white">
+            {seekFeedback.side === 'left' ? (
+              <RotateCcw className="w-8 h-8 text-white mb-1" />
+            ) : (
+              <RotateCw className="w-8 h-8 text-white mb-1" />
+            )}
+            <span className="text-white font-bold text-sm">{seekFeedback.label}</span>
+          </div>
+        </div>
+      )}
 
       {/* Elevated High-Visibility Netflix-Style Subtitle Overlay */}
       {activeCueText && selectedSubtitle !== 'none' && (
@@ -765,6 +859,10 @@ export const Player: React.FC<PlayerProps> = ({
 
       {/* Top Header Overlay */}
       <div
+        onClick={(e) => {
+          e.stopPropagation();
+          resetControlsTimer();
+        }}
         className={`absolute top-0 left-0 right-0 p-4 sm:p-5 bg-gradient-to-b from-black/95 via-black/50 to-transparent flex items-center justify-between transition-opacity duration-300 z-20 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
@@ -900,6 +998,10 @@ export const Player: React.FC<PlayerProps> = ({
 
       {/* Bottom Controls Overlay */}
       <div
+        onClick={(e) => {
+          e.stopPropagation();
+          resetControlsTimer();
+        }}
         className={`absolute bottom-0 left-0 right-0 p-5 bg-gradient-to-t from-black/95 via-black/70 to-transparent transition-opacity duration-300 z-20 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}

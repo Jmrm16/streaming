@@ -249,24 +249,49 @@ export const api = {
     seriesId?: string,
     trackIndex?: number
   ): Promise<ResolveResponse> {
-    const params = new URLSearchParams();
-    params.set('id', contentId);
-    if (seriesId) params.set('series', seriesId);
-    if (trackIndex !== undefined && trackIndex !== null) {
-      params.set('trackIndex', String(trackIndex));
+    const buildUrl = (cId: string, sId?: string) => {
+      const params = new URLSearchParams();
+      params.set('id', cId);
+      if (sId) params.set('series', sId);
+      if (trackIndex !== undefined && trackIndex !== null) {
+        params.set('trackIndex', String(trackIndex));
+      }
+      return `${getApiBaseUrl()}/resolve?${params.toString()}`;
+    };
+
+    let res = await fetch(buildUrl(contentId, seriesId));
+    let data: any = null;
+    try {
+      data = await res.json();
+    } catch {
+      data = { returnValue: false };
     }
 
-    const res = await fetch(`${getApiBaseUrl()}/resolve?${params.toString()}`);
-    const data = await res.json();
+    // Automatic Client-Side Fallback: If initial resolve failed (e.g. portal100008, 502 Bad Gateway)
+    // and we have a seriesId distinct from contentId, automatically retry with swapped IDs
+    if ((!data?.returnValue || !data?.url) && seriesId && seriesId !== contentId) {
+      console.warn('[api] Initial resolve returned error/empty url. Retrying with swapped params id=' + seriesId + '&series=' + contentId);
+      try {
+        const fallbackRes = await fetch(buildUrl(seriesId, contentId));
+        const fallbackData = await fallbackRes.json();
+        if (fallbackData && (fallbackData.url || fallbackData.proxyPath)) {
+          console.log('[api] Swapped IDs fallback succeeded!');
+          data = fallbackData;
+        }
+      } catch (fallbackErr) {
+        console.error('[api] Swapped IDs fallback also failed:', fallbackErr);
+      }
+    }
+
     return {
-      url: data.proxyPath || data.url || '',
-      codec: data.codec,
-      mime: data.mime,
-      isHls: data.isHls,
-      subtitles: data.subtitles || [],
-      audioLanguages: data.audioLanguages || [],
-      availableTracks: data.availableTracks || [],
-      trackIndex: data.trackIndex,
+      url: (data && (data.proxyPath || data.url)) || '',
+      codec: data?.codec,
+      mime: data?.mime,
+      isHls: data?.isHls,
+      subtitles: data?.subtitles || [],
+      audioLanguages: data?.audioLanguages || [],
+      availableTracks: data?.availableTracks || [],
+      trackIndex: data?.trackIndex,
       contentId,
       seriesId,
     };

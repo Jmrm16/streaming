@@ -18,6 +18,7 @@ import {
   Check,
   Plus,
   ArrowRight,
+  ArrowLeft,
   Loader2,
   Home,
   Smile,
@@ -73,11 +74,14 @@ export const App: React.FC = () => {
   // Search states
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<MediaItem[]>([]);
   const [channelSearchResults, setChannelSearchResults] = useState<Channel[]>([]);
   const [searchFilterTab, setSearchFilterTab] = useState<'all' | 'media' | 'channels'>('all');
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const mobileSearchInputRef = useRef<HTMLInputElement>(null);
+  const searchContainerRef = useRef<HTMLDivElement>(null);
 
   // Pagination & Loading
   const [isLoading, setIsLoading] = useState(false);
@@ -273,6 +277,22 @@ export const App: React.FC = () => {
     return () => document.removeEventListener('click', handleOutsideClick);
   }, []);
 
+  // Desktop search click outside handler
+  useEffect(() => {
+    const handleSearchOutsideClick = (e: MouseEvent) => {
+      if (
+        searchContainerRef.current &&
+        !searchContainerRef.current.contains(e.target as Node)
+      ) {
+        if (!searchQuery) {
+          setIsSearchOpen(false);
+        }
+      }
+    };
+    document.addEventListener('click', handleSearchOutsideClick);
+    return () => document.removeEventListener('click', handleSearchOutsideClick);
+  }, [searchQuery]);
+
   // Keyboard shortcut '/' for search
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -280,14 +300,20 @@ export const App: React.FC = () => {
         e.preventDefault();
         setIsSearchOpen(true);
         setTimeout(() => searchInputRef.current?.focus(), 50);
-      } else if (e.key === 'Escape' && isSearchOpen) {
-        setIsSearchOpen(false);
-        setSearchQuery('');
+      } else if (e.key === 'Escape') {
+        if (isSearchOpen) {
+          setIsSearchOpen(false);
+          setSearchQuery('');
+        }
+        if (isMobileSearchOpen) {
+          setIsMobileSearchOpen(false);
+          setSearchQuery('');
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isSearchOpen]);
+  }, [isSearchOpen, isMobileSearchOpen]);
 
   // Initial Data Load
   const loadInitialData = useCallback(async (force = false) => {
@@ -430,9 +456,9 @@ export const App: React.FC = () => {
     }
   };
 
-  // Global search effect
+  // Global search effect (responsive live search for movies, series & channels)
   useEffect(() => {
-    if (searchQuery.trim().length < 2) {
+    if (searchQuery.trim().length < 1) {
       setSearchResults([]);
       setChannelSearchResults([]);
       setIsSearching(false);
@@ -457,12 +483,12 @@ export const App: React.FC = () => {
       } finally {
         setIsSearching(false);
       }
-    }, 300);
+    }, 250);
 
     return () => clearTimeout(timer);
   }, [searchQuery, channels]);
 
-  const isSearchActive = searchQuery.trim().length >= 2;
+  const isSearchActive = searchQuery.trim().length >= 1;
   const totalSearchResults = searchResults.length + channelSearchResults.length;
 
   // Active Catalog List & Genres
@@ -591,15 +617,57 @@ export const App: React.FC = () => {
               scrolled || activeTab !== 'home' || isSearchActive ? 'is-scrolled' : ''
             }`}
           >
-            {/* Brand Logo */}
-            <button
-              type="button"
-              onClick={() => navigateTab('home')}
-              className="browse-brand cursor-pointer shrink-0 transition-opacity hover:opacity-90 flex items-center mr-2 sm:mr-6"
-              aria-label="MAICAOFLIX, ir a inicio"
-            >
-              <MaicaoflixLogo width={118} height={26} className="sm:w-[138px] sm:h-[30px]" />
-            </button>
+            {isMobileSearchOpen ? (
+              /* Dedicated Full-Width Mobile Search Bar */
+              <div className="flex md:hidden items-center w-full h-full px-3 py-2 gap-2 bg-[#121212]/95 backdrop-blur-md z-50">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileSearchOpen(false);
+                    setSearchQuery('');
+                  }}
+                  className="p-2 text-zinc-300 hover:text-white cursor-pointer -ml-1 rounded-full hover:bg-zinc-800 shrink-0"
+                  aria-label="Cerrar buscador móvil"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <div className="flex-1 relative flex items-center min-w-0">
+                  <Search className="w-4 h-4 text-zinc-400 absolute left-3 pointer-events-none" />
+                  <input
+                    ref={mobileSearchInputRef}
+                    type="search"
+                    autoFocus
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Buscar películas, series, canales..."
+                    className="w-full h-9 pl-9 pr-9 bg-zinc-900 border border-zinc-700 focus:border-red-600 rounded-full text-xs sm:text-sm text-white placeholder-zinc-400 outline-none transition-all shadow-inner"
+                  />
+                  {!!searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery('');
+                        mobileSearchInputRef.current?.focus();
+                      }}
+                      className="absolute right-2.5 p-1 text-zinc-400 hover:text-white cursor-pointer"
+                      aria-label="Limpiar búsqueda"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Brand Logo */}
+                <button
+                  type="button"
+                  onClick={() => navigateTab('home')}
+                  className="browse-brand cursor-pointer shrink-0 transition-opacity hover:opacity-90 flex items-center mr-2 sm:mr-6"
+                  aria-label="MAICAOFLIX, ir a inicio"
+                >
+                  <MaicaoflixLogo width={118} height={26} className="sm:w-[138px] sm:h-[30px]" />
+                </button>
 
             {/* Mobile Nav Drawer Trigger (Shadcn Sheet) */}
             <div className="md:hidden flex items-center">
@@ -842,9 +910,25 @@ export const App: React.FC = () => {
             </nav>
 
             {/* Right Header Actions */}
-            <div className="browse-header-actions ml-auto flex items-center gap-4">
-              {/* Expandable Search Input */}
-              <div className={`browse-search ${isSearchOpen || searchQuery ? 'is-open' : ''}`}>
+            <div className="browse-header-actions ml-auto flex items-center gap-2 sm:gap-4">
+              {/* Mobile Search Icon Trigger */}
+              <button
+                type="button"
+                className="header-icon md:hidden text-zinc-300 hover:text-white cursor-pointer"
+                aria-label="Abrir buscador"
+                onClick={() => {
+                  setIsMobileSearchOpen(true);
+                  setTimeout(() => mobileSearchInputRef.current?.focus(), 60);
+                }}
+              >
+                <Search className="w-5 h-5 text-white" />
+              </button>
+
+              {/* Desktop Expandable Search Input */}
+              <div
+                ref={searchContainerRef}
+                className={`browse-search hidden md:flex ${isSearchOpen || searchQuery ? 'is-open' : ''}`}
+              >
                 <button
                   className="header-icon cursor-pointer"
                   type="button"
@@ -977,14 +1061,37 @@ export const App: React.FC = () => {
                 )}
               </div>
             </div>
+            </>
+          )}
           </header>
 
           {/* ============================================================ */}
           {/* 3. MAIN CATALOG OR SEARCH VIEW                               */}
           {/* ============================================================ */}
           <main id="browse-main" className="relative">
-            {/* GLOBAL SEARCH RESULTS (SHOWN WHEN SEARCH QUERY >= 2) */}
-            {isSearchActive ? (
+            {/* Quick Suggestions for Empty Mobile Search */}
+            {isMobileSearchOpen && !isSearchActive ? (
+              <div className="catalog-content pt-24 px-4 sm:px-8 space-y-6 min-h-[60vh]">
+                <div className="space-y-4">
+                  <h2 className="text-base font-bold text-white flex items-center gap-2">
+                    <Search className="w-4 h-4 text-red-600" />
+                    <span>Búsquedas populares</span>
+                  </h2>
+                  <div className="flex flex-wrap gap-2">
+                    {['Batman', 'Bridgerton', 'Spider-Man', 'Dragon Ball', 'HBO', 'ESPN', 'Acción', 'Comedia', 'Terror', 'Infantil'].map((term) => (
+                      <button
+                        key={term}
+                        type="button"
+                        onClick={() => setSearchQuery(term)}
+                        className="px-3.5 py-1.5 rounded-full bg-zinc-900 hover:bg-red-600 hover:text-white border border-zinc-800 text-zinc-300 text-xs font-semibold transition-all cursor-pointer shadow-sm active:scale-95"
+                      >
+                        {term}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : isSearchActive ? (
               <div className="catalog-content is-filtered pt-24 px-4 sm:px-8 space-y-6">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-zinc-800">
                   <div>
