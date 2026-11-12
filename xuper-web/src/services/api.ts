@@ -311,11 +311,11 @@ export const api = {
       }
     }
 
-    // Self-healing session/seed reset retry if still failing
+    // The backend rotates expired sessions and seeds itself. The browser cannot
+    // authenticate administrative seed routes, so retry the resolver only.
     if (!data?.returnValue || (!data?.url && !data?.proxyPath)) {
       try {
-        console.warn('[api] Triggering automatic /resetSeeds recovery and retrying resolve...');
-        await fetch(`${getApiBaseUrl()}/resetSeeds`);
+        console.warn('[api] Resolver returned no stream. Retrying once...');
         const retryRes = await fetch(buildUrl(contentId, seriesId));
         const retryData = await retryRes.json();
         if (retryData && (retryData.url || retryData.proxyPath)) {

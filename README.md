@@ -45,6 +45,21 @@ misma disposición, mismos recursos gráficos, mismo mando a distancia.
 
 ## Estado actual
 
+### Renovación automática de semillas (backend Render)
+
+El workflow `seeds` acuña y publica un pool nuevo cada 20 minutos. Para aceptar la
+actualización en Render, configura la misma cadena aleatoria como variable de
+entorno del servicio y como secreto del repositorio:
+
+```text
+SEED_INGEST_TOKEN=<cadena-larga-aleatoria>
+```
+
+En GitHub debe crearse como el secreto `SEED_INGEST_TOKEN`; en Render como la
+variable de entorno del mismo nombre. Sin ese valor el backend rechaza
+deliberadamente `POST /feedSeeds`, `/resetSeeds` y `/resetSession`. Nunca se
+debe incluir el valor real en el repositorio.
+
 | Área | Estado |
 |---|---|
 | Inicio, 7 pestañas, detalle, búsqueda, ajustes | ✅ funcionando con datos reales |

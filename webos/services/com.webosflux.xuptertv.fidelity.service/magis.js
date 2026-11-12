@@ -48,7 +48,9 @@ var crypto = require("crypto"),
   SEED_MAX = 200,
   SEED_MIN_LIFE_MS = 3e5,
   SEED_RESCUE_ROUNDS = 6,
-  SEED_LOW_POOL = 10,
+  SEED_LOW_POOL = 30,
+  SEED_TARGET_POOL = 60,
+  SEED_REFRESH_MAX_AGE_MS = 15e5,
   SEED_POOL_FRESH_MS = 6e5,
   SEED_REFRESH_COOLDOWN_MS = 1e4,
   SEED_FAILED_COOLDOWN_MS = 15e3,
@@ -709,9 +711,9 @@ function refreshSeeds(e) {
   else {
     var r = Date.now();
     if (
-      usableSeeds().length >= SEED_LOW_POOL &&
+      usableSeeds().length >= SEED_TARGET_POOL &&
       seedsAt &&
-      r - seedsAt < SEED_REFRESH_COOLDOWN_MS
+      r - seedsAt < SEED_REFRESH_MAX_AGE_MS
     )
       return e(null, !1);
     if (
@@ -837,7 +839,7 @@ function rescueSeed(e, r) {
 
   var seedInterval = setInterval(function () {
     var pool = usableSeeds();
-    if (pool.length < SEED_LOW_POOL || Date.now() - seedsAt > 18e5) {
+    if (pool.length < SEED_TARGET_POOL || Date.now() - seedsAt > SEED_REFRESH_MAX_AGE_MS) {
       refreshSeeds(function () {});
     }
   }, 6e5);

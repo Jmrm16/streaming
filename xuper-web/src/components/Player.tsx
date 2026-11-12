@@ -112,6 +112,14 @@ const EMPTY_SUBTITLES: SubtitleTrack[] = [];
 const EMPTY_AUDIO_LANGUAGES: AudioLanguage[] = [];
 const EMPTY_CHANNELS: Channel[] = [];
 
+const hasExtension = (source: string, extension: string): boolean => {
+  try {
+    return new URL(source, window.location.href).pathname.toLowerCase().endsWith(extension);
+  } catch {
+    return source.split(/[?#]/)[0].toLowerCase().endsWith(extension);
+  }
+};
+
 export const Player: React.FC<PlayerProps> = ({
   url,
   title,
@@ -173,6 +181,11 @@ export const Player: React.FC<PlayerProps> = ({
 
     setIsLoading(true);
     setErrorAlert(null);
+    networkRetryRef.current = 0;
+    setLevels([]);
+    setCurrentLevel(-1);
+    setAudioTracks([]);
+    setCurrentAudioTrack(0);
 
     // Live TV streams must never inherit or seek to a previous VOD position
     if (isLive) {
@@ -189,8 +202,14 @@ export const Player: React.FC<PlayerProps> = ({
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
 
-    if (Hls.isSupported() && (url.includes('.m3u8') || !url.endsWith('.mp4'))) {
+    const isHlsSource = hasExtension(url, '.m3u8');
+    const isMp4Source = hasExtension(url, '.mp4');
+
+    if (Hls.isSupported() && isHlsSource) {
       const hlsConfig: any = isLive
         ? {
             enableWorker: true,
@@ -348,7 +367,7 @@ export const Player: React.FC<PlayerProps> = ({
           }
         }
       });
-    } else if (video.canPlayType('application/vnd.apple.mpegurl') || url.endsWith('.mp4')) {
+    } else if ((isHlsSource && video.canPlayType('application/vnd.apple.mpegurl')) || isMp4Source) {
       // Native Apple HLS / MP4 (Safari, iOS, TV browsers)
       video.src = url;
       video.addEventListener(
@@ -362,6 +381,12 @@ export const Player: React.FC<PlayerProps> = ({
         },
         { once: true }
       );
+    } else {
+      setIsLoading(false);
+      setErrorAlert({
+        open: true,
+        message: 'La fuente de video no tiene un formato compatible. Intenta recargar el título.',
+      });
     }
   }, [url, isLive]);
 
@@ -406,8 +431,17 @@ export const Player: React.FC<PlayerProps> = ({
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+      if (controlsTimeoutRef.current) {
+        clearTimeout(controlsTimeoutRef.current);
+      }
     };
   }, [initHls]);
+
+  useEffect(() => {
+    const syncFullscreenState = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
+    document.addEventListener('fullscreenchange', syncFullscreenState);
+    return () => document.removeEventListener('fullscreenchange', syncFullscreenState);
+  }, []);
 
   // Sync external audio languages from API
   useEffect(() => {
@@ -514,8 +548,7 @@ export const Player: React.FC<PlayerProps> = ({
       videoRef.current.pause();
       setIsPlaying(false);
     } else {
-      videoRef.current.play();
-      setIsPlaying(true);
+      attemptPlay(videoRef.current);
     }
   };
 
@@ -699,6 +732,14 @@ export const Player: React.FC<PlayerProps> = ({
     }, 4500);
   }, [isPlaying, showSettingsDialog, showChannelDrawer]);
 
+  useEffect(() => {
+    if (isPlaying && !showSettingsDialog && !showChannelDrawer) {
+      resetControlsTimer();
+    } else if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+    }
+  }, [isPlaying, showSettingsDialog, showChannelDrawer, resetControlsTimer]);
+
   const wakeControls = useCallback(() => {
     setShowControls(true);
     resetControlsTimer();
@@ -829,6 +870,20 @@ export const Player: React.FC<PlayerProps> = ({
           setIsLoading(false);
           setIsPlaying(true);
         }}
+        onPause={() => setIsPlaying(false)}
+        onEnded={() => {
+          setIsPlaying(false);
+          setShowControls(true);
+        }}
+        onError={() => {
+          if (!hlsRef.current) {
+            setIsLoading(false);
+            setErrorAlert({
+              open: true,
+              message: 'El navegador no pudo cargar este video. Verifica la señal e inténtalo de nuevo.',
+            });
+          }
+        }}
         className={`w-full h-full transition-all duration-200 pointer-events-none select-none ${
           aspectRatio === 'contain'
             ? 'object-contain'
@@ -891,9 +946,9 @@ export const Player: React.FC<PlayerProps> = ({
 
       {/* Loading Spinner Overlay */}
       {isLoading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 pointer-events-none z-30">
-          <div className="w-12 h-12 rounded-full border-4 border-white/20 border-t-[#e50914] animate-spin mb-3" />
-          <p className="text-zinc-200 text-sm font-semibold tracking-wide">Cargando...</p>
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 pointer-events-none z-30">
+          <div className="h-9 w-9 rounded-full border-2 border-white/20 border-t-white animate-spin" />
+          <p className="mt-4 text-xs font-medium tracking-wide text-zinc-300">Cargando</p>
         </div>
       )}
 
@@ -902,28 +957,24 @@ export const Player: React.FC<PlayerProps> = ({
         <button
           type="button"
           onClick={unmuteAndPlay}
-          className="absolute top-20 left-1/2 -translate-x-1/2 z-40 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-2xl animate-bounce cursor-pointer"
+          className="absolute top-20 left-1/2 -translate-x-1/2 z-40 inline-flex items-center gap-2 rounded-md border border-white/15 bg-black/85 px-3 py-2 text-xs font-medium text-white shadow-xl hover:bg-zinc-900 cursor-pointer"
         >
           <VolumeX className="w-4 h-4" />
-          <span>El navegador silenció el audio — Haz clic aquí para activar el sonido</span>
+          <span>Activar sonido</span>
         </button>
       )}
 
       {/* Centered Large Play/Pause Touch Control */}
-      {showControls && (
+      {showControls && !isPlaying && !isLoading && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
           <button
             onClick={(e) => {
               e.stopPropagation();
               togglePlay();
             }}
-            className="pointer-events-auto h-16 w-16 sm:h-20 sm:w-20 rounded-full bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center text-white hover:scale-110 active:scale-95 transition-all shadow-2xl cursor-pointer"
+            className="pointer-events-auto h-14 w-14 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-xl cursor-pointer"
           >
-            {isPlaying ? (
-              <Pause className="h-8 w-8 sm:h-10 sm:w-10 fill-current" />
-            ) : (
-              <Play className="h-8 w-8 sm:h-10 sm:w-10 fill-current ml-1" />
-            )}
+            <Play className="h-7 w-7 fill-current ml-1" />
           </button>
         </div>
       )}
@@ -944,23 +995,19 @@ export const Player: React.FC<PlayerProps> = ({
             variant="ghost"
             size="icon"
             onClick={onClose}
-            className="rounded-full bg-black/60 hover:bg-zinc-800 text-white h-9 w-9 shrink-0 cursor-pointer"
+            className="rounded-full text-white hover:bg-white/10 h-9 w-9 shrink-0 cursor-pointer"
             title="Volver"
           >
             <ArrowLeft className="h-5 w-5" />
           </Button>
 
-          <MaicaoflixLogo width={100} height={22} className="hidden sm:block ml-1 mr-2" />
+          <MaicaoflixLogo width={92} height={20} className="hidden sm:block ml-1 mr-2" />
 
           {isLive ? (
-            <Badge variant="destructive" className="bg-red-600 font-bold px-2 py-0.5 tracking-wider shrink-0 text-[10px]">
-              EN VIVO
+            <Badge variant="destructive" className="bg-red-600 font-semibold px-2 py-0.5 tracking-wider shrink-0 text-[9px]">
+              ● EN VIVO
             </Badge>
-          ) : (
-            <Badge variant="secondary" className="bg-zinc-800 text-zinc-300 font-bold px-2 py-0.5 tracking-wider shrink-0 text-[10px]">
-              VOD
-            </Badge>
-          )}
+          ) : null}
 
           <div className="min-w-0">
             <h2 className="text-sm sm:text-base md:text-lg font-bold text-white tracking-wide truncate">{title}</h2>
@@ -975,9 +1022,9 @@ export const Player: React.FC<PlayerProps> = ({
               variant="outline"
               size="sm"
               onClick={() => setShowChannelDrawer(!showChannelDrawer)}
-              className="gap-2 rounded-lg border-zinc-700 bg-zinc-900/80 text-zinc-200 hover:text-white text-xs h-9"
+              className="gap-2 rounded-md border-white/15 bg-black/35 text-zinc-200 hover:bg-white/10 hover:text-white text-xs h-9"
             >
-              <ListVideo className="h-4 w-4 text-red-500" />
+              <ListVideo className="h-4 w-4" />
               <span>Canales ({channels.length})</span>
             </Button>
           )}
@@ -987,7 +1034,7 @@ export const Player: React.FC<PlayerProps> = ({
             variant="ghost"
             size="sm"
             onClick={cycleAspectRatio}
-            className="rounded-lg text-zinc-300 hover:text-white bg-zinc-900/60 hover:bg-zinc-800 text-xs px-2.5 h-9"
+            className="rounded-md text-zinc-300 hover:text-white hover:bg-white/10 text-xs px-2.5 h-9"
             title="Cambiar relación de aspecto"
           >
             {aspectRatio === 'contain' ? 'Ajustar' : aspectRatio === 'cover' ? 'Rellenar' : 'Estirar'}
@@ -998,7 +1045,7 @@ export const Player: React.FC<PlayerProps> = ({
             variant="ghost"
             size="icon"
             onClick={onClose}
-            className="rounded-full bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white h-9 w-9"
+            className="rounded-full text-zinc-300 hover:bg-white/10 hover:text-white h-9 w-9"
             title="Cerrar reproductor"
           >
             <X className="h-5 w-5" />
@@ -1090,12 +1137,12 @@ export const Player: React.FC<PlayerProps> = ({
               )}
               {/* Played progress */}
               <div
-                className="absolute top-0 bottom-0 left-0 bg-[#e50914] rounded-full pointer-events-none"
+                className="absolute top-0 bottom-0 left-0 bg-red-600 rounded-full pointer-events-none"
                 style={{ width: `${Math.min(100, (progress / duration) * 100)}%` }}
               />
               {/* Scrubber Thumb */}
               <div
-                className="absolute h-3.5 w-3.5 rounded-full bg-[#e50914] shadow-md pointer-events-none -translate-x-1/2 transition-transform group-hover:scale-125"
+                className="absolute h-3 w-3 rounded-full bg-red-600 shadow-md pointer-events-none -translate-x-1/2 transition-transform group-hover:scale-125"
                 style={{ left: `${Math.min(100, Math.max(0, (progress / duration) * 100))}%` }}
               />
               <input

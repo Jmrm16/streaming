@@ -1,6 +1,7 @@
 // Unified Production & Render Server for XUPER
 // Single-port architecture: serves both API and Video Media Proxy
 import http from "node:http";
+import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,16 @@ const dnsx = require(path.join(svcDir, "dnsx.js"));
 const netdiag = require(path.join(svcDir, "netdiag.js"));
 
 const PORT = Number(process.env.PORT || 8910);
+const SEED_INGEST_TOKEN = process.env.SEED_INGEST_TOKEN || "";
+const MAX_SEED_BODY_BYTES = 1024 * 1024;
+
+const isAuthorizedSeedRequest = (req) => {
+  const supplied = req.headers["x-seed-token"];
+  if (!SEED_INGEST_TOKEN || typeof supplied !== "string") return false;
+  const expected = Buffer.from(SEED_INGEST_TOKEN, "utf8");
+  const received = Buffer.from(supplied, "utf8");
+  return expected.length === received.length && crypto.timingSafeEqual(expected, received);
+};
 
 const json = (res, status, data) => {
   const body = JSON.stringify(data);
@@ -46,6 +57,21 @@ const server = http.createServer((req, res) => {
     res.end();
     return;
   }
+
+  const requireSeedAdmin = () => {
+    if (!SEED_INGEST_TOKEN) {
+      json(res, 503, {
+        returnValue: false,
+        errorText: "SEED_INGEST_TOKEN is not configured",
+      });
+      return false;
+    }
+    if (!isAuthorizedSeedRequest(req)) {
+      json(res, 401, { returnValue: false, errorText: "Unauthorized seed operation" });
+      return false;
+    }
+    return true;
+  };
 
   // Route Media Proxy on same port (/media/*, /hls/*, /sub/*)
   if (
@@ -267,6 +293,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (u.pathname === "/resetSeeds") {
+    if (!requireSeedAdmin()) return;
     const available = magis.resetSeeds ? magis.resetSeeds() : 0;
     return magis.ensureSession((err) => {
       done(err, {
@@ -278,9 +305,26 @@ const server = http.createServer((req, res) => {
   }
 
   if (u.pathname === "/feedSeeds" && req.method === "POST") {
+    if (!requireSeedAdmin()) return;
+    const declaredLength = Number(req.headers["content-length"] || 0);
+    if (declaredLength > MAX_SEED_BODY_BYTES) {
+      return json(res, 413, { returnValue: false, errorText: "Seed payload too large" });
+    }
     let body = "";
-    req.on("data", (chunk) => { body += chunk; });
+    let bodyBytes = 0;
+    let payloadRejected = false;
+    req.on("data", (chunk) => {
+      if (payloadRejected) return;
+      bodyBytes += chunk.length;
+      if (bodyBytes > MAX_SEED_BODY_BYTES) {
+        payloadRejected = true;
+        json(res, 413, { returnValue: false, errorText: "Seed payload too large" });
+        return;
+      }
+      body += chunk;
+    });
     req.on("end", () => {
+      if (payloadRejected) return;
       try {
         const payload = JSON.parse(body);
         const seeds = Array.isArray(payload) ? payload : (payload.seeds || []);
@@ -300,6 +344,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (u.pathname === "/resetSession") {
+    if (!requireSeedAdmin()) return;
     if (magis.resetSession) magis.resetSession();
     return magis.ensureSession((err) => {
       done(err, { message: "Session reset and initialized", session: magis.session });
@@ -378,7 +423,7 @@ server.listen(PORT, "0.0.0.0", () => {
     }
   });
 
-  // Periodic background seed sync from GitHub (every 20 minutes) so Render always has the latest seeds minted by GitHub Actions
+  // Periodic background seed sync keeps the Render pool fresh between GitHub mint runs.
   setInterval(() => {
     if (magis.refreshSeeds) {
       magis.refreshSeeds((err, updated) => {
@@ -387,5 +432,5 @@ server.listen(PORT, "0.0.0.0", () => {
         }
       });
     }
-  }, 20 * 60 * 1000);
+  }, 5 * 60 * 1000);
 });

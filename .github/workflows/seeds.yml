@@ -2,13 +2,13 @@ name: seeds
 
 on:
   schedule:
-    - cron: "45 * * * *"
+    - cron: "*/20 * * * *"
   workflow_dispatch:
     inputs:
       count:
         description: "Semillas nuevas a acuñar"
         required: false
-        default: "30"
+        default: "40"
 
 permissions:
   contents: write
@@ -40,17 +40,21 @@ jobs:
 
       - name: Acunar semillas
         run: |
-          node tools/mint-seeds.js \
-            --count "${{ inputs.count || '30' }}" \
+          node tools/mint-seeds.cjs \
+            --count "${{ inputs.count || '40' }}" \
             --pool webos/services/com.webosflux.xuptertv.fidelity.service/seeds-fallback.json \
             --out webos/services/com.webosflux.xuptertv.fidelity.service/seeds-fallback.json \
             --soft-fail
 
       - name: Enviar en caliente a Render y publicar en rama seeds
+        env:
+          SEED_INGEST_TOKEN: ${{ secrets.SEED_INGEST_TOKEN }}
         run: |
-          curl -s -X POST "https://streaming-qste.onrender.com/feedSeeds" \
+          test -n "$SEED_INGEST_TOKEN" || { echo "Falta el secreto SEED_INGEST_TOKEN"; exit 1; }
+          curl --fail --show-error --retry 3 --retry-all-errors -X POST "https://streaming-qste.onrender.com/feedSeeds" \
             -H "Content-Type: application/json" \
-            --data-binary "@webos/services/com.webosflux.xuptertv.fidelity.service/seeds-fallback.json" || true
+            -H "X-Seed-Token: $SEED_INGEST_TOKEN" \
+            --data-binary "@webos/services/com.webosflux.xuptertv.fidelity.service/seeds-fallback.json"
 
           git config user.name "xupertv-seeds"
           git config user.email "seeds@users.noreply.github.com"

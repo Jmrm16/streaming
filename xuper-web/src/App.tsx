@@ -33,7 +33,6 @@ import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
 import { Badge } from './components/ui/badge';
-import { Sheet, SheetContent, SheetTrigger } from './components/ui/sheet';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -83,6 +82,7 @@ export const App: React.FC = () => {
   const [searchFilterTab, setSearchFilterTab] = useState<'all' | 'media' | 'channels'>('all');
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
+  const searchRequestRef = useRef(0);
 
   // Pagination & Loading
   const [isLoading, setIsLoading] = useState(false);
@@ -123,7 +123,7 @@ export const App: React.FC = () => {
   });
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [exploreMenuOpen, setExploreMenuOpen] = useState(false);
   const [alertModal, setAlertModal] = useState<{ open: boolean; title: string; description: string } | null>(null);
   const [toastMessage, setToastMessage] = useState('');
 
@@ -287,7 +287,7 @@ export const App: React.FC = () => {
     const handleOutsideClick = (e: MouseEvent) => {
       if (headerRef.current && !headerRef.current.contains(e.target as Node)) {
         setIsProfileMenuOpen(false);
-        setMobileNavOpen(false);
+        setExploreMenuOpen(false);
       }
     };
     document.addEventListener('click', handleOutsideClick);
@@ -513,37 +513,51 @@ export const App: React.FC = () => {
     }
   };
 
-  // Global search effect (responsive live search for movies, series & channels)
+  // Search the remote catalog with debounce and ignore stale responses.
   useEffect(() => {
-    if (searchQuery.trim().length < 1) {
+    const query = searchQuery.trim();
+    if (query.length < 2) {
+      searchRequestRef.current += 1;
       setSearchResults([]);
-      setChannelSearchResults([]);
       setIsSearching(false);
       return;
     }
 
+    const requestId = ++searchRequestRef.current;
+    setIsSearching(true);
     const timer = setTimeout(async () => {
-      setIsSearching(true);
       try {
-        const q = searchQuery.trim().toLowerCase();
-        const mediaRes = await api.search(q);
-        setSearchResults(mediaRes);
-
-        const chMatches = channels.filter(
-          (c) =>
-            (isAdultUnlocked || !isAdultChannel(c)) &&
-            (c.name.toLowerCase().includes(q) ||
-              (c.category && c.category.toLowerCase().includes(q)))
-        );
-        setChannelSearchResults(chMatches);
+        const mediaRes = await api.search(query);
+        if (requestId === searchRequestRef.current) {
+          setSearchResults(mediaRes);
+        }
       } catch (err) {
         console.error('Error searching:', err);
       } finally {
-        setIsSearching(false);
+        if (requestId === searchRequestRef.current) {
+          setIsSearching(false);
+        }
       }
-    }, 250);
+    }, 320);
 
     return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Channel search is local and should not re-query the remote media catalog.
+  useEffect(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (query.length < 2) {
+      setChannelSearchResults([]);
+      return;
+    }
+    setChannelSearchResults(
+      channels.filter(
+        (channel) =>
+          (isAdultUnlocked || !isAdultChannel(channel)) &&
+          (channel.name.toLowerCase().includes(query) ||
+            Boolean(channel.category && channel.category.toLowerCase().includes(query)))
+      )
+    );
   }, [searchQuery, channels, isAdultUnlocked]);
 
   const visibleCategories = useMemo(() => {
@@ -564,8 +578,16 @@ export const App: React.FC = () => {
     return favChannels.filter((c) => !isAdultChannel(c));
   }, [favChannels, isAdultUnlocked]);
 
-  const isSearchActive = searchQuery.trim().length >= 1;
+  const normalizedSearchQuery = searchQuery.trim();
+  const isSearchActive = normalizedSearchQuery.length >= 1;
+  const isSearchReady = normalizedSearchQuery.length >= 2;
   const totalSearchResults = searchResults.length + channelSearchResults.length;
+  const visibleSearchResultCount =
+    searchFilterTab === 'media'
+      ? searchResults.length
+      : searchFilterTab === 'channels'
+        ? channelSearchResults.length
+        : totalSearchResults;
 
   // Active Catalog List & Genres
   const currentCatalogList = useMemo(() => {
@@ -631,7 +653,7 @@ export const App: React.FC = () => {
     setSortOption('recommended');
     setSearchQuery('');
     setIsSearchOpen(false);
-    setMobileNavOpen(false);
+    setExploreMenuOpen(false);
     setIsProfileMenuOpen(false);
     window.scrollTo({ top: 0, behavior: 'instant' });
   };
@@ -710,154 +732,56 @@ export const App: React.FC = () => {
               <MaicaoflixLogo width={122} height={26} className="sm:w-[138px] sm:h-[30px]" />
             </button>
 
-            {/* Mobile Nav Drawer Trigger (Shadcn Sheet) */}
-            <div className="md:hidden flex items-center">
-              <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
-                <SheetTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="flex items-center gap-1.5 text-xs text-zinc-200 hover:text-white hover:bg-zinc-800/80 font-bold px-2.5 h-8 rounded-lg border border-zinc-800/80 bg-zinc-900/60 shadow-sm"
-                  >
-                    <span>Explorar</span>
-                    <ChevronDown className={`w-3.5 h-3.5 text-zinc-400 transition-transform duration-200 ${mobileNavOpen ? 'rotate-180' : ''}`} />
-                  </Button>
-                </SheetTrigger>
-                <SheetContent side="left" className="w-72 bg-[#121212] border-r border-zinc-800 p-0 flex flex-col justify-between shadow-2xl">
-                  <div className="p-5 space-y-6">
-                    <div className="flex items-center gap-2 pt-1 pb-4 border-b border-zinc-850">
-                      <MaicaoflixLogo width={128} height={28} />
-                    </div>
-
-                    <nav className="flex flex-col space-y-1.5" aria-label="Navegación móvil">
-                      <button
-                        type="button"
-                        onClick={() => navigateTab('home')}
-                        className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
-                          activeTab === 'home' && !isSearchActive
-                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
-                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
-                        }`}
-                      >
-                        <Home className="w-4 h-4 text-zinc-400" />
-                        <span>Inicio</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => navigateTab('live')}
-                        className={`flex items-center justify-between px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
-                          activeTab === 'live' && !isSearchActive
-                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
-                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <Tv className="w-4 h-4 text-red-500" />
-                          <span>TV en vivo</span>
-                        </div>
-                        <Badge variant="outline" className="bg-red-950/80 border-red-800/80 text-red-400 text-[10px] px-2 py-0.5 uppercase font-bold">
-                          ● DIRECTO
-                        </Badge>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => navigateTab('series')}
-                        className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
-                          activeTab === 'series' && !isSearchActive
-                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
-                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
-                        }`}
-                      >
-                        <Clapperboard className="w-4 h-4 text-zinc-400" />
-                        <span>Series</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => navigateTab('movies')}
-                        className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
-                          activeTab === 'movies' && !isSearchActive
-                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
-                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
-                        }`}
-                      >
-                        <Film className="w-4 h-4 text-zinc-400" />
-                        <span>Películas</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => navigateTab('anime')}
-                        className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
-                          activeTab === 'anime' && !isSearchActive
-                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
-                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
-                        }`}
-                      >
-                        <Sparkles className="w-4 h-4 text-zinc-400" />
-                        <span>Animé</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => navigateTab('kids')}
-                        className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
-                          activeTab === 'kids' && !isSearchActive
-                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
-                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
-                        }`}
-                      >
-                        <Smile className="w-4 h-4 text-zinc-400" />
-                        <span>Infantil</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => navigateTab('favorites')}
-                        className={`flex items-center justify-between px-3.5 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
-                          activeTab === 'favorites' && !isSearchActive
-                            ? 'bg-red-600/15 text-white font-bold border-l-4 border-red-600 pl-3'
-                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <Heart className="w-4 h-4 text-pink-500" />
-                          <span>Mi lista</span>
-                        </div>
-                        {favChannels.length + favMedia.length > 0 && (
-                          <Badge variant="secondary" className="text-[10px] bg-zinc-800 text-zinc-200 px-2 py-0.5 rounded-full font-bold">
-                            {favChannels.length + favMedia.length}
-                          </Badge>
-                        )}
-                      </button>
-                    </nav>
-                  </div>
-
-                  <div className="p-5 border-t border-zinc-850 space-y-3 bg-[#0d0d0d]">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setMobileNavOpen(false);
-                        setIsSettingsModalOpen(true);
-                      }}
-                      className="w-full justify-start gap-2.5 text-xs h-9 border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
+            {/* Small anchored menu: navigation without covering the catalog. */}
+            <div className="md:hidden relative flex items-center">
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-haspopup="menu"
+                aria-expanded={exploreMenuOpen}
+                onClick={() => setExploreMenuOpen((open) => !open)}
+                className="flex items-center gap-1.5 text-xs text-zinc-200 hover:text-white hover:bg-zinc-800/80 font-bold px-2.5 h-8 rounded-lg border border-zinc-800/80 bg-zinc-900/60 shadow-sm"
+              >
+                <span>Explorar</span>
+                <ChevronDown className={`w-3.5 h-3.5 text-zinc-400 transition-transform duration-200 ${exploreMenuOpen ? 'rotate-180' : ''}`} />
+              </Button>
+              {exploreMenuOpen && (
+                <nav
+                  role="menu"
+                  aria-label="Explorar catálogo"
+                  className="absolute left-0 top-full z-50 mt-2 w-52 overflow-hidden rounded-lg border border-zinc-800 bg-[#181818] py-1 shadow-2xl"
+                >
+                  {[
+                    { tab: 'home' as TabView, label: 'Inicio', icon: Home, tone: 'text-zinc-300' },
+                    { tab: 'live' as TabView, label: 'TV en vivo', icon: Tv, tone: 'text-red-400' },
+                    { tab: 'series' as TabView, label: 'Series', icon: Clapperboard, tone: 'text-zinc-300' },
+                    { tab: 'movies' as TabView, label: 'Películas', icon: Film, tone: 'text-zinc-300' },
+                    { tab: 'anime' as TabView, label: 'Animé', icon: Sparkles, tone: 'text-zinc-300' },
+                    { tab: 'kids' as TabView, label: 'Infantil', icon: Smile, tone: 'text-zinc-300' },
+                    { tab: 'favorites' as TabView, label: 'Mi lista', icon: Heart, tone: 'text-pink-400' },
+                  ].map(({ tab, label, icon: Icon, tone }) => (
+                    <button
+                      key={tab}
+                      type="button"
+                      role="menuitem"
+                      onClick={() => navigateTab(tab)}
+                      className={`flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm transition-colors ${
+                        activeTab === tab && !isSearchActive
+                          ? 'bg-zinc-800 text-white'
+                          : 'text-zinc-300 hover:bg-zinc-800 hover:text-white'
+                      }`}
                     >
-                      <Settings className="w-4 h-4 text-zinc-400" />
-                      <span>Configurar Servidor</span>
-                    </Button>
-                    <div className="flex items-center justify-between text-[11px] text-zinc-500 px-1 pt-1">
-                      <span>Estado del backend:</span>
-                      <span className="flex items-center gap-1.5 text-zinc-300 font-medium">
-                        <span className={`w-2 h-2 rounded-full ${isBackendOnline ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-red-500'}`} />
-                        {isBackendOnline ? 'Conectado' : 'Sin conexión'}
-                      </span>
-                    </div>
-                  </div>
-                </SheetContent>
-              </Sheet>
+                      <Icon className={`h-4 w-4 ${tone}`} />
+                      <span>{label}</span>
+                      {tab === 'favorites' && favChannels.length + favMedia.length > 0 && (
+                        <span className="ml-auto rounded-full bg-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-100">
+                          {favChannels.length + favMedia.length}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </nav>
+              )}
             </div>
 
             {/* Primary Desktop Navigation Links */}
@@ -960,6 +884,9 @@ export const App: React.FC = () => {
                 <button
                   className="header-icon cursor-pointer"
                   type="button"
+                  id="search-toggle"
+                  aria-expanded={isSearchOpen}
+                  aria-controls="catalog-search"
                   aria-label={isSearchOpen ? 'Cerrar buscador' : 'Buscar títulos o canales (/) '}
                   onClick={() => {
                     setIsSearchOpen(!isSearchOpen);
@@ -979,7 +906,7 @@ export const App: React.FC = () => {
                   ref={searchInputRef}
                   id="catalog-search"
                   type="search"
-                  placeholder="Títulos, series, canales..."
+                  placeholder="Buscar títulos, series o canales"
                   autoComplete="off"
                   spellCheck={false}
                   maxLength={100}
@@ -1101,12 +1028,14 @@ export const App: React.FC = () => {
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-zinc-800">
                   <div>
                     <h1 className="browse-view-title text-2xl sm:text-3xl font-bold">
-                      Resultados para "{searchQuery}"
+                      Buscar: <span className="text-zinc-300">{normalizedSearchQuery}</span>
                     </h1>
                     <p className="text-xs text-zinc-400 mt-1">
-                      {isSearching
+                      {!isSearchReady
+                        ? 'Escribe al menos 2 caracteres para buscar.'
+                        : isSearching
                         ? 'Buscando en el catálogo en vivo...'
-                        : `Se encontraron ${totalSearchResults} resultado(s)`}
+                        : `${visibleSearchResultCount} coincidencia${visibleSearchResultCount === 1 ? '' : 's'}`}
                     </p>
                   </div>
 
@@ -1265,14 +1194,24 @@ export const App: React.FC = () => {
                   )}
 
                 {/* Empty Search State */}
-                {!isSearching && totalSearchResults === 0 && (
+                {!isSearchReady && (
+                  <div className="empty-state py-20 text-center text-zinc-500 space-y-3">
+                    <Search className="w-10 h-10 mx-auto opacity-30 text-zinc-500" />
+                    <h2 className="empty-title text-lg font-semibold text-white">¿Qué quieres ver?</h2>
+                    <p className="empty-copy text-sm max-w-md mx-auto">
+                      Busca por título, actor, género o el nombre de un canal.
+                    </p>
+                  </div>
+                )}
+
+                {isSearchReady && !isSearching && visibleSearchResultCount === 0 && (
                   <div className="empty-state py-20 text-center text-zinc-500 space-y-3">
                     <Search className="w-12 h-12 mx-auto opacity-30 text-zinc-500" />
                     <h2 className="empty-title text-xl font-bold text-white">
-                      No encontramos resultados para "{searchQuery}"
+                      No encontramos resultados para "{normalizedSearchQuery}"
                     </h2>
                     <p className="empty-copy text-sm max-w-md mx-auto">
-                      Prueba a buscar con otra palabra clave, nombre de película, serie, o canal.
+                      Prueba otro título, actor, género o cambia el filtro de resultados.
                     </p>
                     <button
                       type="button"
