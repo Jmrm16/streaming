@@ -33,24 +33,19 @@ const parsePublicM3u = (body) => {
   const lines = body.split(/\r?\n/);
   const channels = [];
   let metadata = "";
-
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
-    if (line.startsWith("#EXTINF:")) {
-      metadata = line;
-      continue;
-    }
+    if (line.startsWith("#EXTINF:")) { metadata = line; continue; }
     if (line.startsWith("#") || !metadata || !/^https?:\/\//i.test(line)) continue;
-
     const comma = metadata.lastIndexOf(",");
-    const title = (comma >= 0 ? metadata.slice(comma + 1) : "Canal de películas").trim();
+    const title = (comma >= 0 ? metadata.slice(comma + 1) : "Canal en vivo").trim();
     channels.push({
-      id: `public_movies_${channels.length + 1}`,
-      channelCode: `public_movies_${channels.length + 1}`,
-      name: title || "Canal de películas",
+      id: `public_m3u_${channels.length + 1}`,
+      channelCode: `public_m3u_${channels.length + 1}`,
+      name: title || "Canal en vivo",
       logo: m3uAttribute(metadata, "tvg-logo"),
-      category: m3uAttribute(metadata, "group-title") || "Películas en vivo",
+      category: m3uAttribute(metadata, "group-title") || "TV en vivo",
       streamUrl: line,
     });
     metadata = "";
@@ -64,7 +59,6 @@ const getPublicMoviesChannels = (callback) => {
     callback(null, publicMoviesM3uCache.channels);
     return;
   }
-
   const request = https.get(PUBLIC_MOVIES_M3U_URL, { headers: { "User-Agent": "XuperWeb/1.0" } }, (response) => {
     if (response.statusCode !== 200) {
       response.resume();
@@ -75,19 +69,13 @@ const getPublicMoviesChannels = (callback) => {
     let size = 0;
     response.on("data", (chunk) => {
       size += chunk.length;
-      if (size > PUBLIC_M3U_MAX_BYTES) {
-        request.destroy(new Error("La lista pública excede el tamaño permitido"));
-        return;
-      }
-      chunks.push(chunk);
+      if (size > PUBLIC_M3U_MAX_BYTES) request.destroy(new Error("La lista pública excede el tamaño permitido"));
+      else chunks.push(chunk);
     });
     response.on("end", () => {
       if (size > PUBLIC_M3U_MAX_BYTES) return;
       const channels = parsePublicM3u(Buffer.concat(chunks).toString("utf8"));
-      if (!channels.length) {
-        callback(new Error("La lista pública no contiene canales compatibles"));
-        return;
-      }
+      if (!channels.length) return callback(new Error("La lista pública no contiene canales compatibles"));
       publicMoviesM3uCache = { at: Date.now(), channels };
       callback(null, channels);
     });
@@ -428,8 +416,6 @@ const server = http.createServer((req, res) => {
     });
   }
 
-  // Public, provider-independent live channels. This list is intentionally
-  // fixed server-side so the endpoint cannot be used to fetch arbitrary URLs.
   if (u.pathname === "/publicMoviesChannels") {
     return getPublicMoviesChannels((err, channels) => done(err, { channels: channels || [] }));
   }

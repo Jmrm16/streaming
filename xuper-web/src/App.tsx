@@ -70,6 +70,8 @@ export const App: React.FC = () => {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [liveQuery, setLiveQuery] = useState('');
+  const [liveSort, setLiveSort] = useState<'recommended' | 'title'>('recommended');
   const [selectedGenre, setSelectedGenre] = useState<string>('all');
   const [sortOption, setSortOption] = useState<string>('recommended');
 
@@ -330,7 +332,7 @@ export const App: React.FC = () => {
   const loadInitialData = useCallback(async (force = false) => {
     setIsLoading(true);
     try {
-      const [feat, mov, ser, anim, kid, cats, chs] = await Promise.all([
+      const [feat, mov, ser, anim, kid, cats, chs, publicChannels] = await Promise.all([
         api.getHome('featured', 1, force),
         api.getHome('movies', 1, force),
         api.getHome('series', 1, force),
@@ -338,6 +340,7 @@ export const App: React.FC = () => {
         api.getHome('kids', 1, force),
         api.getLiveColumns(force),
         api.getLiveChannels('all', 1, 100, force),
+        api.getPublicMoviesChannels(force),
       ]);
 
       if (feat.length > 0) setHomeFeatured(feat);
@@ -347,6 +350,7 @@ export const App: React.FC = () => {
       if (kid.length > 0) setKids(kid);
       if (cats.length > 0) setCategories(cats);
       if (chs.length > 0) setChannels(chs);
+      else if (publicChannels.length > 0) setChannels(publicChannels);
     } catch (err) {
       console.error('Error loading initial data:', err);
     } finally {
@@ -363,9 +367,7 @@ export const App: React.FC = () => {
     setSelectedCategory(catId);
     setIsLoading(true);
     try {
-      const chs = catId === 'public_movies'
-        ? await api.getPublicMoviesChannels(false)
-        : await api.getLiveChannels(catId, 1, 200, false);
+      const chs = await api.getLiveChannels(catId, 1, 200, false);
       setChannels(chs);
     } catch (err) {
       console.error('Error fetching category channels:', err);
@@ -375,10 +377,6 @@ export const App: React.FC = () => {
   };
 
   const handleCategorySelect = async (catId: string) => {
-    if (catId === 'public_movies') {
-      await loadCategoryChannels(catId);
-      return;
-    }
     const catObj = categories.find((c) => c.id === catId);
     if (isAdultCategory(catObj || { id: catId }) && !isAdultUnlocked) {
       setPinInput('');
@@ -571,9 +569,20 @@ export const App: React.FC = () => {
   }, [categories, hideAdultCategory]);
 
   const visibleLiveChannels = useMemo(() => {
-    if (isAdultUnlocked) return channels;
-    return channels.filter((c) => !isAdultChannel(c));
-  }, [channels, isAdultUnlocked]);
+    const query = liveQuery.trim().toLocaleLowerCase('es');
+    let list = isAdultUnlocked ? channels : channels.filter((c) => !isAdultChannel(c));
+    if (query) {
+      list = list.filter((channel) =>
+        `${channel.name || ''} ${channel.category || ''} ${channel.channelCode || ''}`
+          .toLocaleLowerCase('es')
+          .includes(query)
+      );
+    }
+    if (liveSort === 'title') {
+      list = [...list].sort((a, b) => a.name.localeCompare(b.name, 'es'));
+    }
+    return list;
+  }, [channels, isAdultUnlocked, liveQuery, liveSort]);
 
   const homeLiveChannels = useMemo(() => {
     return channels.filter((c) => !isAdultChannel(c));
@@ -1590,7 +1599,7 @@ export const App: React.FC = () => {
                     </div>
 
                     {/* Category Scrolling Pills */}
-                    {(
+                    {visibleCategories.length > 0 && (
                       <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
                         <button
                           type="button"
@@ -1601,19 +1610,7 @@ export const App: React.FC = () => {
                               : 'bg-[#242424] text-zinc-300 hover:text-white border border-zinc-800'
                           }`}
                         >
-                          Todos ({visibleCategories.length})
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleCategorySelect('public_movies')}
-                          className={`text-xs px-3.5 py-1.5 rounded-full font-semibold transition-all cursor-pointer whitespace-nowrap inline-flex items-center gap-1.5 ${
-                            selectedCategory === 'public_movies'
-                              ? 'bg-white text-black font-bold shadow'
-                              : 'bg-[#242424] text-zinc-300 hover:text-white border border-zinc-800'
-                          }`}
-                        >
-                          <Film className="w-3 h-3" />
-                          <span>Películas en vivo</span>
+                          Todos
                         </button>
                         {visibleCategories.map((cat) => {
                           const adultCat = isAdultCategory(cat);
@@ -1637,6 +1634,40 @@ export const App: React.FC = () => {
                         })}
                       </div>
                     )}
+
+                    <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+                      <label className="relative flex-1 max-w-md">
+                        <span className="sr-only">Buscar canal en vivo</span>
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                        <input
+                          type="search"
+                          value={liveQuery}
+                          onChange={(event) => setLiveQuery(event.target.value)}
+                          placeholder="Buscar canal o categoría"
+                          className="w-full h-9 rounded-md border border-zinc-800 bg-[#171717] pl-9 pr-3 text-sm text-white placeholder:text-zinc-500 outline-none transition-colors focus:border-zinc-500"
+                        />
+                      </label>
+                      <label className="flex items-center gap-2 self-start sm:self-auto">
+                        <span className="text-xs text-zinc-500">Ordenar</span>
+                        <select
+                          value={liveSort}
+                          onChange={(event) => setLiveSort(event.target.value as 'recommended' | 'title')}
+                          className="h-9 rounded-md border border-zinc-800 bg-[#171717] px-3 text-xs font-semibold text-zinc-200 outline-none focus:border-zinc-500"
+                        >
+                          <option value="recommended">Recomendados</option>
+                          <option value="title">Nombre: A–Z</option>
+                        </select>
+                      </label>
+                      {liveQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setLiveQuery('')}
+                          className="h-9 px-3 text-xs font-semibold text-zinc-300 hover:text-white transition-colors"
+                        >
+                          Limpiar
+                        </button>
+                      )}
+                    </div>
 
                     {/* Channels Grid */}
                     <div className="results-grid">
