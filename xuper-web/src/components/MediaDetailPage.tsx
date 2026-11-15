@@ -49,6 +49,8 @@ export interface EpisodePlaybackMeta {
   seasonNumber: number;
   episodeNumber: number;
   episodeTitle: string;
+  seasons?: Season[];
+  episodes?: Episode[];
 }
 
 interface MediaDetailPageProps {
@@ -365,6 +367,11 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
             ? savedEpProg.currentTime
             : 0;
 
+        const seasonEpisodesForPlayback =
+          seriesId === selectedSeasonId
+            ? seasonEpisodes
+            : seasonCache[seriesId]?.episodes || [];
+
         onPlayEpisode(
           res.url,
           targetItem.title || media.title,
@@ -379,6 +386,8 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
             seasonNumber: seasonNum,
             episodeNumber: ep.number,
             episodeTitle: cleanEpTitle,
+            seasons,
+            episodes: seasonEpisodesForPlayback,
           },
           targetItem
         );

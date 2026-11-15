@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import Hls from 'hls.js';
 import {
   Play,
@@ -24,6 +24,13 @@ import {
   Sliders,
   AudioWaveform,
   AlertTriangle,
+  SkipForward,
+  SkipBack,
+  Lock,
+  Unlock,
+  Sun,
+  Sparkles,
+  Layers,
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -45,7 +52,8 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
 } from './ui/alert-dialog';
-import { Channel, SubtitleTrack, AudioLanguage } from '../services/api';
+import { api, Channel, SubtitleTrack, AudioLanguage, Episode, Season } from '../services/api';
+import { EpisodeProgressEntry } from '../lib/firebase';
 import { MaicaoflixLogo } from './MaicaoflixLogo';
 
 interface SubtitleCue {
@@ -95,6 +103,15 @@ function parseVttCues(vttText: string): SubtitleCue[] {
   return result;
 }
 
+interface PlayerEpisodeMeta {
+  seasonId: string;
+  seasonNumber: number;
+  episodeNumber: number;
+  episodeTitle: string;
+  seasons?: Season[];
+  episodes?: Episode[];
+}
+
 interface PlayerProps {
   url: string;
   title: string;
@@ -104,11 +121,33 @@ interface PlayerProps {
   subtitles?: SubtitleTrack[];
   audioLanguages?: AudioLanguage[];
   channels?: Channel[];
+  contentId?: string;
+  seriesId?: string;
+  rootSeriesId?: string;
+  episodeMeta?: PlayerEpisodeMeta;
+  episodeProgressMap?: Record<string, EpisodeProgressEntry>;
   onSelectChannel?: (channel: Channel) => void;
+  onSelectEpisode?: (
+    ep: Episode,
+    seasonId: string,
+    seasonNumber: number,
+    seasonsList?: Season[],
+    episodesList?: Episode[]
+  ) => Promise<void> | void;
   onSwitchAudioTrack?: (trackIndex: number) => void;
   onProgressUpdate?: (currentTime: number, duration: number) => void;
   onClose: () => void;
 }
+
+export const cleanEpisodeTitleText = (raw: string): string => {
+  if (!raw) return '';
+  return (
+    raw
+      .replace(/^.*?T\d+[-_ ]*E?\d*[:\-_ ]*/i, '')
+      .replace(/^Capítulo\s*\d+[:\-_ ]*/i, '')
+      .trim() || raw
+  );
+};
 
 const EMPTY_SUBTITLES: SubtitleTrack[] = [];
 const EMPTY_AUDIO_LANGUAGES: AudioLanguage[] = [];
@@ -142,7 +181,13 @@ export const Player: React.FC<PlayerProps> = ({
   subtitles = EMPTY_SUBTITLES,
   audioLanguages = EMPTY_AUDIO_LANGUAGES,
   channels = EMPTY_CHANNELS,
+  contentId,
+  seriesId,
+  rootSeriesId,
+  episodeMeta,
+  episodeProgressMap,
   onSelectChannel,
+  onSelectEpisode,
   onSwitchAudioTrack,
   onProgressUpdate,
   onClose,
@@ -182,10 +227,46 @@ export const Player: React.FC<PlayerProps> = ({
 
   // Modals & Panels
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'audio' | 'subtitles' | 'quality' | 'speed'>('audio');
+  const [settingsTab, setSettingsTab] = useState<'audio' | 'subtitles' | 'quality' | 'speed' | 'image'>('audio');
   const [showChannelDrawer, setShowChannelDrawer] = useState(false);
   const [channelSearch, setChannelSearch] = useState('');
   const [errorAlert, setErrorAlert] = useState<{ open: boolean; message: string } | null>(null);
+
+  // Series Episode Switcher & Auto-Next
+  const isSeriesPlayback = Boolean(!isLive && onSelectEpisode && (episodeMeta || seriesId));
+  const currentSeasonId = episodeMeta?.seasonId || seriesId || '';
+  const currentSeasonNumber = episodeMeta?.seasonNumber || 1;
+  const [seasonsList, setSeasonsList] = useState<Season[]>(episodeMeta?.seasons || []);
+  const [playingSeasonEpisodes, setPlayingSeasonEpisodes] = useState<Episode[]>(
+    episodeMeta?.episodes || []
+  );
+  const [showEpisodeDrawer, setShowEpisodeDrawer] = useState(false);
+  const [drawerSeasonId, setDrawerSeasonId] = useState<string>(currentSeasonId);
+  const [drawerSeasonNumber, setDrawerSeasonNumber] = useState<number>(currentSeasonNumber);
+  const [drawerEpisodes, setDrawerEpisodes] = useState<Episode[]>(episodeMeta?.episodes || []);
+  const [drawerLoading, setDrawerLoading] = useState(false);
+  const [episodeSearch, setEpisodeSearch] = useState('');
+  const [isSwitchingEpisode, setIsSwitchingEpisode] = useState<string | null>(null);
+  const episodeCacheRef = useRef<Record<string, Episode[]>>({});
+
+  const [autoPlayNext, setAutoPlayNext] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('maicaoflix_autoplay_next') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const [autoNextCountdown, setAutoNextCountdown] = useState<number | null>(null);
+  const [autoNextCancelled, setAutoNextCancelled] = useState<boolean>(false);
+
+  // Pro Player Controls (Lock, Skip Intro, Timeline Hover Preview, Remaining Time, Brightness/Preset)
+  const [isControlsLocked, setIsControlsLocked] = useState(false);
+  const [lockedNoticeVisible, setLockedNoticeVisible] = useState(false);
+  const [skipIntroDismissed, setSkipIntroDismissed] = useState(false);
+  const [showRemainingTime, setShowRemainingTime] = useState(false);
+  const [hoverSeek, setHoverSeek] = useState<{ time: number; percent: number } | null>(null);
+  const [videoBrightness, setVideoBrightness] = useState<number>(100);
+  const [picturePreset, setPicturePreset] = useState<'standard' | 'cinema' | 'vivid'>('standard');
 
   const savedPositionRef = useRef<number>(0);
   const lastInitKeyRef = useRef<string>('');
@@ -194,6 +275,7 @@ export const Player: React.FC<PlayerProps> = ({
   const onProgressUpdateRef = useRef(onProgressUpdate);
   onProgressUpdateRef.current = onProgressUpdate;
   const resumeBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lockedNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const flushProgress = useCallback(() => {
@@ -206,6 +288,207 @@ export const Player: React.FC<PlayerProps> = ({
     flushProgress();
     onClose();
   }, [flushProgress, onClose]);
+
+  // Sync incoming episode metadata & hydrate seasons/episodes when launched directly (e.g., from Continue Watching)
+  useEffect(() => {
+    if (!isSeriesPlayback) return;
+
+    if (episodeMeta?.seasons && episodeMeta.seasons.length > 0) {
+      const sorted = episodeMeta.seasons.slice().sort((a, b) => a.number - b.number);
+      setSeasonsList(sorted);
+    }
+    if (episodeMeta?.episodes && episodeMeta.episodes.length > 0 && currentSeasonId) {
+      episodeCacheRef.current[currentSeasonId] = episodeMeta.episodes;
+      setPlayingSeasonEpisodes(episodeMeta.episodes);
+      if (!drawerSeasonId || drawerSeasonId === currentSeasonId) {
+        setDrawerSeasonId(currentSeasonId);
+        setDrawerSeasonNumber(currentSeasonNumber);
+        setDrawerEpisodes(episodeMeta.episodes);
+      }
+      return;
+    }
+
+    const fetchTargetId = currentSeasonId || rootSeriesId || '';
+    if (!fetchTargetId) return;
+    if (episodeCacheRef.current[fetchTargetId]?.length) {
+      const cached = episodeCacheRef.current[fetchTargetId];
+      setPlayingSeasonEpisodes(cached);
+      if (!drawerSeasonId || drawerSeasonId === fetchTargetId) {
+        setDrawerSeasonId(fetchTargetId);
+        setDrawerSeasonNumber(currentSeasonNumber);
+        setDrawerEpisodes(cached);
+      }
+      return;
+    }
+
+    let isMounted = true;
+    setDrawerLoading(true);
+    api
+      .getDetail(fetchTargetId)
+      .then((res) => {
+        if (!isMounted || !res) return;
+        const eps = res.episodes || [];
+        let rawSeasons = (res.seasons || []).slice().sort((a, b) => a.number - b.number);
+        if (rawSeasons.length === 0 && eps.length > 0) {
+          rawSeasons = [
+            {
+              id: fetchTargetId,
+              number: currentSeasonNumber,
+              name: `Temporada ${currentSeasonNumber}`,
+            },
+          ];
+        }
+        if (rawSeasons.length > 0) {
+          setSeasonsList(rawSeasons);
+        }
+        if (eps.length > 0) {
+          episodeCacheRef.current[fetchTargetId] = eps;
+          setPlayingSeasonEpisodes(eps);
+          setDrawerSeasonId(fetchTargetId);
+          setDrawerSeasonNumber(currentSeasonNumber);
+          setDrawerEpisodes(eps);
+        }
+      })
+      .catch((err) => {
+        console.warn('Error hydrating series episodes inside Player:', err);
+      })
+      .finally(() => {
+        if (isMounted) setDrawerLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isSeriesPlayback, currentSeasonId, currentSeasonNumber, rootSeriesId, episodeMeta]);
+
+  const handleDrawerSeasonChange = async (newSeasonId: string) => {
+    setDrawerSeasonId(newSeasonId);
+    const chosen = seasonsList.find((s) => s.id === newSeasonId);
+    if (chosen) {
+      setDrawerSeasonNumber(chosen.number);
+    }
+    if (episodeCacheRef.current[newSeasonId]) {
+      setDrawerEpisodes(episodeCacheRef.current[newSeasonId]);
+      return;
+    }
+    setDrawerLoading(true);
+    try {
+      const res = await api.getDetail(newSeasonId);
+      if (res?.episodes) {
+        episodeCacheRef.current[newSeasonId] = res.episodes;
+        setDrawerEpisodes(res.episodes);
+      }
+    } catch (err) {
+      console.warn('Error fetching drawer season episodes:', err);
+    } finally {
+      setDrawerLoading(false);
+    }
+  };
+
+  const currentEpIndex = useMemo(() => {
+    if (!playingSeasonEpisodes.length) return -1;
+    if (contentId) {
+      const byId = playingSeasonEpisodes.findIndex((e) => e.id === contentId);
+      if (byId !== -1) return byId;
+    }
+    if (episodeMeta?.episodeNumber) {
+      return playingSeasonEpisodes.findIndex((e) => e.number === episodeMeta.episodeNumber);
+    }
+    return -1;
+  }, [playingSeasonEpisodes, contentId, episodeMeta?.episodeNumber]);
+
+  const prevEpisode = useMemo(() => {
+    return currentEpIndex > 0 ? playingSeasonEpisodes[currentEpIndex - 1] : null;
+  }, [playingSeasonEpisodes, currentEpIndex]);
+
+  const nextEpisode = useMemo(() => {
+    return currentEpIndex >= 0 && currentEpIndex + 1 < playingSeasonEpisodes.length
+      ? playingSeasonEpisodes[currentEpIndex + 1]
+      : null;
+  }, [playingSeasonEpisodes, currentEpIndex]);
+
+  const triggerEpisodeChange = useCallback(
+    async (
+      ep: Episode,
+      targetSeasonId: string,
+      targetSeasonNumber: number,
+      customEpisodesList?: Episode[]
+    ) => {
+      if (!onSelectEpisode || isSwitchingEpisode) return;
+      flushProgress();
+      setAutoNextCountdown(null);
+      setAutoNextCancelled(false);
+      setShowEpisodeDrawer(false);
+      const label = cleanEpisodeTitleText(ep.name || ep.title || `Episodio ${ep.number}`);
+      setIsSwitchingEpisode(`T${targetSeasonNumber}:E${ep.number} — ${label}`);
+      try {
+        await onSelectEpisode(
+          ep,
+          targetSeasonId,
+          targetSeasonNumber,
+          seasonsList,
+          customEpisodesList || playingSeasonEpisodes
+        );
+      } finally {
+        setIsSwitchingEpisode(null);
+      }
+    },
+    [onSelectEpisode, isSwitchingEpisode, flushProgress, seasonsList, playingSeasonEpisodes]
+  );
+
+  // Reset per-video transient banners whenever active source URL changes
+  useEffect(() => {
+    setAutoNextCountdown(null);
+    setAutoNextCancelled(false);
+    setSkipIntroDismissed(false);
+    setHoverSeek(null);
+  }, [url]);
+
+  // Clear stale subtitle selection if episode/source changes and no longer includes that track
+  useEffect(() => {
+    setSelectedSubtitle((prev) =>
+      prev !== 'none' && !subtitles.some((s) => s.url === prev) ? 'none' : prev
+    );
+  }, [url, subtitles]);
+
+  // Countdown tick for Auto-Next episode
+  useEffect(() => {
+    if (autoNextCountdown === null) return;
+    if (autoNextCountdown <= 0) {
+      setAutoNextCountdown(null);
+      if (nextEpisode && currentSeasonId) {
+        triggerEpisodeChange(nextEpisode, currentSeasonId, currentSeasonNumber);
+      }
+      return;
+    }
+    const timer = setTimeout(() => {
+      setAutoNextCountdown((prev) => (prev !== null ? prev - 1 : null));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [autoNextCountdown, nextEpisode, currentSeasonId, currentSeasonNumber, triggerEpisodeChange]);
+
+  const videoFilterStyle = useMemo(() => {
+    const brightnessVal = videoBrightness / 100;
+    if (picturePreset === 'cinema') {
+      return `brightness(${brightnessVal}) contrast(1.08) saturate(0.95)`;
+    }
+    if (picturePreset === 'vivid') {
+      return `brightness(${brightnessVal}) contrast(1.1) saturate(1.22)`;
+    }
+    return `brightness(${brightnessVal})`;
+  }, [videoBrightness, picturePreset]);
+
+  const toggleAutoPlayNext = () => {
+    setAutoPlayNext((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('maicaoflix_autoplay_next', next ? '1' : '0');
+      } catch {
+        // ignore storage failure
+      }
+      return next;
+    });
+  };
 
   // Initialize and play HLS stream
   const initHls = useCallback(() => {
@@ -489,6 +772,9 @@ export const Player: React.FC<PlayerProps> = ({
       if (resumeBannerTimerRef.current) {
         clearTimeout(resumeBannerTimerRef.current);
       }
+      if (lockedNoticeTimerRef.current) {
+        clearTimeout(lockedNoticeTimerRef.current);
+      }
     };
   }, [initHls]);
 
@@ -594,9 +880,45 @@ export const Player: React.FC<PlayerProps> = ({
           e.preventDefault();
           adjustVolume(-0.1);
           break;
+        case 'n':
+        case 'N':
+          if (nextEpisode && currentSeasonId) {
+            e.preventDefault();
+            triggerEpisodeChange(nextEpisode, currentSeasonId, currentSeasonNumber);
+          }
+          break;
+        case 'e':
+        case 'E':
+          if (isSeriesPlayback) {
+            e.preventDefault();
+            setShowChannelDrawer(false);
+            setShowEpisodeDrawer((prev) => !prev);
+          }
+          break;
+        case 'l':
+        case 'L':
+          e.preventDefault();
+          setIsControlsLocked((prev) => {
+            const next = !prev;
+            if (next) {
+              setShowControls(false);
+              setLockedNoticeVisible(true);
+            } else {
+              setLockedNoticeVisible(false);
+              setShowControls(true);
+            }
+            return next;
+          });
+          break;
         case 'Escape':
-          if (showSettingsDialog) {
+          if (isControlsLocked) {
+            setIsControlsLocked(false);
+            setLockedNoticeVisible(false);
+            setShowControls(true);
+          } else if (showSettingsDialog) {
             setShowSettingsDialog(false);
+          } else if (showEpisodeDrawer) {
+            setShowEpisodeDrawer(false);
           } else if (showChannelDrawer) {
             setShowChannelDrawer(false);
           } else if (errorAlert) {
@@ -610,7 +932,23 @@ export const Player: React.FC<PlayerProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showSettingsDialog, showChannelDrawer, errorAlert, isPlaying, isMuted, volume, duration, handleClose]);
+  }, [
+    showSettingsDialog,
+    showChannelDrawer,
+    showEpisodeDrawer,
+    isControlsLocked,
+    isSeriesPlayback,
+    nextEpisode,
+    currentSeasonId,
+    currentSeasonNumber,
+    triggerEpisodeChange,
+    errorAlert,
+    isPlaying,
+    isMuted,
+    volume,
+    duration,
+    handleClose,
+  ]);
 
   // Playback actions
   const togglePlay = () => {
@@ -797,24 +1135,50 @@ export const Player: React.FC<PlayerProps> = ({
   const resetControlsTimer = useCallback(() => {
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     controlsTimeoutRef.current = setTimeout(() => {
-      if (isPlaying && !showSettingsDialog && !showChannelDrawer) {
+      if (
+        isPlaying &&
+        !showSettingsDialog &&
+        !showChannelDrawer &&
+        !showEpisodeDrawer &&
+        autoNextCountdown === null
+      ) {
         setShowControls(false);
       }
     }, 4500);
-  }, [isPlaying, showSettingsDialog, showChannelDrawer]);
+  }, [isPlaying, showSettingsDialog, showChannelDrawer, showEpisodeDrawer, autoNextCountdown]);
 
   useEffect(() => {
-    if (isPlaying && !showSettingsDialog && !showChannelDrawer) {
+    if (isControlsLocked) {
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+      setShowControls(false);
+      return;
+    }
+    if (
+      isPlaying &&
+      !showSettingsDialog &&
+      !showChannelDrawer &&
+      !showEpisodeDrawer &&
+      autoNextCountdown === null
+    ) {
       resetControlsTimer();
     } else if (controlsTimeoutRef.current) {
       clearTimeout(controlsTimeoutRef.current);
     }
-  }, [isPlaying, showSettingsDialog, showChannelDrawer, resetControlsTimer]);
+  }, [
+    isPlaying,
+    isControlsLocked,
+    showSettingsDialog,
+    showChannelDrawer,
+    showEpisodeDrawer,
+    autoNextCountdown,
+    resetControlsTimer,
+  ]);
 
   const wakeControls = useCallback(() => {
+    if (isControlsLocked) return;
     setShowControls(true);
     resetControlsTimer();
-  }, [resetControlsTimer]);
+  }, [isControlsLocked, resetControlsTimer]);
 
   // Double tap to seek state & visual feedback
   const [seekFeedback, setSeekFeedback] = useState<{
@@ -833,6 +1197,15 @@ export const Player: React.FC<PlayerProps> = ({
   };
 
   const handleScreenInteraction = (clientX?: number) => {
+    if (isControlsLocked) {
+      setLockedNoticeVisible(true);
+      if (lockedNoticeTimerRef.current) clearTimeout(lockedNoticeTimerRef.current);
+      lockedNoticeTimerRef.current = setTimeout(() => {
+        setLockedNoticeVisible(false);
+      }, 2800);
+      return;
+    }
+
     const now = Date.now();
     const timeSinceLastTap = now - lastTapRef.current.time;
 
@@ -870,6 +1243,7 @@ export const Player: React.FC<PlayerProps> = ({
   };
 
   const handleMouseMove = () => {
+    if (isControlsLocked) return;
     wakeControls();
   };
 
@@ -909,6 +1283,7 @@ export const Player: React.FC<PlayerProps> = ({
         crossOrigin="anonymous"
         autoPlay
         playsInline
+        style={{ filter: videoFilterStyle }}
         onTimeUpdate={() => {
           if (videoRef.current) {
             const cur = videoRef.current.currentTime;
@@ -949,6 +1324,9 @@ export const Player: React.FC<PlayerProps> = ({
         onPlaying={() => {
           setIsLoading(false);
           setIsPlaying(true);
+          if (videoRef.current && videoRef.current.playbackRate !== playbackRate) {
+            videoRef.current.playbackRate = playbackRate;
+          }
         }}
         onPause={() => {
           setIsPlaying(false);
@@ -956,8 +1334,13 @@ export const Player: React.FC<PlayerProps> = ({
         }}
         onEnded={() => {
           setIsPlaying(false);
-          setShowControls(true);
           flushProgress();
+          if (!isLive && autoPlayNext && nextEpisode && !autoNextCancelled) {
+            setAutoNextCountdown(6);
+          }
+          if (!isControlsLocked) {
+            setShowControls(true);
+          }
         }}
         onError={() => {
           if (!hlsRef.current) {
@@ -1056,8 +1439,162 @@ export const Player: React.FC<PlayerProps> = ({
         </button>
       )}
 
+      {/* Skip Intro Button (VOD Series) */}
+      {!isLive &&
+        isSeriesPlayback &&
+        !isControlsLocked &&
+        !isLoading &&
+        !isSwitchingEpisode &&
+        duration > 300 &&
+        progress >= 8 &&
+        progress <= 115 &&
+        !skipIntroDismissed && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            onTouchEnd={(e) => e.stopPropagation()}
+            className={`absolute left-4 sm:left-8 z-30 flex items-center gap-1.5 transition-all duration-200 ${
+              showControls ? 'bottom-28 sm:bottom-32' : 'bottom-10 sm:bottom-14'
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                skipSeconds(85);
+                setSkipIntroDismissed(true);
+                wakeControls();
+              }}
+              className="inline-flex items-center gap-2 rounded-md border border-white/25 bg-black/85 hover:bg-white hover:text-black text-white px-4 py-2 text-xs sm:text-sm font-bold shadow-2xl backdrop-blur-md transition-colors cursor-pointer"
+            >
+              <SkipForward className="h-4 w-4" />
+              <span>Omitir intro (+85s)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSkipIntroDismissed(true)}
+              title="Ocultar botón"
+              className="h-8 w-8 rounded-md border border-white/15 bg-black/75 hover:bg-zinc-800 text-zinc-300 hover:text-white flex items-center justify-center cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
+      {/* Switching Episode Overlay */}
+      {isSwitchingEpisode && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          onTouchEnd={(e) => e.stopPropagation()}
+          className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-md z-40 px-4 text-center"
+        >
+          <Loader2 className="h-10 w-10 text-red-500 animate-spin" />
+          <p className="mt-3 text-xs font-semibold uppercase tracking-widest text-zinc-400">
+            Cargando episodio
+          </p>
+          <p className="mt-1 text-sm sm:text-base font-bold text-white max-w-md truncate">
+            {isSwitchingEpisode}
+          </p>
+        </div>
+      )}
+
+      {/* Up-Next / Auto-Next Countdown Card */}
+      {!isLive &&
+        isSeriesPlayback &&
+        autoPlayNext &&
+        nextEpisode &&
+        !autoNextCancelled &&
+        !isSwitchingEpisode &&
+        (autoNextCountdown !== null ||
+          (duration > 60 && duration - progress <= 22 && duration - progress > 0.5)) && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            onTouchEnd={(e) => e.stopPropagation()}
+            className="absolute bottom-28 sm:bottom-32 right-4 sm:right-8 z-30 w-80 sm:w-96 rounded-xl border border-white/15 bg-zinc-950/95 backdrop-blur-xl p-3.5 shadow-2xl animate-in slide-in-from-bottom-4 duration-200"
+          >
+            <div className="flex items-start gap-3">
+              {nextEpisode.picture ? (
+                <img
+                  src={nextEpisode.picture}
+                  alt={cleanEpisodeTitleText(
+                    nextEpisode.name || nextEpisode.title || `Episodio ${nextEpisode.number}`
+                  )}
+                  className="w-24 aspect-video rounded-lg object-cover shrink-0 bg-zinc-900 border border-white/10"
+                />
+              ) : (
+                <div className="w-24 aspect-video rounded-lg bg-zinc-900 border border-white/10 flex items-center justify-center shrink-0">
+                  <Play className="h-5 w-5 text-zinc-500" />
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-red-400">
+                  {autoNextCountdown !== null
+                    ? `Siguiente episodio en ${autoNextCountdown}s`
+                    : 'A continuación'}
+                </p>
+                <p className="text-xs sm:text-sm font-bold text-white line-clamp-2 mt-0.5">
+                  T{currentSeasonNumber}:E{nextEpisode.number} •{' '}
+                  {cleanEpisodeTitleText(
+                    nextEpisode.name || nextEpisode.title || `Episodio ${nextEpisode.number}`
+                  )}
+                </p>
+              </div>
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setAutoNextCountdown(null);
+                  setAutoNextCancelled(true);
+                }}
+                className="h-8 text-xs text-zinc-300 hover:text-white cursor-pointer"
+              >
+                {autoNextCountdown !== null ? 'Cancelar' : 'Ocultar'}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() =>
+                  triggerEpisodeChange(
+                    nextEpisode,
+                    currentSeasonId,
+                    currentSeasonNumber,
+                    playingSeasonEpisodes
+                  )
+                }
+                className="h-8 text-xs font-bold bg-white text-black hover:bg-zinc-200 gap-1.5 cursor-pointer"
+              >
+                <Play className="h-3.5 w-3.5 fill-current" />
+                <span>Reproducir ahora</span>
+              </Button>
+            </div>
+          </div>
+        )}
+
+      {/* Locked Screen Unlock Pill */}
+      {isControlsLocked && (lockedNoticeVisible || !isPlaying) && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          onTouchEnd={(e) => e.stopPropagation()}
+          className="absolute bottom-8 left-1/2 -translate-x-1/2 z-40"
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setIsControlsLocked(false);
+              setLockedNoticeVisible(false);
+              wakeControls();
+            }}
+            className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-black/85 hover:bg-zinc-900 px-4 py-2 text-xs font-semibold text-white shadow-2xl backdrop-blur-md cursor-pointer"
+          >
+            <Unlock className="h-4 w-4 text-red-400" />
+            <span>Controles bloqueados • Toca para desbloquear</span>
+          </button>
+        </div>
+      )}
+
       {/* Centered Large Play/Pause Touch Control */}
-      {showControls && !isPlaying && !isLoading && (
+      {showControls && !isControlsLocked && !isPlaying && !isLoading && !isSwitchingEpisode && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
           <button
             onClick={(e) => {
@@ -1078,7 +1615,7 @@ export const Player: React.FC<PlayerProps> = ({
           resetControlsTimer();
         }}
         className={`absolute top-0 left-0 right-0 p-4 sm:p-5 bg-gradient-to-b from-black/95 via-black/50 to-transparent flex items-center justify-between transition-opacity duration-300 z-20 ${
-          showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          showControls && !isControlsLocked ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
         <div className="flex items-center gap-3 min-w-0 pr-2">
@@ -1108,12 +1645,55 @@ export const Player: React.FC<PlayerProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Quick Episodes Drawer Trigger for Series */}
+          {isSeriesPlayback && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setShowEpisodeDrawer((prev) => !prev);
+                setShowChannelDrawer(false);
+              }}
+              className={`gap-1.5 rounded-md border-white/15 bg-black/35 hover:bg-white/10 hover:text-white text-xs h-9 cursor-pointer ${
+                showEpisodeDrawer ? 'border-red-500/60 text-white bg-red-950/30' : 'text-zinc-200'
+              }`}
+              title="Episodios y temporadas (E)"
+            >
+              <Layers className="h-4 w-4 text-red-400" />
+              <span className="hidden sm:inline">Episodios</span>
+            </Button>
+          )}
+
+          {/* Lock Screen Controls */}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              setIsControlsLocked(true);
+              setShowControls(false);
+              setShowEpisodeDrawer(false);
+              setShowChannelDrawer(false);
+              setLockedNoticeVisible(true);
+              if (lockedNoticeTimerRef.current) clearTimeout(lockedNoticeTimerRef.current);
+              lockedNoticeTimerRef.current = setTimeout(() => {
+                setLockedNoticeVisible(false);
+              }, 2600);
+            }}
+            className="rounded-full text-zinc-300 hover:text-white hover:bg-white/10 h-9 w-9 cursor-pointer"
+            title="Bloquear pantalla (L)"
+          >
+            <Lock className="h-4 w-4" />
+          </Button>
+
           {/* Quick Channels Guide for Live TV */}
           {channels.length > 0 && (
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setShowChannelDrawer(!showChannelDrawer)}
+              onClick={() => {
+                setShowChannelDrawer(!showChannelDrawer);
+                setShowEpisodeDrawer(false);
+              }}
               className="gap-2 rounded-md border-white/15 bg-black/35 text-zinc-200 hover:bg-white/10 hover:text-white text-xs h-9"
             >
               <ListVideo className="h-4 w-4" />
@@ -1145,9 +1725,179 @@ export const Player: React.FC<PlayerProps> = ({
         </div>
       </div>
 
+      {/* Quick Episodes & Seasons Sidebar Drawer (For Series) */}
+      {showEpisodeDrawer && isSeriesPlayback && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          onTouchEnd={(e) => e.stopPropagation()}
+          className="absolute top-0 right-0 bottom-0 w-80 sm:w-96 bg-zinc-950/95 backdrop-blur-xl border-l border-zinc-800/80 z-40 p-4 flex flex-col shadow-2xl animate-in slide-in-from-right duration-200"
+        >
+          <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+            <div className="flex items-center gap-2">
+              <Layers className="h-4 w-4 text-red-500" />
+              <h3 className="text-sm font-bold text-white">Episodios y Temporadas</h3>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowEpisodeDrawer(false)}
+              className="h-7 w-7 text-zinc-400 hover:text-white cursor-pointer"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {seasonsList.length > 0 && (
+            <div className="mt-3">
+              <select
+                value={drawerSeasonId}
+                onChange={(e) => handleDrawerSeasonChange(e.target.value)}
+                aria-label="Seleccionar temporada"
+                className="w-full h-9 rounded-md bg-zinc-900 border border-zinc-800 px-3 text-xs font-semibold text-white focus:outline-none focus:border-red-500 cursor-pointer"
+              >
+                {seasonsList.map((s) => {
+                  const seasonKey = s.id || drawerSeasonId;
+                  return (
+                    <option key={`${seasonKey}-${s.number}`} value={seasonKey}>
+                      {s.name || s.title || `Temporada ${s.number}`}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          )}
+
+          <div className="my-3">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-500" />
+              <Input
+                placeholder="Buscar episodio o número..."
+                value={episodeSearch}
+                onChange={(e) => setEpisodeSearch(e.target.value)}
+                className="pl-8 text-xs h-8 bg-zinc-900 border-zinc-800 text-white"
+              />
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
+            {drawerLoading ? (
+              <div className="flex flex-col items-center justify-center py-12 text-zinc-400 gap-2">
+                <Loader2 className="h-6 w-6 animate-spin text-red-500" />
+                <span className="text-xs">Cargando episodios...</span>
+              </div>
+            ) : drawerEpisodes.length === 0 ? (
+              <p className="text-xs text-zinc-500 text-center py-8">
+                No se encontraron episodios para esta temporada.
+              </p>
+            ) : (
+              drawerEpisodes
+                .filter((ep) => {
+                  const q = episodeSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  const epLabel = cleanEpisodeTitleText(
+                    ep.name || ep.title || `Episodio ${ep.number}`
+                  ).toLowerCase();
+                  return (
+                    epLabel.includes(q) ||
+                    String(ep.number).includes(q) ||
+                    `e${ep.number}`.includes(q)
+                  );
+                })
+                .map((ep) => {
+                  const isActiveEp =
+                    (contentId && ep.id === contentId) ||
+                    (!contentId &&
+                      drawerSeasonId === currentSeasonId &&
+                      ep.number === episodeMeta?.episodeNumber);
+                  const epProg = episodeProgressMap?.[ep.id];
+                  const epLabel = cleanEpisodeTitleText(
+                    ep.name || ep.title || `Episodio ${ep.number}`
+                  );
+                  const pct = epProg ? Math.min(100, Math.max(0, epProg.progressPercent || 0)) : 0;
+
+                  return (
+                    <button
+                      key={ep.id}
+                      type="button"
+                      disabled={Boolean(isSwitchingEpisode)}
+                      onClick={() =>
+                        triggerEpisodeChange(
+                          ep,
+                          drawerSeasonId || currentSeasonId,
+                          drawerSeasonNumber || currentSeasonNumber,
+                          drawerEpisodes
+                        )
+                      }
+                      className={`w-full text-left flex items-center gap-3 p-2 rounded-lg border transition-colors cursor-pointer group ${
+                        isActiveEp
+                          ? 'bg-red-950/35 border-red-500/60'
+                          : 'bg-zinc-900/40 hover:bg-zinc-900 border-transparent hover:border-zinc-800'
+                      }`}
+                    >
+                      <div className="relative w-24 aspect-video rounded-md overflow-hidden bg-zinc-900 shrink-0">
+                        {ep.picture ? (
+                          <img
+                            src={ep.picture}
+                            alt={epLabel}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-xs font-bold text-zinc-500">
+                            E{ep.number}
+                          </div>
+                        )}
+                        {pct > 0 && (
+                          <div className="absolute bottom-0 left-0 right-0 h-1 bg-zinc-800/90">
+                            <div
+                              className="h-full bg-red-600"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] font-bold text-zinc-400">
+                            E{ep.number}
+                          </span>
+                          {isActiveEp && (
+                            <Badge className="bg-red-600 text-white text-[9px] px-1.5 py-0 h-4">
+                              EN REPRODUCCIÓN
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-xs font-semibold text-zinc-100 group-hover:text-white truncate mt-0.5">
+                          {epLabel}
+                        </p>
+                        {epProg && epProg.currentTime > 10 && pct < 96 ? (
+                          <span className="text-[10px] text-zinc-400 block mt-0.5">
+                            Visto {formatPlayerTime(epProg.currentTime)}
+                          </span>
+                        ) : pct >= 96 ? (
+                          <span className="text-[10px] text-emerald-400 block mt-0.5">
+                            Completado
+                          </span>
+                        ) : ep.duration ? (
+                          <span className="text-[10px] text-zinc-500 block mt-0.5">
+                            {ep.duration}
+                          </span>
+                        ) : null}
+                      </div>
+                    </button>
+                  );
+                })
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Quick Channels Sidebar Drawer (For Live TV) */}
       {showChannelDrawer && channels.length > 0 && (
-        <div className="absolute top-0 right-0 bottom-0 w-80 bg-zinc-950/95 backdrop-blur-xl border-l border-zinc-800/80 z-40 p-4 flex flex-col shadow-2xl animate-in slide-in-from-right duration-200">
+        <div
+          onClick={(e) => e.stopPropagation()}
+          onTouchEnd={(e) => e.stopPropagation()}
+          className="absolute top-0 right-0 bottom-0 w-80 bg-zinc-950/95 backdrop-blur-xl border-l border-zinc-800/80 z-40 p-4 flex flex-col shadow-2xl animate-in slide-in-from-right duration-200"
+        >
           <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
             <div className="flex items-center gap-2">
               <Tv className="h-4 w-4 text-red-500" />
@@ -1213,13 +1963,30 @@ export const Player: React.FC<PlayerProps> = ({
           resetControlsTimer();
         }}
         className={`absolute bottom-0 left-0 right-0 p-5 bg-gradient-to-t from-black/95 via-black/70 to-transparent transition-opacity duration-300 z-20 ${
-          showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          showControls && !isControlsLocked ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
         {/* Timeline Seekbar (for VOD/Movies/Series) */}
         {!isLive && duration > 0 && duration !== Infinity && (
           <div className="mb-3 space-y-1.5">
-            <div className="relative w-full h-1.5 bg-zinc-700/70 hover:h-2 rounded-full cursor-pointer group transition-all flex items-center">
+            <div
+              onMouseMove={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                if (rect.width <= 0) return;
+                const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+                setHoverSeek({ time: pct * duration, percent: pct * 100 });
+              }}
+              onMouseLeave={() => setHoverSeek(null)}
+              className="relative w-full h-1.5 bg-zinc-700/70 hover:h-2 rounded-full cursor-pointer group transition-all flex items-center"
+            >
+              {hoverSeek && (
+                <div
+                  className="absolute -top-8 -translate-x-1/2 px-2 py-0.5 rounded bg-black/95 border border-white/15 text-[11px] font-mono text-white shadow-lg pointer-events-none whitespace-nowrap z-10"
+                  style={{ left: `clamp(24px, ${hoverSeek.percent}%, calc(100% - 24px))` }}
+                >
+                  {formatTime(hoverSeek.time)}
+                </div>
+              )}
               {/* Buffered progress */}
               {bufferedEnd > 0 && (
                 <div
@@ -1253,7 +2020,16 @@ export const Player: React.FC<PlayerProps> = ({
             </div>
             <div className="flex justify-between text-xs text-zinc-300 font-mono">
               <span>{formatTime(progress)}</span>
-              <span>{formatTime(duration)}</span>
+              <button
+                type="button"
+                onClick={() => setShowRemainingTime((prev) => !prev)}
+                className="hover:text-white transition-colors cursor-pointer"
+                title="Alternar tiempo restante / duración total"
+              >
+                {showRemainingTime
+                  ? `-${formatTime(Math.max(0, duration - progress))}`
+                  : formatTime(duration)}
+              </button>
             </div>
           </div>
         )}
@@ -1294,6 +2070,58 @@ export const Player: React.FC<PlayerProps> = ({
               </>
             )}
 
+            {/* Previous / Next Episode (for Series) */}
+            {isSeriesPlayback && (
+              <div className="flex items-center gap-1 border-l border-white/10 pl-2 ml-0.5">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  disabled={!prevEpisode || Boolean(isSwitchingEpisode)}
+                  onClick={() =>
+                    prevEpisode &&
+                    triggerEpisodeChange(
+                      prevEpisode,
+                      currentSeasonId,
+                      currentSeasonNumber,
+                      playingSeasonEpisodes
+                    )
+                  }
+                  className="text-zinc-300 hover:text-white disabled:opacity-30 rounded-full h-8 w-8 cursor-pointer"
+                  title={
+                    prevEpisode
+                      ? `Episodio anterior (E${prevEpisode.number})`
+                      : 'No hay episodio anterior'
+                  }
+                >
+                  <SkipBack className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  disabled={!nextEpisode || Boolean(isSwitchingEpisode)}
+                  onClick={() =>
+                    nextEpisode &&
+                    triggerEpisodeChange(
+                      nextEpisode,
+                      currentSeasonId,
+                      currentSeasonNumber,
+                      playingSeasonEpisodes
+                    )
+                  }
+                  className="text-zinc-300 hover:text-white disabled:opacity-30 rounded-full h-8 w-8 cursor-pointer"
+                  title={
+                    nextEpisode
+                      ? `Siguiente episodio (E${nextEpisode.number})`
+                      : 'Último episodio de la temporada'
+                  }
+                >
+                  <SkipForward className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+
             {/* Volume Control */}
             <div className="flex items-center gap-2">
               <Button
@@ -1322,6 +2150,25 @@ export const Player: React.FC<PlayerProps> = ({
 
           {/* Right Action Icons */}
           <div className="flex items-center gap-2">
+            {/* Series Episodes Quick Toggle */}
+            {isSeriesPlayback && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  setShowEpisodeDrawer((prev) => !prev);
+                  setShowChannelDrawer(false);
+                }}
+                className={`h-8 w-8 cursor-pointer ${
+                  showEpisodeDrawer ? 'text-red-500 bg-red-950/40' : 'text-zinc-300 hover:text-white'
+                }`}
+                title="Episodios (E)"
+              >
+                <Layers className="h-4 w-4" />
+              </Button>
+            )}
+
             {/* Reconnect / Refresh */}
             <Button
               variant="ghost"
@@ -1382,7 +2229,7 @@ export const Player: React.FC<PlayerProps> = ({
               size="icon"
               onClick={() => setShowSettingsDialog(true)}
               className="h-8 w-8 text-zinc-300 hover:text-white cursor-pointer"
-              title="Audio, Subtítulos y Calidad"
+              title="Audio, Subtítulos, Calidad e Imagen"
             >
               <Settings className="h-4 w-4" />
             </Button>
@@ -1402,7 +2249,7 @@ export const Player: React.FC<PlayerProps> = ({
       </div>
 
       {/* ============================================================ */}
-      {/* SHADCN DIALOG: Audio, Subtitles, Quality & Speed             */}
+      {/* SHADCN DIALOG: Audio, Subtitles, Quality, Speed & Image      */}
       {/* ============================================================ */}
       <Dialog open={showSettingsDialog} onOpenChange={setShowSettingsDialog}>
         <DialogContent className="max-w-md bg-zinc-950 border-zinc-800 text-white">
@@ -1412,12 +2259,12 @@ export const Player: React.FC<PlayerProps> = ({
               <span>Ajustes de Reproducción</span>
             </DialogTitle>
             <DialogDescription className="text-xs text-zinc-400">
-              Personaliza el audio, subtítulos, resolución y velocidad.
+              Personaliza el audio, subtítulos, resolución, velocidad e imagen.
             </DialogDescription>
           </DialogHeader>
 
           {/* Navigation Tabs */}
-          <div className="grid grid-cols-4 gap-1 p-1 bg-zinc-900 rounded-lg text-xs font-semibold">
+          <div className="grid grid-cols-5 gap-1 p-1 bg-zinc-900 rounded-lg text-[11px] sm:text-xs font-semibold">
             <button
               type="button"
               onClick={() => setSettingsTab('audio')}
@@ -1461,6 +2308,17 @@ export const Player: React.FC<PlayerProps> = ({
               }`}
             >
               Velocidad
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettingsTab('image')}
+              className={`py-1.5 rounded-md transition-all cursor-pointer ${
+                settingsTab === 'image'
+                  ? 'bg-zinc-800 text-white shadow'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              Imagen
             </button>
           </div>
 
@@ -1587,12 +2445,111 @@ export const Player: React.FC<PlayerProps> = ({
                   }}
                   className="w-full justify-between text-xs h-9 px-3 font-medium cursor-pointer"
                 >
-                  <span>{rate === 1 ? '1.0x (Normal)' : `${rate}x`}</span>
+                  <div className="flex items-center gap-2">
+                    <Gauge className="h-3.5 w-3.5 text-zinc-400" />
+                    <span>{rate === 1 ? '1.0x (Normal)' : `${rate}x`}</span>
+                  </div>
                   {playbackRate === rate && (
                     <Check className="h-4 w-4 text-red-500 font-bold" />
                   )}
                 </Button>
               ))}
+            </div>
+          )}
+
+          {/* Tab 5: Imagen y Reproducción */}
+          {settingsTab === 'image' && (
+            <div className="py-2 space-y-4">
+              {/* Modo de imagen */}
+              <div className="space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-300">
+                  <Sparkles className="h-3.5 w-3.5 text-red-400" />
+                  <span>Modo de imagen</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(
+                    [
+                      { id: 'standard', label: 'Estándar' },
+                      { id: 'cinema', label: 'Cine' },
+                      { id: 'vivid', label: 'Vívido' },
+                    ] as const
+                  ).map((preset) => (
+                    <Button
+                      key={preset.id}
+                      type="button"
+                      size="sm"
+                      variant={picturePreset === preset.id ? 'secondary' : 'outline'}
+                      onClick={() => setPicturePreset(preset.id)}
+                      className={`h-8 text-xs cursor-pointer ${
+                        picturePreset === preset.id
+                          ? 'bg-red-600 hover:bg-red-700 text-white border-red-500'
+                          : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white'
+                      }`}
+                    >
+                      {preset.label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Brillo */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="flex items-center gap-1.5 font-semibold text-zinc-300">
+                    <Sun className="h-3.5 w-3.5 text-amber-400" />
+                    <span>Brillo</span>
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-zinc-300">{videoBrightness}%</span>
+                    {videoBrightness !== 100 && (
+                      <button
+                        type="button"
+                        onClick={() => setVideoBrightness(100)}
+                        className="text-[11px] text-red-400 hover:text-red-300 underline cursor-pointer"
+                      >
+                        Restablecer
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min={50}
+                  max={130}
+                  step={5}
+                  value={videoBrightness}
+                  onChange={(e) => setVideoBrightness(Number(e.target.value))}
+                  aria-label="Brillo del reproductor"
+                  className="w-full h-1.5 bg-zinc-800 accent-red-500 rounded-lg cursor-pointer"
+                />
+              </div>
+
+              {/* Auto-Next Toggle */}
+              <div className="pt-2 border-t border-zinc-800/80 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold text-zinc-200">
+                    Siguiente capítulo automático
+                  </p>
+                  <p className="text-[11px] text-zinc-400">
+                    Reproducir automáticamente el próximo episodio al finalizar.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoPlayNext}
+                  onClick={toggleAutoPlayNext}
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer ${
+                    autoPlayNext ? 'bg-red-600' : 'bg-zinc-700'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      autoPlayNext ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
             </div>
           )}
         </DialogContent>

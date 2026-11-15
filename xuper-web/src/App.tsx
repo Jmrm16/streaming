@@ -34,7 +34,7 @@ import {
 import { MaicaoflixLogo } from './components/MaicaoflixLogo';
 import { NetflixRow } from './components/NetflixRow';
 import { MediaDetailPage, EpisodePlaybackMeta } from './components/MediaDetailPage';
-import { Player } from './components/Player';
+import { Player, cleanEpisodeTitleText } from './components/Player';
 import { SettingsModal } from './components/SettingsModal';
 import { AuthModal } from './components/AuthModal';
 import {
@@ -64,6 +64,8 @@ import {
 import {
   api,
   Channel,
+  Episode,
+  Season,
   MediaItem,
   SubtitleTrack,
   AudioLanguage,
@@ -742,6 +744,68 @@ export const App: React.FC = () => {
       }
     } catch (e) {
       console.error('Error switching audio track:', e);
+    }
+  };
+
+  // Switch episode directly from inside the video player without closing it
+  const handleSwitchEpisodeInPlayer = async (
+    ep: Episode,
+    seasonId: string,
+    seasonNumber: number,
+    seasonsList?: Season[],
+    episodesList?: Episode[]
+  ) => {
+    const current = activePlaybackRef.current;
+    if (!current) return;
+    try {
+      const res = await api.resolveMedia(ep.id, seasonId);
+      if (!res || !res.url) {
+        showToast('No se pudo cargar este episodio. Intenta con otro.');
+        return;
+      }
+      const rootMediaId = current.mediaItem?.id;
+      const savedEp = rootMediaId ? episodeProgressMap[rootMediaId]?.[ep.id] : undefined;
+      const resumeAt =
+        savedEp && savedEp.currentTime > 10 && savedEp.progressPercent < 96
+          ? savedEp.currentTime
+          : 0;
+      const epTitleClean = cleanEpisodeTitleText(
+        ep.name || ep.title || `Episodio ${ep.number}`
+      );
+      const subtitleLabel = `T${seasonNumber} : E${ep.number}${
+        epTitleClean ? ` — ${epTitleClean}` : ''
+      }`;
+
+      setActivePlayback((prev) =>
+        prev
+          ? {
+              ...prev,
+              url: res.url,
+              subtitle: subtitleLabel,
+              isLive: false,
+              initialTime: resumeAt,
+              subtitles: res.subtitles || [],
+              audioLanguages: res.audioLanguages || [],
+              contentId: ep.id,
+              seriesId: seasonId,
+              episodeMeta: {
+                seasonId,
+                seasonNumber,
+                episodeNumber: ep.number,
+                episodeTitle: epTitleClean,
+                seasons:
+                  seasonsList && seasonsList.length > 0 ? seasonsList : prev.episodeMeta?.seasons,
+                episodes:
+                  episodesList && episodesList.length > 0
+                    ? episodesList
+                    : prev.episodeMeta?.episodes,
+              },
+            }
+          : null
+      );
+    } catch (e) {
+      console.error('Error switching episode in player:', e);
+      showToast('Error al cambiar de episodio.');
     }
   };
 
@@ -2629,7 +2693,17 @@ export const App: React.FC = () => {
           subtitles={activePlayback.subtitles}
           audioLanguages={activePlayback.audioLanguages}
           channels={visibleLiveChannels}
+          contentId={activePlayback.contentId}
+          seriesId={activePlayback.seriesId}
+          rootSeriesId={activePlayback.mediaItem?.id}
+          episodeMeta={activePlayback.episodeMeta}
+          episodeProgressMap={
+            activePlayback.mediaItem?.id
+              ? episodeProgressMap[activePlayback.mediaItem.id]
+              : undefined
+          }
           onSelectChannel={(ch) => playChannel(ch)}
+          onSelectEpisode={handleSwitchEpisodeInPlayer}
           onSwitchAudioTrack={handleSwitchAudioTrack}
           onProgressUpdate={handlePlaybackProgress}
           onClose={() => setActivePlayback(null)}
