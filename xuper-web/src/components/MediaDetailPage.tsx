@@ -64,6 +64,30 @@ interface MediaDetailPageProps {
   onToggleFavorite?: (item: MediaItem) => void;
 }
 
+const mergeMediaItem = (base: MediaItem, incoming?: MediaItem | null): MediaItem => {
+  if (!incoming) return base;
+  const hasRealIncoming = Boolean(incoming.title && incoming.title.trim());
+  return {
+    ...base,
+    ...incoming,
+    id: incoming.id || base.id,
+    title: (incoming.title && incoming.title.trim()) || base.title,
+    poster: incoming.poster || base.poster,
+    backdrop: incoming.backdrop || base.backdrop,
+    landscape: incoming.landscape || base.landscape,
+    score: incoming.score && incoming.score !== '—' ? incoming.score : base.score,
+    year: incoming.year && incoming.year !== '—' ? incoming.year : base.year,
+    duration: incoming.duration && incoming.duration !== '—' ? incoming.duration : base.duration,
+    synopsis: (incoming.synopsis && incoming.synopsis.trim()) || base.synopsis,
+    director: (incoming.director && incoming.director.trim()) || base.director,
+    actors: (incoming.actors && incoming.actors.trim()) || base.actors,
+    genres: incoming.genres && incoming.genres.length > 0 ? incoming.genres : base.genres,
+    type: (hasRealIncoming ? incoming.type : undefined) || base.type,
+    kind: (hasRealIncoming ? incoming.kind : undefined) || base.kind,
+    category: (hasRealIncoming ? incoming.category : undefined) || base.category,
+  };
+};
+
 export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
   media,
   relatedItems = [],
@@ -104,25 +128,40 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onBack]);
 
-  // Fetch initial detail
+  // Fetch initial detail and reset any stale state from previous media
   useEffect(() => {
     let isMounted = true;
+    setInitialLoading(true);
+    setSeasonLoading(false);
+    setDetail(null);
+    setSeasons([]);
+    setSeasonEpisodes([]);
+    setSelectedSeasonId(media.id);
+    setSelectedSeasonNumber(1);
+    setSeasonCache({});
+    setIsResolving(false);
+    setResolvingEpId(null);
+
     const fetchDetail = async () => {
-      setInitialLoading(true);
       try {
         const res = await api.getDetail(media.id);
         if (!isMounted) return;
 
         if (res) {
-          setDetail(res);
+          const mergedItem = mergeMediaItem(media, res.item);
+          const normalizedRes: MediaDetailResponse = {
+            ...res,
+            item: mergedItem,
+          };
+          setDetail(normalizedRes);
 
           let rawSeasons = (res.seasons || []).slice();
           rawSeasons.sort((a, b) => a.number - b.number);
 
           const isSeriesType =
-            res.item?.type === 'teleplay' ||
-            res.item?.type === 'series' ||
-            res.item?.category === 'serie' ||
+            mergedItem.type === 'teleplay' ||
+            mergedItem.type === 'series' ||
+            mergedItem.category === 'serie' ||
             (res.episodes && res.episodes.length > 0);
 
           if (rawSeasons.length === 0 && isSeriesType) {
@@ -151,10 +190,9 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
 
           const initialEps = res.episodes || [];
           setSeasonEpisodes(initialEps);
-          setSeasonCache((prev) => ({
-            ...prev,
-            [targetSeasonId]: { item: res.item, episodes: initialEps },
-          }));
+          setSeasonCache({
+            [targetSeasonId]: { item: mergedItem, episodes: initialEps },
+          });
         }
       } catch (err) {
         console.error('Error fetching detail:', err);
@@ -167,7 +205,7 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [media.id]);
+  }, [media]);
 
   // Handle season switch
   const handleSeasonSelect = async (seasonId: string) => {
@@ -186,10 +224,11 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
     try {
       const res = await api.getDetail(seasonId);
       if (res && res.episodes) {
+        const mergedSeasonItem = mergeMediaItem(media, res.item);
         setSeasonEpisodes(res.episodes);
         setSeasonCache((prev) => ({
           ...prev,
-          [seasonId]: { item: res.item, episodes: res.episodes },
+          [seasonId]: { item: mergedSeasonItem, episodes: res.episodes },
         }));
       }
     } catch (err) {
@@ -350,12 +389,13 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
       {/* ============================================================ */}
       {/* 2. FULL-BLEED CINEMATIC BACKDROP HERO SECTION                */}
       {/* ============================================================ */}
-      <section className="relative w-full min-h-[460px] md:min-h-[580px] lg:min-h-[640px] flex items-end overflow-hidden">
+      <section className="relative w-full min-h-[460px] md:min-h-[580px] lg:min-h-[640px] flex items-end overflow-hidden bg-zinc-950">
         {/* Backdrop Image */}
         <img
+          key={`backdrop-${currentItem.id}-${artworkUrl || 'fallback'}`}
           src={artworkUrl}
           alt={currentItem.title}
-          className="absolute inset-0 w-full h-full object-cover object-top select-none"
+          className="absolute inset-0 w-full h-full object-cover object-top select-none transition-opacity duration-300"
           onError={(e) => {
             (e.target as HTMLImageElement).src =
               'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="600" height="338"%3E%3Crect width="100%25" height="100%25" fill="%23242424"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dominant-baseline="middle" fill="%23e50914" font-family="Arial" font-size="34" font-weight="bold"%3EMAICAOFLIX%3C/text%3E%3C/svg%3E';
@@ -370,6 +410,7 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
         <div className="relative z-10 w-full max-w-7xl mx-auto px-4 sm:px-8 py-12 flex flex-col sm:flex-row items-start sm:items-end gap-6 sm:gap-8">
           {posterUrl && (
             <img
+              key={`poster-${currentItem.id}-${posterUrl}`}
               src={posterUrl}
               alt={currentItem.title}
               className="hidden sm:block w-36 md:w-44 lg:w-48 aspect-[2/3] object-cover rounded-lg shadow-2xl border border-white/10 shrink-0 select-none"
@@ -488,10 +529,18 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-4">
             <h2 className="text-xl font-bold text-white">Sinopsis</h2>
-            <p className="text-base sm:text-lg text-zinc-300 leading-relaxed">
-              {currentItem.synopsis ||
-                'No hay sinopsis disponible actualmente para este título.'}
-            </p>
+            {initialLoading && !currentItem.synopsis ? (
+              <div className="space-y-2.5 pt-1" aria-hidden="true">
+                <div className="catalog-skeleton-line is-title w-full h-4" />
+                <div className="catalog-skeleton-line w-11/12 h-4" />
+                <div className="catalog-skeleton-line w-3/4 h-4" />
+              </div>
+            ) : (
+              <p className="text-base sm:text-lg text-zinc-300 leading-relaxed">
+                {currentItem.synopsis ||
+                  'No hay sinopsis disponible actualmente para este título.'}
+              </p>
+            )}
           </div>
 
           {/* Credits & Metadata Card */}
@@ -586,9 +635,21 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
 
             {/* Episodes List */}
             {seasonLoading || initialLoading ? (
-              <div className="py-16 flex flex-col items-center justify-center text-zinc-400 space-y-3">
-                <Loader2 className="w-8 h-8 text-red-600 animate-spin" />
-                <span className="text-sm">Cargando episodios de la temporada...</span>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4" aria-busy="true" aria-label="Cargando episodios">
+                {Array.from({ length: 6 }, (_, idx) => (
+                  <div
+                    key={idx}
+                    className="flex gap-4 p-3.5 rounded-xl bg-zinc-900/40 border border-zinc-800/60"
+                    aria-hidden="true"
+                  >
+                    <div className="w-36 sm:w-44 aspect-video rounded-lg shrink-0 catalog-skeleton-poster" style={{ aspectRatio: '16 / 9' }} />
+                    <div className="flex-1 min-w-0 flex flex-col justify-center space-y-2.5">
+                      <div className="catalog-skeleton-line is-title" style={{ marginTop: 0 }} />
+                      <div className="catalog-skeleton-line" style={{ width: '90%', marginTop: 0 }} />
+                      <div className="catalog-skeleton-line" style={{ width: '55%', marginTop: 0 }} />
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : seasonEpisodes.length === 0 ? (
               <p className="text-sm text-zinc-400 py-8 text-center bg-zinc-900/40 rounded-xl">

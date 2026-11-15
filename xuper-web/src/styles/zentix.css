@@ -63,4 +63,4 @@
   .zentix-footer-top { align-items: flex-start; flex-direction: column; gap: 12px; }
   .zentix-service-error { padding: 18px; font-size: 14px; }
 }
-@media (prefers-reduced-motion: reduce) { .zentix-app *, .zentix-app *::before, .zentix-app *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
+@media (prefers-reduced-motion: reduce) { .zentix-app { scroll-behavior: auto; } }

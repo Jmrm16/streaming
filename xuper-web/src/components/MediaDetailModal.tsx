@@ -39,17 +39,37 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   const [isResolving, setIsResolving] = useState(false);
   const [resolvingEpId, setResolvingEpId] = useState<string | null>(null);
 
-  // Initial load: fetch series/movie details
+  // Initial load: fetch series/movie details and clear any previous title state
   useEffect(() => {
     let isMounted = true;
+    setInitialLoading(true);
+    setSeasonLoading(false);
+    setDetail(null);
+    setSeasons([]);
+    setSeasonEpisodes([]);
+    setSelectedSeasonId(media.id);
+    setSelectedSeasonNumber(1);
+    setSeasonCache({});
+    setIsResolving(false);
+    setResolvingEpId(null);
+
     const fetchDetail = async () => {
-      setInitialLoading(true);
       try {
         const res = await api.getDetail(media.id);
         if (!isMounted) return;
 
         if (res) {
-          setDetail(res);
+          const mergedItem: MediaItem = {
+            ...media,
+            ...res.item,
+            id: res.item?.id || media.id,
+            title: (res.item?.title && res.item.title.trim()) || media.title,
+            poster: res.item?.poster || media.poster,
+            backdrop: res.item?.backdrop || media.backdrop,
+            landscape: res.item?.landscape || media.landscape,
+            synopsis: (res.item?.synopsis && res.item.synopsis.trim()) || media.synopsis,
+          };
+          setDetail({ ...res, item: mergedItem });
           const rawSeasons = res.seasons || [];
           setSeasons(rawSeasons);
 
@@ -67,7 +87,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
           // Cache initial season detail
           setSeasonCache({
             [firstSeasonId]: {
-              item: res.item,
+              item: mergedItem,
               episodes: initialEps,
             },
           });
@@ -83,7 +103,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [media.id]);
+  }, [media]);
 
   // Handle season switch
   const handleSelectSeason = async (season: Season) => {

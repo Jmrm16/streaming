@@ -66,23 +66,34 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
   if (totalCount === 0) return null;
 
   const animateTo = (track: HTMLDivElement, target: number) => {
-    if (animationFrameRef.current !== null) cancelAnimationFrame(animationFrameRef.current);
+    if (animationFrameRef.current !== null) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
     const start = track.scrollLeft;
     const distance = target - start;
-    if (Math.abs(distance) < 2) return;
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      track.scrollLeft = target;
+    if (Math.abs(distance) < 2) {
+      track.classList.remove('is-animating');
       return;
     }
 
-    const duration = 480;
+    // Disable CSS scroll-snap & native smooth scroll during JS rAF interpolation
+    // so the browser does not fight or cancel each frame.
+    track.classList.add('is-animating');
+
+    const duration = 520;
     const startedAt = performance.now();
     const tick = (now: number) => {
       const elapsed = Math.min(1, (now - startedAt) / duration);
-      const eased = 1 - Math.pow(1 - elapsed, 4);
-      track.scrollLeft = start + distance * eased;
-      if (elapsed < 1) animationFrameRef.current = requestAnimationFrame(tick);
-      else animationFrameRef.current = null;
+      const eased = 1 - Math.pow(1 - elapsed, 3);
+      track.scrollLeft = Math.round(start + distance * eased);
+      if (elapsed < 1) {
+        animationFrameRef.current = requestAnimationFrame(tick);
+      } else {
+        track.scrollLeft = Math.round(target);
+        track.classList.remove('is-animating');
+        animationFrameRef.current = null;
+      }
     };
     animationFrameRef.current = requestAnimationFrame(tick);
   };
@@ -93,7 +104,13 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
     const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
     const atStart = track.scrollLeft <= 5;
     const atEnd = track.scrollLeft >= maxScroll - 5;
-    const scrollAmount = track.clientWidth * 0.85;
+
+    // Snap step to exact card width + gap so the animation lands cleanly
+    const firstCard = track.querySelector<HTMLElement>('.media-card');
+    const gapPx = parseFloat(getComputedStyle(track).columnGap || getComputedStyle(track).gap || '10') || 10;
+    const cardStep = firstCard ? firstCard.getBoundingClientRect().width + gapPx : 0;
+    const visibleCards = cardStep > 0 ? Math.max(1, Math.floor(track.clientWidth / cardStep)) : 0;
+    const scrollAmount = cardStep > 0 ? visibleCards * cardStep : track.clientWidth * 0.85;
 
     // Netflix-style continuous rails: never leave either arrow at a dead end.
     if (direction > 0 && atEnd) {

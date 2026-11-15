@@ -97,7 +97,7 @@ export const App: React.FC = () => {
   const deferredSearchQuery = useDeferredValue(searchQuery);
 
   // Pagination & Loading
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [initialLoadFailed, setInitialLoadFailed] = useState(false);
   const [catalogPages, setCatalogPages] = useState<Record<string, number>>({
     movies: 1,
@@ -344,7 +344,7 @@ export const App: React.FC = () => {
     setIsLoading(true);
     setInitialLoadFailed(false);
     try {
-      const [feat, mov, ser, anim, kid, cats, chs, publicLiveCatalog] = await Promise.all([
+      const [feat, mov, ser, anim, kid, cats, chs] = await Promise.all([
         api.getHome('featured', 1, force),
         api.getHome('movies', 1, force),
         api.getHome('series', 1, force),
@@ -352,7 +352,6 @@ export const App: React.FC = () => {
         api.getHome('kids', 1, force),
         api.getLiveColumns(force),
         api.getLiveChannels('all', 1, 100, force),
-        api.getPublicLiveCatalog(force),
       ]);
 
       if (feat.length > 0) setHomeFeatured(feat);
@@ -360,23 +359,29 @@ export const App: React.FC = () => {
       if (ser.length > 0) setSeries(ser);
       if (anim.length > 0) setAnime(anim);
       if (kid.length > 0) setKids(kid);
-      if (chs.length > 0) {
+
+      let hasLive = chs.length > 0;
+      if (hasLive) {
         setIsPublicLiveMode(false);
         if (cats.length > 0) setCategories(cats);
         setChannels(chs);
-      } else if (publicLiveCatalog.channels.length > 0) {
-        setIsPublicLiveMode(true);
-        setCategories(publicLiveCatalog.categories);
-        setChannels(publicLiveCatalog.channels);
+      } else {
+        const publicLiveCatalog = await api.getPublicLiveCatalog(force);
+        if (publicLiveCatalog.channels.length > 0) {
+          hasLive = true;
+          setIsPublicLiveMode(true);
+          setCategories(publicLiveCatalog.categories);
+          setChannels(publicLiveCatalog.channels);
+        }
       }
+
       setInitialLoadFailed(
         feat.length === 0 &&
           mov.length === 0 &&
           ser.length === 0 &&
           anim.length === 0 &&
           kid.length === 0 &&
-          chs.length === 0 &&
-          publicLiveCatalog.channels.length === 0
+          !hasLive
       );
     } catch (err) {
       console.error('Error loading initial data:', err);
@@ -755,6 +760,7 @@ export const App: React.FC = () => {
       {/* ============================================================ */}
       {selectedMedia ? (
         <MediaDetailPage
+          key={selectedMedia.id}
           media={selectedMedia}
           relatedItems={currentCatalogList.length > 0 ? currentCatalogList : movies}
           onBack={closeMediaDetail}
@@ -1333,14 +1339,38 @@ export const App: React.FC = () => {
                     {!hasHomeContent && isLoading && (
                       <section className="home-loading" aria-busy="true" aria-label="Cargando catálogo">
                         <div className="home-skeleton-hero" aria-hidden="true">
+                          <div className="home-skeleton-copy is-badge" />
+                          <div className="home-skeleton-copy is-heading" />
                           <div className="home-skeleton-copy" />
                           <div className="home-skeleton-copy is-short" />
+                          <div className="home-skeleton-actions">
+                            <div className="home-skeleton-btn" />
+                            <div className="home-skeleton-btn is-secondary" />
+                          </div>
                         </div>
-                        <div className="home-skeleton-row" aria-hidden="true">
-                          {Array.from({ length: 6 }, (_, index) => <div className="home-skeleton-card" key={index} />)}
+                        <div className="home-skeleton-section" aria-hidden="true">
+                          <div className="home-skeleton-row-title" />
+                          <div className="results-grid catalog-skeleton-grid">
+                            {Array.from({ length: 6 }, (_, index) => (
+                              <div className="catalog-skeleton-card" key={index}>
+                                <div className="catalog-skeleton-poster" />
+                                <div className="catalog-skeleton-line is-title" />
+                                <div className="catalog-skeleton-line" />
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                        <div className="home-skeleton-row" aria-hidden="true">
-                          {Array.from({ length: 6 }, (_, index) => <div className="home-skeleton-card" key={index} />)}
+                        <div className="home-skeleton-section" aria-hidden="true">
+                          <div className="home-skeleton-row-title" />
+                          <div className="results-grid catalog-skeleton-grid">
+                            {Array.from({ length: 6 }, (_, index) => (
+                              <div className="catalog-skeleton-card" key={index}>
+                                <div className="catalog-skeleton-poster" />
+                                <div className="catalog-skeleton-line is-title" />
+                                <div className="catalog-skeleton-line" />
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       </section>
                     )}
@@ -1838,6 +1868,17 @@ export const App: React.FC = () => {
                     </div>
 
                     {/* Channels Grid */}
+                    {isLoading ? (
+                      <div className="results-grid catalog-skeleton-grid" aria-busy="true" aria-label="Cargando canales en vivo">
+                        {Array.from({ length: 12 }, (_, index) => (
+                          <div className="catalog-skeleton-card" key={index} aria-hidden="true">
+                            <div className="catalog-skeleton-poster is-landscape" />
+                            <div className="catalog-skeleton-line is-title" />
+                            <div className="catalog-skeleton-line" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
                     <div className="results-grid">
                       {visibleLiveChannels.map((ch, idx) => (
                         <div
@@ -1891,8 +1932,9 @@ export const App: React.FC = () => {
                         </div>
                       ))}
                     </div>
+                    )}
 
-                    {visibleLiveChannels.length < filteredLiveChannels.length && (
+                    {!isLoading && visibleLiveChannels.length < filteredLiveChannels.length && (
                       <div className="zentix-load-more pt-2 pb-8 flex justify-center">
                         <button
                           type="button"
