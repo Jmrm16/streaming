@@ -260,6 +260,7 @@ function isCacheFlyHost(e, t) {
   );
 }
 function mediaRequest(e, t, r, n) {
+  e.url = normalizePublicHlsUrl(e.url);
   var o = urlmod.parse(e.url || ""),
     s = o.hostname,
     a = n || e.resolvedIp;
@@ -280,6 +281,9 @@ function mediaRequest(e, t, r, n) {
     Object.prototype.hasOwnProperty.call(e.headers, c) && (p[c] = e.headers[c]);
   for (c in r || {})
     Object.prototype.hasOwnProperty.call(r, c) && (p[c] = r[c]);
+  /* Algunos proveedores HLS rechazan las peticiones sin User-Agent. Respeta
+     el agente declarado por la lista y usa uno estable solamente si falta. */
+  (p["User-Agent"] || p["user-agent"] || (p["User-Agent"] = "XuperWeb/1.0"));
   var d = l ? 443 : 80,
     h = u && "80" === o.port ? 443 : o.port || d;
   (p.Host = o.host || s + (h !== d ? ":" + h : ""));
@@ -849,6 +853,19 @@ function rewriteHlsManifest(e, t, r) {
   }
   return n.join("\n");
 }
+/* Algunos manifiestos públicos de Pluto redirigen a su API de playout sin el
+   identificador de cliente que ahora exige el proveedor. No se falsifica una
+   sesión: se conserva la URL firmada y se completa únicamente el parámetro
+   público que identifica al reproductor web. */
+function normalizePublicHlsUrl(e) {
+  var t = String(e || "");
+  return (
+    /(?:^|\.)pluto\.tv\/api\/tn\/video\/playout\//i.test(t) &&
+    !/(?:[?&])deviceUA=/.test(t)
+      ? t + (t.indexOf("?") === -1 ? "?" : "&") + "deviceUA=web"
+      : t
+  );
+}
 function forward(e, t, r, n) {
   activeToken = n;
   var o = {};
@@ -891,7 +908,9 @@ function forward(e, t, r, n) {
             !t.headersSent &&
             (r._redirects || 0) < 5
           ) {
-            var redirUrl = urlmod.resolve(r.url || "", o.headers.location);
+            var redirUrl = normalizePublicHlsUrl(
+              urlmod.resolve(r.url || "", o.headers.location)
+            );
             return (
               o.resume(),
               (r._redirects = (r._redirects || 0) + 1),
@@ -1364,7 +1383,7 @@ function handler(e, t) {
         }),
         void t.end("expired")
       );
-    var a = fromBase64Url(o[2]);
+    var a = normalizePublicHlsUrl(fromBase64Url(o[2]));
     return /^https?:\/\//i.test(a)
       ? void forward(
           e,
