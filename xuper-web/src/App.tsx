@@ -24,12 +24,31 @@ import {
   Smile,
   Settings,
   Lock,
+  LogIn,
+  LogOut,
+  History,
+  Trash2,
+  Cloud,
+  CloudOff,
 } from 'lucide-react';
 import { MaicaoflixLogo } from './components/MaicaoflixLogo';
 import { NetflixRow } from './components/NetflixRow';
-import { MediaDetailPage } from './components/MediaDetailPage';
+import { MediaDetailPage, EpisodePlaybackMeta } from './components/MediaDetailPage';
 import { Player } from './components/Player';
 import { SettingsModal } from './components/SettingsModal';
+import { AuthModal } from './components/AuthModal';
+import {
+  subscribeToAuth,
+  logoutUser,
+  subscribeWatchHistory,
+  saveWatchProgress,
+  removeWatchProgress,
+  clearAllWatchHistory,
+  formatPlaybackTime,
+  User as FirebaseUser,
+  WatchProgressItem,
+  EpisodeProgressEntry,
+} from './lib/firebase';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
 import { Badge } from './components/ui/badge';
@@ -156,6 +175,15 @@ export const App: React.FC = () => {
   const [pinInput, setPinInput] = useState<string>('');
   const [pinError, setPinError] = useState<string>('');
 
+  // Auth & Watch History (Firebase Auth + Realtime Database)
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
+  const [watchHistory, setWatchHistory] = useState<WatchProgressItem[]>([]);
+  const [episodeProgressMap, setEpisodeProgressMap] = useState<
+    Record<string, Record<string, EpisodeProgressEntry>>
+  >({});
+
   // Dedicated Detail Page & Playback
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
   const [activePlayback, setActivePlayback] = useState<{
@@ -163,14 +191,19 @@ export const App: React.FC = () => {
     title: string;
     subtitle?: string;
     isLive?: boolean;
+    initialTime?: number;
     subtitles?: SubtitleTrack[];
     audioLanguages?: AudioLanguage[];
     contentId?: string;
     seriesId?: string;
+    mediaItem?: MediaItem;
+    episodeMeta?: EpisodePlaybackMeta;
   } | null>(null);
 
   const headerRef = useRef<HTMLElement>(null);
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activePlaybackRef = useRef(activePlayback);
+  activePlaybackRef.current = activePlayback;
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -179,6 +212,165 @@ export const App: React.FC = () => {
       setToastMessage('');
     }, 3200);
   }, []);
+
+  // Listen to Firebase Auth state
+  useEffect(() => {
+    const unsub = subscribeToAuth((user) => {
+      setCurrentUser(user);
+      if (user) {
+        const display =
+          user.displayName?.trim() ||
+          user.email?.split('@')[0] ||
+          'Usuario';
+        setProfileName(display);
+      } else {
+        setProfileName(localStorage.getItem('maicaoflix_profile_name') || 'Invitado');
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // Subscribe to Watch History in Firebase Realtime Database (+ instant local mirror)
+  useEffect(() => {
+    return subscribeWatchHistory(
+      currentUser?.uid || null,
+      (items) => setWatchHistory(items),
+      (epMap) => setEpisodeProgressMap(epMap)
+    );
+  }, [currentUser?.uid]);
+
+  const watchProgressMap = useMemo(() => {
+    const map: Record<string, WatchProgressItem> = {};
+    for (const entry of watchHistory) {
+      if (entry.id) map[entry.id] = entry;
+    }
+    return map;
+  }, [watchHistory]);
+
+  const watchHistoryMediaItems = useMemo<MediaItem[]>(() => {
+    return watchHistory.map((entry) => ({
+      id: entry.id,
+      title: entry.title,
+      poster: entry.poster || entry.landscape || entry.backdrop || '',
+      backdrop: entry.backdrop || entry.landscape || entry.poster || '',
+      landscape: entry.landscape || entry.backdrop || entry.poster || '',
+      type: (entry.type as MediaItem['type']) || (entry.episodeId ? 'series' : 'movie'),
+      kind: entry.kind,
+      category: entry.category,
+      year: entry.year,
+      score: entry.score,
+      duration: entry.durationText,
+      synopsis: entry.synopsis,
+      genres: entry.genres,
+    }));
+  }, [watchHistory]);
+
+  const handlePlaybackProgress = useCallback(
+    (currentTime: number, duration: number) => {
+      const pb = activePlaybackRef.current;
+      if (!pb || pb.isLive || !pb.mediaItem || !duration || !isFinite(duration)) return;
+      saveWatchProgress(currentUser?.uid || null, {
+        id: pb.mediaItem.id,
+        title: pb.mediaItem.title,
+        poster: pb.mediaItem.poster,
+        backdrop: pb.mediaItem.backdrop,
+        landscape: pb.mediaItem.landscape,
+        type: pb.mediaItem.type,
+        kind: pb.mediaItem.kind,
+        category: pb.mediaItem.category,
+        year: pb.mediaItem.year,
+        score: pb.mediaItem.score,
+        durationText: pb.mediaItem.duration,
+        synopsis: pb.mediaItem.synopsis,
+        genres: pb.mediaItem.genres,
+        currentTime,
+        duration,
+        progressPercent: Math.min(100, Math.max(1, Math.round((currentTime / duration) * 100))),
+        updatedAt: Date.now(),
+        episodeId: pb.episodeMeta ? pb.contentId : undefined,
+        seasonId: pb.episodeMeta?.seasonId || pb.seriesId,
+        seasonNumber: pb.episodeMeta?.seasonNumber,
+        episodeNumber: pb.episodeMeta?.episodeNumber,
+        episodeTitle: pb.episodeMeta?.episodeTitle,
+        subtitle: pb.subtitle,
+      });
+    },
+    [currentUser?.uid]
+  );
+
+  const handleRemoveWatchItem = useCallback(
+    (e: React.MouseEvent, item: MediaItem) => {
+      e.stopPropagation();
+      removeWatchProgress(currentUser?.uid || null, item.id);
+      showToast(`"${item.title}" quitado de Continuar viendo.`);
+    },
+    [currentUser?.uid, showToast]
+  );
+
+  const handleDirectResume = useCallback(
+    async (item: MediaItem, prog: WatchProgressItem) => {
+      const resumeAt = prog.progressPercent >= 96 ? 0 : prog.currentTime;
+      showToast(
+        resumeAt > 5
+          ? `Reanudando "${item.title}" desde ${formatPlaybackTime(resumeAt)}...`
+          : `Cargando "${item.title}"...`
+      );
+      try {
+        if (prog.episodeId) {
+          const seriesId = prog.seasonId || item.id;
+          const res = await api.resolveMedia(prog.episodeId, seriesId);
+          if (res && res.url) {
+            const epLabel =
+              prog.subtitle ||
+              `T${prog.seasonNumber || 1} : E${prog.episodeNumber || 1}${
+                prog.episodeTitle ? ` — ${prog.episodeTitle}` : ''
+              }`;
+            setActivePlayback({
+              url: res.url,
+              title: item.title,
+              subtitle: epLabel,
+              isLive: false,
+              initialTime: resumeAt,
+              subtitles: res.subtitles,
+              audioLanguages: res.audioLanguages,
+              contentId: prog.episodeId,
+              seriesId,
+              mediaItem: item,
+              episodeMeta: {
+                seasonId: seriesId,
+                seasonNumber: prog.seasonNumber || 1,
+                episodeNumber: prog.episodeNumber || 1,
+                episodeTitle: prog.episodeTitle || '',
+              },
+            });
+            return;
+          }
+        } else {
+          const res = await api.resolveMedia(item.id);
+          if (res && res.url) {
+            setActivePlayback({
+              url: res.url,
+              title: item.title,
+              subtitle:
+                prog.subtitle ||
+                (item.year && item.year !== '—' ? `Película • ${item.year}` : 'Película'),
+              isLive: false,
+              initialTime: resumeAt,
+              subtitles: res.subtitles,
+              audioLanguages: res.audioLanguages,
+              contentId: item.id,
+              mediaItem: item,
+            });
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('Direct resume failed, falling back to detail page:', err);
+      }
+      openMediaDetail(item);
+    },
+    [showToast]
+  );
 
   // Listen to window scroll to trigger solid header
   useEffect(() => {
@@ -763,17 +955,30 @@ export const App: React.FC = () => {
           key={selectedMedia.id}
           media={selectedMedia}
           relatedItems={currentCatalogList.length > 0 ? currentCatalogList : movies}
+          watchEntry={watchProgressMap[selectedMedia.id] || null}
+          episodeProgressMap={episodeProgressMap[selectedMedia.id]}
           onBack={closeMediaDetail}
           onSelectMedia={openMediaDetail}
-          onPlayMovie={(url, title, subtitle, subtitles, audioLanguages, contentId) => {
+          onPlayMovie={(
+            url,
+            title,
+            subtitle,
+            subtitles,
+            audioLanguages,
+            contentId,
+            initialTime,
+            resolvedMedia
+          ) => {
             setActivePlayback({
               url,
               title,
               subtitle,
               isLive: false,
+              initialTime,
               subtitles,
               audioLanguages,
               contentId,
+              mediaItem: { ...(resolvedMedia || selectedMedia), id: selectedMedia.id },
             });
           }}
           onPlayEpisode={(
@@ -783,17 +988,23 @@ export const App: React.FC = () => {
             subtitles,
             audioLanguages,
             contentId,
-            seriesId
+            seriesId,
+            initialTime,
+            episodeMeta,
+            resolvedMedia
           ) => {
             setActivePlayback({
               url,
               title,
               subtitle,
               isLive: false,
+              initialTime,
               subtitles,
               audioLanguages,
               contentId,
               seriesId,
+              episodeMeta,
+              mediaItem: { ...(resolvedMedia || selectedMedia), id: selectedMedia.id },
             });
           }}
           isFavorite={isMediaFav(selectedMedia.id)}
@@ -1055,6 +1266,22 @@ export const App: React.FC = () => {
                 </span>
               </button>
 
+              {/* Sign In Pill when logged out */}
+              {!currentUser && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthModalMode('login');
+                    setIsAuthModalOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-xs font-bold transition-colors cursor-pointer shrink-0 shadow"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Iniciar sesión</span>
+                  <span className="sm:hidden">Entrar</span>
+                </button>
+              )}
+
               {/* Profile Avatar & Menu */}
               <div className="header-popover profile-control relative">
                 <button
@@ -1070,25 +1297,58 @@ export const App: React.FC = () => {
                 </button>
 
                 {isProfileMenuOpen && (
-                  <div className="header-menu profile-menu absolute right-0 top-full mt-2 w-60 bg-[#181818] border border-zinc-700 rounded-md shadow-2xl py-3 z-50 text-xs animate-in fade-in duration-150">
-                    <div className="px-4 pb-2 border-b border-zinc-800">
+                  <div className="header-menu profile-menu absolute right-0 top-full mt-2 w-64 bg-[#181818] border border-zinc-700 rounded-md shadow-2xl py-3 z-50 text-xs animate-in fade-in duration-150">
+                    <div className="px-4 pb-2.5 border-b border-zinc-800 space-y-1">
                       <p className="text-zinc-400 text-[10px] uppercase font-bold tracking-wider">
-                        Perfil Activo
+                        {currentUser ? 'Cuenta Conectada' : 'Perfil Local'}
                       </p>
-                      <p className="text-sm font-bold text-white mt-0.5">{profileName}</p>
+                      <p className="text-sm font-bold text-white truncate">{profileName}</p>
+                      {currentUser?.email ? (
+                        <p className="text-[11px] text-zinc-400 truncate">{currentUser.email}</p>
+                      ) : (
+                        <p className="text-[11px] text-zinc-500">Inicia sesión para guardar en la nube</p>
+                      )}
+                      <div className="pt-1 flex items-center gap-1.5 text-[10px]">
+                        {currentUser ? (
+                          <span className="inline-flex items-center gap-1 text-emerald-400 font-semibold">
+                            <Cloud className="w-3 h-3" />
+                            <span>Historial sincronizado</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-zinc-400">
+                            <CloudOff className="w-3 h-3" />
+                            <span>Guardado solo local</span>
+                          </span>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="py-2">
+                    <div className="py-1.5">
+                      {!currentUser && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAuthModalMode('login');
+                            setIsAuthModalOpen(true);
+                            setIsProfileMenuOpen(false);
+                          }}
+                          className="w-full px-4 py-2 text-left text-white font-semibold hover:bg-zinc-800 flex items-center gap-2 cursor-pointer"
+                        >
+                          <LogIn className="w-4 h-4 text-red-500" />
+                          <span>Iniciar sesión / Crear cuenta</span>
+                        </button>
+                      )}
+
                       <button
                         type="button"
                         onClick={() => {
                           navigateTab('favorites');
                           setIsProfileMenuOpen(false);
                         }}
-                        className="w-full px-4 py-2 text-left text-zinc-300 hover:text-white hover:bg-zinc-800 flex items-center gap-2"
+                        className="w-full px-4 py-2 text-left text-zinc-300 hover:text-white hover:bg-zinc-800 flex items-center gap-2 cursor-pointer"
                       >
-                        <Heart className="w-4 h-4 text-pink-500" />
-                        <span>Mi lista de guardados</span>
+                        <History className="w-4 h-4 text-amber-400" />
+                        <span>Mi lista e Historial ({watchHistory.length})</span>
                       </button>
 
                       <button
@@ -1097,11 +1357,30 @@ export const App: React.FC = () => {
                           setIsSettingsModalOpen(true);
                           setIsProfileMenuOpen(false);
                         }}
-                        className="w-full px-4 py-2 text-left text-zinc-300 hover:text-white hover:bg-zinc-800 flex items-center gap-2"
+                        className="w-full px-4 py-2 text-left text-zinc-300 hover:text-white hover:bg-zinc-800 flex items-center gap-2 cursor-pointer"
                       >
                         <Server className="w-4 h-4 text-red-500" />
-                        <span>Estado del Servicio</span>
+                        <span>Configuración del Servidor</span>
                       </button>
+
+                      {currentUser && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setIsProfileMenuOpen(false);
+                            try {
+                              await logoutUser();
+                              showToast('Sesión cerrada.');
+                            } catch (err) {
+                              console.error('Logout error:', err);
+                            }
+                          }}
+                          className="w-full px-4 py-2 text-left text-red-400 hover:text-red-300 hover:bg-zinc-800 flex items-center gap-2 cursor-pointer"
+                        >
+                          <LogOut className="w-4 h-4" />
+                          <span>Cerrar sesión</span>
+                        </button>
+                      )}
                     </div>
 
                     <div className="px-4 pt-2 border-t border-zinc-800 text-[11px] text-zinc-500">
@@ -1457,11 +1736,27 @@ export const App: React.FC = () => {
 
                     {/* 2. OVERLAPPING HORIZONTAL MEDIA RAILS */}
                     <div className="catalog-content space-y-6">
+                      {/* Row 0: Continuar viendo (Watch History & Progress) */}
+                      {watchHistoryMediaItems.length > 0 && (
+                        <NetflixRow
+                          heading={`Continuar viendo${currentUser ? ` • ${profileName}` : ''}`}
+                          items={watchHistoryMediaItems}
+                          progressMap={watchProgressMap}
+                          onResumeItem={handleDirectResume}
+                          onRemoveProgress={handleRemoveWatchItem}
+                          isFavorite={isMediaFav}
+                          onToggleFavorite={toggleFavoriteMedia}
+                          onSelectMedia={openMediaDetail}
+                          onViewAll={() => navigateTab('favorites')}
+                        />
+                      )}
+
                       {/* Row 1: Tendencias ahora (Top 10) */}
                       <NetflixRow
                         heading="Tendencias ahora"
                         items={movies.slice(0, 10)}
                         isTop10={true}
+                        progressMap={watchProgressMap}
                         isFavorite={isMediaFav}
                         onToggleFavorite={toggleFavoriteMedia}
                         onSelectMedia={openMediaDetail}
@@ -1488,6 +1783,7 @@ export const App: React.FC = () => {
                         <NetflixRow
                           heading="Películas recomendadas para ti"
                           items={movies.slice(5, 25)}
+                          progressMap={watchProgressMap}
                           isFavorite={isMediaFav}
                           onToggleFavorite={toggleFavoriteMedia}
                           onSelectMedia={openMediaDetail}
@@ -1500,6 +1796,7 @@ export const App: React.FC = () => {
                         <NetflixRow
                           heading="Series para un maratón"
                           items={series.slice(0, 20)}
+                          progressMap={watchProgressMap}
                           isFavorite={isMediaFav}
                           onToggleFavorite={toggleFavoriteMedia}
                           onSelectMedia={openMediaDetail}
@@ -1512,6 +1809,7 @@ export const App: React.FC = () => {
                         <NetflixRow
                           heading="Animé y Animación"
                           items={anime.slice(0, 20)}
+                          progressMap={watchProgressMap}
                           isFavorite={isMediaFav}
                           onToggleFavorite={toggleFavoriteMedia}
                           onSelectMedia={openMediaDetail}
@@ -1524,6 +1822,7 @@ export const App: React.FC = () => {
                         <NetflixRow
                           heading="Para disfrutar en familia"
                           items={kids.slice(0, 20)}
+                          progressMap={watchProgressMap}
                           isFavorite={isMediaFav}
                           onToggleFavorite={toggleFavoriteMedia}
                           onSelectMedia={openMediaDetail}
@@ -1536,6 +1835,7 @@ export const App: React.FC = () => {
                         <NetflixRow
                           heading={`Mi lista de ${profileName}`}
                           items={favMedia}
+                          progressMap={watchProgressMap}
                           isFavorite={isMediaFav}
                           onToggleFavorite={toggleFavoriteMedia}
                           onSelectMedia={openMediaDetail}
@@ -1964,17 +2264,135 @@ export const App: React.FC = () => {
                   </div>
                 )}
 
-                {/* VIEW: FAVORITOS (MI LISTA) */}
+                {/* VIEW: FAVORITOS (MI LISTA E HISTORIAL) */}
                 {activeTab === 'favorites' && (
                   <div className="catalog-content is-filtered pt-24 px-4 sm:px-8 space-y-8">
-                    <div className="pb-2 border-b border-zinc-900">
-                      <h1 className="browse-view-title text-2xl sm:text-3xl font-bold">
-                        Mi Lista ({visibleFavChannels.length + favMedia.length})
-                      </h1>
-                      <p className="text-xs text-zinc-400 mt-1">
-                        Tus canales, películas y series favoritas guardados en este navegador.
-                      </p>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-zinc-900">
+                      <div>
+                        <h1 className="browse-view-title text-2xl sm:text-3xl font-bold">
+                          Mi Lista e Historial ({visibleFavChannels.length + favMedia.length + watchHistory.length})
+                        </h1>
+                        <p className="text-xs text-zinc-400 mt-1">
+                          {currentUser
+                            ? `Sincronizado con tu cuenta (${currentUser.email || profileName}). Retoma cualquier título exactamente donde lo dejaste.`
+                            : 'Guardado localmente en este navegador. Inicia sesión con tu correo para sincronizar tu historial en la nube.'}
+                        </p>
+                      </div>
+
+                      {!currentUser && (
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            setAuthModalMode('login');
+                            setIsAuthModalOpen(true);
+                          }}
+                          className="bg-red-600 hover:bg-red-700 text-white font-bold text-xs gap-1.5 self-start sm:self-auto cursor-pointer"
+                        >
+                          <LogIn className="w-3.5 h-3.5" />
+                          <span>Iniciar sesión para guardar en la nube</span>
+                        </Button>
+                      )}
                     </div>
+
+                    {/* Watch History / Continuar viendo Section */}
+                    {watchHistory.length > 0 && (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between gap-2">
+                          <h3 className="text-sm font-bold text-zinc-200 uppercase tracking-wider flex items-center gap-2">
+                            <History className="w-4 h-4 text-red-500" />
+                            <span>Continuar viendo • Historial de reproducción ({watchHistory.length})</span>
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              clearAllWatchHistory(currentUser?.uid || null);
+                              showToast('Historial de reproducción eliminado.');
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-semibold text-zinc-400 hover:text-red-400 transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Limpiar historial</span>
+                          </button>
+                        </div>
+
+                        <div className="results-grid">
+                          {watchHistory.map((entry, idx) => {
+                            const mediaObj = watchHistoryMediaItems[idx];
+                            const pct = Math.min(100, Math.max(4, entry.progressPercent || 0));
+                            const label = entry.episodeNumber
+                              ? `T${entry.seasonNumber || 1}:E${entry.episodeNumber} • ${formatPlaybackTime(entry.currentTime)}`
+                              : `${formatPlaybackTime(entry.currentTime)}${
+                                  entry.duration > 0 ? ` / ${formatPlaybackTime(entry.duration)}` : ''
+                                }`;
+
+                            return (
+                              <div
+                                key={`${entry.id}-${idx}`}
+                                className="media-card group cursor-pointer"
+                                onClick={() => handleDirectResume(mediaObj, entry)}
+                              >
+                                <div className="media-card-art is-poster relative">
+                                  <img
+                                    src={entry.poster || entry.landscape || entry.backdrop}
+                                    alt={entry.title}
+                                    loading="lazy"
+                                    className="w-full h-full object-cover transition-transform group-hover:brightness-105"
+                                    onError={(e) => {
+                                      const img = e.target as HTMLImageElement;
+                                      const fallback = entry.landscape || entry.backdrop;
+                                      if (fallback && img.src !== fallback && !img.dataset.retried) {
+                                        img.dataset.retried = '1';
+                                        img.src = fallback;
+                                        return;
+                                      }
+                                      img.src =
+                                        'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="400" height="600"%3E%3Crect width="100%25" height="100%25" fill="%23242424"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dominant-baseline="middle" fill="%23e50914" font-family="Arial" font-size="28" font-weight="bold"%3EMAICAOFLIX%3C/text%3E%3C/svg%3E';
+                                    }}
+                                  />
+                                  <span className="card-netflix">M</span>
+                                  <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        openMediaDetail(mediaObj);
+                                      }}
+                                      className="p-1.5 rounded-full bg-black/70 text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors cursor-pointer"
+                                      title="Ver detalles"
+                                    >
+                                      <Info className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => handleRemoveWatchItem(e, mediaObj)}
+                                      className="p-1.5 rounded-full bg-black/70 text-zinc-300 hover:text-white hover:bg-red-600/90 transition-colors cursor-pointer"
+                                      title="Quitar del historial"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                  <span className="absolute bottom-2.5 left-1.5 z-10 px-1.5 py-0.5 rounded bg-black/85 border border-white/10 text-[10px] font-bold text-white shadow">
+                                    {label}
+                                  </span>
+                                  <div className="absolute bottom-0 left-0 right-0 h-1.5 bg-zinc-800/95 z-10 overflow-hidden">
+                                    <div
+                                      className="h-full bg-red-600"
+                                      style={{ width: `${pct}%` }}
+                                    />
+                                  </div>
+                                </div>
+                                <span className="media-card-title">{entry.title}</span>
+                                <span className="media-card-info">
+                                  <span className="text-red-400 font-semibold">
+                                    Lo dejaste en {formatPlaybackTime(entry.currentTime)}
+                                  </span>
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Saved Channels Section */}
                     {visibleFavChannels.length > 0 && (
@@ -2081,15 +2499,14 @@ export const App: React.FC = () => {
                       </div>
                     )}
 
-                    {visibleFavChannels.length === 0 && favMedia.length === 0 && (
+                    {visibleFavChannels.length === 0 && favMedia.length === 0 && watchHistory.length === 0 && (
                       <div className="empty-state py-24 text-center text-zinc-500 space-y-4">
                         <Heart className="w-12 h-12 mx-auto text-zinc-600" />
                         <h2 className="empty-title text-xl font-bold text-white">
-                          Tu lista está vacía
+                          Tu lista e historial están vacíos
                         </h2>
                         <p className="empty-copy text-sm max-w-md mx-auto">
-                          Explora el catálogo y pulsa el icono de corazón o "Mi lista" para guardar
-                          tus títulos y canales preferidos aquí.
+                          Explora el catálogo, reproduce un título o pulsa el icono de corazón para guardar tus favoritos y retomar donde lo dejaste.
                         </p>
                         <button
                           type="button"
@@ -2208,14 +2625,23 @@ export const App: React.FC = () => {
           title={activePlayback.title}
           subtitle={activePlayback.subtitle}
           isLive={activePlayback.isLive}
+          initialTime={activePlayback.initialTime}
           subtitles={activePlayback.subtitles}
           audioLanguages={activePlayback.audioLanguages}
           channels={visibleLiveChannels}
           onSelectChannel={(ch) => playChannel(ch)}
           onSwitchAudioTrack={handleSwitchAudioTrack}
+          onProgressUpdate={handlePlaybackProgress}
           onClose={() => setActivePlayback(null)}
         />
       )}
+
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        initialMode={authModalMode}
+        onClose={() => setIsAuthModalOpen(false)}
+        onSuccess={(msg) => showToast(msg)}
+      />
 
       <SettingsModal
         isOpen={isSettingsModalOpen}

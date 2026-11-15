@@ -100,11 +100,13 @@ interface PlayerProps {
   title: string;
   subtitle?: string;
   isLive?: boolean;
+  initialTime?: number;
   subtitles?: SubtitleTrack[];
   audioLanguages?: AudioLanguage[];
   channels?: Channel[];
   onSelectChannel?: (channel: Channel) => void;
   onSwitchAudioTrack?: (trackIndex: number) => void;
+  onProgressUpdate?: (currentTime: number, duration: number) => void;
   onClose: () => void;
 }
 
@@ -120,16 +122,29 @@ const hasExtension = (source: string, extension: string): boolean => {
   }
 };
 
+const formatPlayerTime = (seconds: number): string => {
+  if (!seconds || isNaN(seconds) || seconds === Infinity) return '0:00';
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  if (hrs > 0) {
+    return `${hrs}:${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  }
+  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+};
+
 export const Player: React.FC<PlayerProps> = ({
   url,
   title,
   subtitle,
   isLive = false,
+  initialTime = 0,
   subtitles = EMPTY_SUBTITLES,
   audioLanguages = EMPTY_AUDIO_LANGUAGES,
   channels = EMPTY_CHANNELS,
   onSelectChannel,
   onSwitchAudioTrack,
+  onProgressUpdate,
   onClose,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -150,6 +165,7 @@ export const Player: React.FC<PlayerProps> = ({
   const [bufferedEnd, setBufferedEnd] = useState(0);
   const [showControls, setShowControls] = useState(true);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
+  const [resumeBanner, setResumeBanner] = useState<string | null>(null);
 
   // Advanced features state
   const [aspectRatio, setAspectRatio] = useState<'contain' | 'cover' | 'fill'>('contain');
@@ -172,7 +188,24 @@ export const Player: React.FC<PlayerProps> = ({
   const [errorAlert, setErrorAlert] = useState<{ open: boolean; message: string } | null>(null);
 
   const savedPositionRef = useRef<number>(0);
+  const lastInitKeyRef = useRef<string>('');
+  const lastReportedTimeRef = useRef<number>(0);
+  const latestProgressRef = useRef<{ cur: number; dur: number }>({ cur: 0, dur: 0 });
+  const onProgressUpdateRef = useRef(onProgressUpdate);
+  onProgressUpdateRef.current = onProgressUpdate;
+  const resumeBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushProgress = useCallback(() => {
+    if (!isLive && latestProgressRef.current.cur > 3 && latestProgressRef.current.dur > 0) {
+      onProgressUpdateRef.current?.(latestProgressRef.current.cur, latestProgressRef.current.dur);
+    }
+  }, [isLive]);
+
+  const handleClose = useCallback(() => {
+    flushProgress();
+    onClose();
+  }, [flushProgress, onClose]);
 
   // Initialize and play HLS stream
   const initHls = useCallback(() => {
@@ -187,10 +220,29 @@ export const Player: React.FC<PlayerProps> = ({
     setAudioTracks([]);
     setCurrentAudioTrack(0);
 
-    // Live TV streams must never inherit or seek to a previous VOD position
+    // Apply initial resume position when source changes (or reset for Live TV)
+    const initKey = `${url}::${initialTime}`;
     if (isLive) {
       savedPositionRef.current = 0;
+      lastInitKeyRef.current = initKey;
+    } else if (lastInitKeyRef.current !== initKey) {
+      lastInitKeyRef.current = initKey;
+      lastReportedTimeRef.current = 0;
+      latestProgressRef.current = { cur: 0, dur: 0 };
+      if (initialTime && initialTime > 3) {
+        savedPositionRef.current = initialTime;
+        setProgress(initialTime);
+        setResumeBanner(formatPlayerTime(initialTime));
+        if (resumeBannerTimerRef.current) clearTimeout(resumeBannerTimerRef.current);
+        resumeBannerTimerRef.current = setTimeout(() => {
+          setResumeBanner(null);
+        }, 3800);
+      } else {
+        savedPositionRef.current = 0;
+        setResumeBanner(null);
+      }
     }
+
     if (isLive || savedPositionRef.current === 0) {
       setDuration(0);
       setProgress(0);
@@ -388,7 +440,7 @@ export const Player: React.FC<PlayerProps> = ({
         message: 'La fuente de video no tiene un formato compatible. Intenta recargar el título.',
       });
     }
-  }, [url, isLive]);
+  }, [url, isLive, initialTime]);
 
   // Resilient play with unmuted -> muted autoplay fallback
   const attemptPlay = (video: HTMLVideoElement) => {
@@ -434,8 +486,27 @@ export const Player: React.FC<PlayerProps> = ({
       if (controlsTimeoutRef.current) {
         clearTimeout(controlsTimeoutRef.current);
       }
+      if (resumeBannerTimerRef.current) {
+        clearTimeout(resumeBannerTimerRef.current);
+      }
     };
   }, [initHls]);
+
+  // Save playback progress on tab hide, unload, or unmount
+  useEffect(() => {
+    const handleVisibilityOrUnload = () => {
+      if (document.visibilityState === 'hidden') {
+        flushProgress();
+      }
+    };
+    window.addEventListener('beforeunload', flushProgress);
+    document.addEventListener('visibilitychange', handleVisibilityOrUnload);
+    return () => {
+      window.removeEventListener('beforeunload', flushProgress);
+      document.removeEventListener('visibilitychange', handleVisibilityOrUnload);
+      flushProgress();
+    };
+  }, [flushProgress]);
 
   useEffect(() => {
     const syncFullscreenState = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
@@ -531,7 +602,7 @@ export const Player: React.FC<PlayerProps> = ({
           } else if (errorAlert) {
             setErrorAlert(null);
           } else {
-            onClose();
+            handleClose();
           }
           break;
       }
@@ -539,7 +610,7 @@ export const Player: React.FC<PlayerProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showSettingsDialog, showChannelDrawer, errorAlert, isPlaying, isMuted, volume, duration]);
+  }, [showSettingsDialog, showChannelDrawer, errorAlert, isPlaying, isMuted, volume, duration, handleClose]);
 
   // Playback actions
   const togglePlay = () => {
@@ -848,6 +919,15 @@ export const Player: React.FC<PlayerProps> = ({
             }
             savedPositionRef.current = cur;
 
+            // Throttled playback progress reporting (every ~5s) for VOD/Series
+            if (!isLive && cur > 3 && vidDur && isFinite(vidDur) && vidDur > 0) {
+              latestProgressRef.current = { cur, dur: vidDur };
+              if (Math.abs(cur - lastReportedTimeRef.current) >= 5) {
+                lastReportedTimeRef.current = cur;
+                onProgressUpdateRef.current?.(cur, vidDur);
+              }
+            }
+
             // Buffered range indicator
             if (videoRef.current.buffered.length > 0) {
               setBufferedEnd(videoRef.current.buffered.end(videoRef.current.buffered.length - 1));
@@ -870,10 +950,14 @@ export const Player: React.FC<PlayerProps> = ({
           setIsLoading(false);
           setIsPlaying(true);
         }}
-        onPause={() => setIsPlaying(false)}
+        onPause={() => {
+          setIsPlaying(false);
+          flushProgress();
+        }}
         onEnded={() => {
           setIsPlaying(false);
           setShowControls(true);
+          flushProgress();
         }}
         onError={() => {
           if (!hlsRef.current) {
@@ -952,6 +1036,14 @@ export const Player: React.FC<PlayerProps> = ({
         </div>
       )}
 
+      {/* Resume Position Floating Indicator */}
+      {resumeBanner && !autoplayBlocked && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-40 pointer-events-none inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/85 px-4 py-1.5 text-xs font-semibold text-white shadow-xl backdrop-blur-md animate-in fade-in duration-200">
+          <Play className="w-3.5 h-3.5 text-red-500 fill-current" />
+          <span>Reanudando desde {resumeBanner}</span>
+        </div>
+      )}
+
       {/* Autoplay Blocked Floating Pill (Unmute prompt) */}
       {autoplayBlocked && (
         <button
@@ -994,7 +1086,7 @@ export const Player: React.FC<PlayerProps> = ({
           <Button
             variant="ghost"
             size="icon"
-            onClick={onClose}
+            onClick={handleClose}
             className="rounded-full text-white hover:bg-white/10 h-9 w-9 shrink-0 cursor-pointer"
             title="Volver"
           >
@@ -1044,7 +1136,7 @@ export const Player: React.FC<PlayerProps> = ({
           <Button
             variant="ghost"
             size="icon"
-            onClick={onClose}
+            onClick={handleClose}
             className="rounded-full text-zinc-300 hover:bg-white/10 hover:text-white h-9 w-9"
             title="Cerrar reproductor"
           >
@@ -1520,7 +1612,7 @@ export const Player: React.FC<PlayerProps> = ({
               <AlertDialogDescription>{errorAlert.message}</AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel onClick={onClose}>Cerrar reproductor</AlertDialogCancel>
+              <AlertDialogCancel onClick={handleClose}>Cerrar reproductor</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
                   setErrorAlert(null);

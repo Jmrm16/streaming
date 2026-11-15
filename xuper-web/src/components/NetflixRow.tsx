@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { ChevronLeft, ChevronRight, Heart, Play } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Heart, Play, X, Info } from 'lucide-react';
 import { MediaItem, Channel } from '../services/api';
+import { WatchProgressItem, formatPlaybackTime } from '../lib/firebase';
 
 interface NetflixRowProps {
   heading: string;
@@ -8,6 +9,9 @@ interface NetflixRowProps {
   isChannelRow?: boolean;
   channels?: Channel[];
   isTop10?: boolean;
+  progressMap?: Record<string, WatchProgressItem>;
+  onRemoveProgress?: (e: React.MouseEvent, item: MediaItem) => void;
+  onResumeItem?: (item: MediaItem, progress: WatchProgressItem) => void;
   isFavorite?: (id: string) => boolean;
   onToggleFavorite?: (e: React.MouseEvent, item: MediaItem) => void;
   onToggleFavoriteChannel?: (e: React.MouseEvent, channel: Channel) => void;
@@ -22,6 +26,9 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
   isChannelRow = false,
   channels = [],
   isTop10 = false,
+  progressMap,
+  onRemoveProgress,
+  onResumeItem,
   isFavorite,
   onToggleFavorite,
   onToggleFavoriteChannel,
@@ -221,11 +228,29 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
           : items.map((item, idx) => {
               const fav = isFavorite ? isFavorite(item.id) : false;
               const artworkUrl = item.poster || item.landscape || item.backdrop;
+              const prog = progressMap ? progressMap[item.id] : undefined;
+              const progressPct = prog
+                ? Math.min(100, Math.max(4, prog.progressPercent || 0))
+                : 0;
+              const progressLabel = prog
+                ? prog.episodeNumber
+                  ? `T${prog.seasonNumber || 1}:E${prog.episodeNumber} • ${formatPlaybackTime(prog.currentTime)}`
+                  : prog.duration > 0
+                  ? `${formatPlaybackTime(prog.currentTime)} / ${formatPlaybackTime(prog.duration)}`
+                  : `${formatPlaybackTime(prog.currentTime)}`
+                : '';
+
               return (
                 <div
                   key={`${item.id || item.title || 'media'}-${idx}`}
                   className="media-card group cursor-pointer"
-                  onClick={() => onSelectMedia(item)}
+                  onClick={() => {
+                    if (prog && onResumeItem) {
+                      onResumeItem(item, prog);
+                    } else {
+                      onSelectMedia(item);
+                    }
+                  }}
                 >
                   <div className="media-card-art is-poster relative">
                     <img
@@ -258,31 +283,76 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
                       </span>
                     )}
 
-                    {/* Quick favorite heart button on card */}
-                    {onToggleFavorite && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onToggleFavorite(e, item);
-                        }}
-                        className={`absolute top-2 right-2 p-1.5 rounded-full z-10 transition-colors ${
-                          fav
-                            ? 'text-pink-500 bg-black/70'
-                            : 'text-zinc-400 hover:text-white bg-black/60 hover:bg-zinc-800'
-                        }`}
-                        title={fav ? 'Quitar de Mi lista' : 'Añadir a Mi lista'}
-                      >
-                        <Heart className={`w-3.5 h-3.5 ${fav ? 'fill-current' : ''}`} />
-                      </button>
+                    {/* Top-right quick actions (Remove from history + Favorite) */}
+                    {(onRemoveProgress || onToggleFavorite) && (
+                      <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
+                        {prog && onRemoveProgress && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRemoveProgress(e, item);
+                            }}
+                            className="p-1.5 rounded-full bg-black/70 text-zinc-300 hover:text-white hover:bg-red-600/90 transition-colors cursor-pointer"
+                            title="Quitar de Continuar viendo"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {onToggleFavorite && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onToggleFavorite(e, item);
+                            }}
+                            className={`p-1.5 rounded-full transition-colors cursor-pointer ${
+                              fav
+                                ? 'text-pink-500 bg-black/70'
+                                : 'text-zinc-400 hover:text-white bg-black/60 hover:bg-zinc-800'
+                            }`}
+                            title={fav ? 'Quitar de Mi lista' : 'Añadir a Mi lista'}
+                          >
+                            <Heart className={`w-3.5 h-3.5 ${fav ? 'fill-current' : ''}`} />
+                          </button>
+                        )}
+                      </div>
                     )}
 
-                    {/* Floating play badge on hover */}
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                      <div className="w-10 h-10 rounded-full bg-white/90 text-black flex items-center justify-center shadow-lg transform scale-90 group-hover:scale-100 transition-transform">
+                    {/* Floating play badge & detail info button on hover */}
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                      <div className="w-10 h-10 rounded-full bg-white/95 text-black flex items-center justify-center shadow-lg transform scale-90 group-hover:scale-100 transition-transform">
                         <Play className="w-5 h-5 fill-current ml-0.5" />
                       </div>
+                      {prog && onResumeItem && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectMedia(item);
+                          }}
+                          className="w-8 h-8 rounded-full bg-zinc-900/90 border border-white/25 text-white flex items-center justify-center shadow-lg hover:bg-zinc-800 transition-colors cursor-pointer"
+                          title="Ver detalles y episodios"
+                        >
+                          <Info className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
+
+                    {/* Watch Progress Badge + Red Progress Bar */}
+                    {prog && prog.currentTime > 3 && (
+                      <>
+                        <span className="absolute bottom-2.5 left-1.5 z-10 px-1.5 py-0.5 rounded bg-black/85 border border-white/10 text-[10px] font-bold text-white shadow">
+                          {progressLabel}
+                        </span>
+                        <div className="absolute bottom-0 left-0 right-0 h-1.5 bg-zinc-800/95 z-10 overflow-hidden">
+                          <div
+                            className="h-full bg-red-600 transition-all duration-300"
+                            style={{ width: `${progressPct}%` }}
+                          />
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   <span className="media-card-title">{item.title}</span>

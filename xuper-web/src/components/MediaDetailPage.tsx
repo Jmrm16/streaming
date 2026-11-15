@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import {
   ArrowLeft,
   Play,
@@ -15,6 +15,7 @@ import {
   Info,
   Tv,
   Share2,
+  RotateCcw,
 } from 'lucide-react';
 import { MaicaoflixLogo } from './MaicaoflixLogo';
 import { Button } from './ui/button';
@@ -37,10 +38,24 @@ import {
   SubtitleTrack,
   AudioLanguage,
 } from '../services/api';
+import {
+  WatchProgressItem,
+  EpisodeProgressEntry,
+  formatPlaybackTime,
+} from '../lib/firebase';
+
+export interface EpisodePlaybackMeta {
+  seasonId: string;
+  seasonNumber: number;
+  episodeNumber: number;
+  episodeTitle: string;
+}
 
 interface MediaDetailPageProps {
   media: MediaItem;
   relatedItems?: MediaItem[];
+  watchEntry?: WatchProgressItem | null;
+  episodeProgressMap?: Record<string, EpisodeProgressEntry>;
   onBack: () => void;
   onSelectMedia?: (item: MediaItem) => void;
   onPlayEpisode: (
@@ -50,7 +65,10 @@ interface MediaDetailPageProps {
     subtitles?: SubtitleTrack[],
     audioLanguages?: AudioLanguage[],
     contentId?: string,
-    seriesId?: string
+    seriesId?: string,
+    initialTime?: number,
+    episodeMeta?: EpisodePlaybackMeta,
+    resolvedMedia?: MediaItem
   ) => void;
   onPlayMovie: (
     url: string,
@@ -58,7 +76,9 @@ interface MediaDetailPageProps {
     subtitle?: string,
     subtitles?: SubtitleTrack[],
     audioLanguages?: AudioLanguage[],
-    contentId?: string
+    contentId?: string,
+    initialTime?: number,
+    resolvedMedia?: MediaItem
   ) => void;
   isFavorite?: boolean;
   onToggleFavorite?: (item: MediaItem) => void;
@@ -91,6 +111,8 @@ const mergeMediaItem = (base: MediaItem, incoming?: MediaItem | null): MediaItem
 export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
   media,
   relatedItems = [],
+  watchEntry = null,
+  episodeProgressMap,
   onBack,
   onSelectMedia,
   onPlayEpisode,
@@ -111,6 +133,8 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
   const [isResolving, setIsResolving] = useState(false);
   const [resolvingEpId, setResolvingEpId] = useState<string | null>(null);
   const [errorAlert, setErrorAlert] = useState<{ open: boolean; title: string; description: string } | null>(null);
+  const watchEntryRef = useRef<WatchProgressItem | null>(watchEntry);
+  watchEntryRef.current = watchEntry;
 
   // Scroll to top on page load
   useEffect(() => {
@@ -171,6 +195,18 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
           setSeasons(rawSeasons);
 
           let activeSeason = rawSeasons.find((s) => s.id === media.id);
+          const savedWatch = watchEntryRef.current;
+          if (savedWatch?.seasonId) {
+            const watchedSeason = rawSeasons.find((s) => s.id === savedWatch.seasonId);
+            if (watchedSeason) {
+              activeSeason = watchedSeason;
+            }
+          } else if (savedWatch?.seasonNumber) {
+            const watchedSeasonByNum = rawSeasons.find((s) => s.number === savedWatch.seasonNumber);
+            if (watchedSeasonByNum) {
+              activeSeason = watchedSeasonByNum;
+            }
+          }
           if (!activeSeason && rawSeasons.length > 0) {
             const match = media.title.match(/T(\d+)/i);
             if (match) {
@@ -189,10 +225,30 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
           setSelectedSeasonNumber(targetSeasonNumber);
 
           const initialEps = res.episodes || [];
+          const nextCache: Record<string, { item: MediaItem; episodes: Episode[] }> = {
+            [media.id]: { item: mergedItem, episodes: initialEps },
+          };
+
+          if (targetSeasonId !== media.id) {
+            try {
+              const seasonRes = await api.getDetail(targetSeasonId);
+              if (isMounted && seasonRes && seasonRes.episodes) {
+                const mergedSeasonItem = mergeMediaItem(mergedItem, seasonRes.item);
+                setSeasonEpisodes(seasonRes.episodes);
+                nextCache[targetSeasonId] = {
+                  item: mergedSeasonItem,
+                  episodes: seasonRes.episodes,
+                };
+                setSeasonCache(nextCache);
+                return;
+              }
+            } catch (seasonErr) {
+              console.warn('Error fetching saved season detail:', seasonErr);
+            }
+          }
+
           setSeasonEpisodes(initialEps);
-          setSeasonCache({
-            [targetSeasonId]: { item: mergedItem, episodes: initialEps },
-          });
+          setSeasonCache(nextCache);
         }
       } catch (err) {
         console.error('Error fetching detail:', err);
@@ -238,20 +294,29 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
     }
   };
 
-  // Play a movie
-  const handlePlayMovie = async () => {
+  // Play a movie (supports optional explicit start time)
+  const handlePlayMovie = async (overrideStartTime?: number) => {
     setIsResolving(true);
     try {
-      const targetId = detail?.item?.id || media.id;
+      const targetItem = seasonCache[selectedSeasonId]?.item || detail?.item || media;
+      const targetId = targetItem.id || media.id;
       const res = await api.resolveMedia(targetId);
       if (res && res.url) {
+        const resumePos =
+          overrideStartTime !== undefined
+            ? overrideStartTime
+            : watchEntry && watchEntry.currentTime > 5 && (watchEntry.progressPercent || 0) < 96
+            ? watchEntry.currentTime
+            : 0;
         onPlayMovie(
           res.url,
-          detail?.item?.title || media.title,
-          detail?.item?.year ? `Película • ${detail.item.year}` : 'Película',
+          targetItem.title || media.title,
+          targetItem.year && targetItem.year !== '—' ? `Película • ${targetItem.year}` : 'Película',
           res.subtitles,
           res.audioLanguages,
-          targetId
+          targetId,
+          resumePos,
+          targetItem
         );
       } else {
         setErrorAlert({
@@ -272,25 +337,50 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
     }
   };
 
-  // Play an episode
-  const handlePlayEpisode = async (ep: Episode) => {
+  // Play an episode (supports saved per-episode progress or explicit start time)
+  const handlePlayEpisode = async (
+    ep: Episode,
+    overrideStartTime?: number,
+    overrideSeasonId?: string,
+    overrideSeasonNumber?: number
+  ) => {
     setIsResolving(true);
     setResolvingEpId(ep.id);
     try {
-      const seriesId = selectedSeasonId || media.id;
+      const targetItem = seasonCache[selectedSeasonId]?.item || detail?.item || media;
+      const seriesId = overrideSeasonId || selectedSeasonId || media.id;
+      const seasonNum = overrideSeasonNumber || selectedSeasonNumber || 1;
       // Content ID (ep.id) first, series ID second
       const res = await api.resolveMedia(ep.id, seriesId);
       if (res && res.url) {
         const cleanEpTitle = cleanEpisodeTitle(ep.name || ep.title || `Capítulo ${ep.number}`);
-        const epLabel = `T${selectedSeasonNumber} : E${ep.number} — ${cleanEpTitle}`;
+        const epLabel = `T${seasonNum} : E${ep.number} — ${cleanEpTitle}`;
+        const savedEpProg =
+          episodeProgressMap?.[ep.id] ||
+          (watchEntry?.episodeId === ep.id ? watchEntry : undefined);
+        const resumePos =
+          overrideStartTime !== undefined
+            ? overrideStartTime
+            : savedEpProg && savedEpProg.currentTime > 5 && (savedEpProg.progressPercent || 0) < 96
+            ? savedEpProg.currentTime
+            : 0;
+
         onPlayEpisode(
           res.url,
-          detail?.item?.title || media.title,
+          targetItem.title || media.title,
           epLabel,
           res.subtitles,
           res.audioLanguages,
           ep.id,
-          seriesId
+          seriesId,
+          resumePos,
+          {
+            seasonId: seriesId,
+            seasonNumber: seasonNum,
+            episodeNumber: ep.number,
+            episodeTitle: cleanEpTitle,
+          },
+          targetItem
         );
       } else {
         setErrorAlert({
@@ -309,6 +399,35 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
     } finally {
       setIsResolving(false);
       setResolvingEpId(null);
+    }
+  };
+
+  const handleResumeSeriesFromHero = async () => {
+    if (watchEntry?.episodeId) {
+      const epInCurrentSeason = seasonEpisodes.find((e) => e.id === watchEntry.episodeId);
+      if (epInCurrentSeason) {
+        await handlePlayEpisode(
+          epInCurrentSeason,
+          watchEntry.progressPercent < 96 ? watchEntry.currentTime : 0
+        );
+        return;
+      }
+      const syntheticEp: Episode = {
+        id: watchEntry.episodeId,
+        number: watchEntry.episodeNumber || 1,
+        name: watchEntry.episodeTitle || `Episodio ${watchEntry.episodeNumber || 1}`,
+        title: watchEntry.episodeTitle,
+      };
+      await handlePlayEpisode(
+        syntheticEp,
+        watchEntry.progressPercent < 96 ? watchEntry.currentTime : 0,
+        watchEntry.seasonId || selectedSeasonId || media.id,
+        watchEntry.seasonNumber || selectedSeasonNumber
+      );
+      return;
+    }
+    if (seasonEpisodes[0]) {
+      await handlePlayEpisode(seasonEpisodes[0]);
     }
   };
 
@@ -452,71 +571,156 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
             </div>
 
             {/* Action Buttons */}
-            <div className="flex items-center gap-4 pt-3">
-              {isSeries ? (
-                <button
-                  type="button"
-                  disabled={isResolving || initialLoading || seasonEpisodes.length === 0}
-                  onClick={() => seasonEpisodes[0] && handlePlayEpisode(seasonEpisodes[0])}
-                  className="featured-play cursor-pointer inline-flex items-center justify-center gap-2.5 px-8 py-3 rounded-md bg-white text-black font-bold text-lg hover:bg-white/85 transition-colors shadow-2xl disabled:opacity-50"
-                >
-                  {isResolving && !resolvingEpId ? (
-                    <>
-                      <Loader2 className="w-6 h-6 animate-spin text-black" />
-                      <span>Cargando...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-6 h-6 fill-current" />
-                      <span>Reproducir</span>
-                    </>
-                  )}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled={isResolving || initialLoading}
-                  onClick={handlePlayMovie}
-                  className="featured-play cursor-pointer inline-flex items-center justify-center gap-2.5 px-8 py-3 rounded-md bg-white text-black font-bold text-lg hover:bg-white/85 transition-colors shadow-2xl disabled:opacity-50"
-                >
-                  {isResolving ? (
-                    <>
-                      <Loader2 className="w-6 h-6 animate-spin text-black" />
-                      <span>Cargando...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-6 h-6 fill-current" />
-                      <span>Reproducir</span>
-                    </>
-                  )}
-                </button>
-              )}
+            {(() => {
+              const hasResume = Boolean(
+                watchEntry && watchEntry.currentTime > 5 && (watchEntry.progressPercent || 0) < 96
+              );
+              const resumeLabel = isSeries
+                ? `Reanudar T${watchEntry?.seasonNumber || selectedSeasonNumber}:E${watchEntry?.episodeNumber || 1} (${formatPlaybackTime(watchEntry?.currentTime || 0)})`
+                : `Reanudar (${formatPlaybackTime(watchEntry?.currentTime || 0)})`;
 
-              {onToggleFavorite && (
-                <button
-                  type="button"
-                  className={`featured-info cursor-pointer inline-flex items-center justify-center gap-2 px-6 py-3 rounded-md border text-base font-bold transition-colors backdrop-blur-md ${
-                    isFavorite
-                      ? 'border-pink-800/80 bg-pink-950/60 text-pink-300 hover:bg-pink-900/60'
-                      : 'border-zinc-600 bg-zinc-800/70 text-white hover:bg-zinc-700/80'
-                  }`}
-                  onClick={() => onToggleFavorite(media)}
-                >
-                  {isFavorite ? (
-                    <>
-                      <Check className="w-5 h-5 text-pink-400" />
-                      <span>En Mi lista</span>
-                    </>
-                  ) : (
-                    <>
-                      <Plus className="w-5 h-5 text-white" />
-                      <span>Mi lista</span>
-                    </>
+              return (
+                <div className="space-y-3 pt-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    {isSeries ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled={
+                            isResolving ||
+                            initialLoading ||
+                            (!watchEntry?.episodeId && seasonEpisodes.length === 0)
+                          }
+                          onClick={() =>
+                            hasResume ? handleResumeSeriesFromHero() : seasonEpisodes[0] && handlePlayEpisode(seasonEpisodes[0])
+                          }
+                          className="featured-play cursor-pointer inline-flex items-center justify-center gap-2.5 px-7 py-3 rounded-md bg-white text-black font-bold text-base sm:text-lg hover:bg-white/85 transition-colors shadow-2xl disabled:opacity-50"
+                        >
+                          {isResolving && !resolvingEpId ? (
+                            <>
+                              <Loader2 className="w-5 h-5 animate-spin text-black" />
+                              <span>Cargando...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Play className="w-5 h-5 fill-current" />
+                              <span>{hasResume ? resumeLabel : 'Reproducir'}</span>
+                            </>
+                          )}
+                        </button>
+
+                        {hasResume && (
+                          <button
+                            type="button"
+                            disabled={isResolving || initialLoading}
+                            onClick={() => {
+                              if (watchEntry?.episodeId) {
+                                const epMatch = seasonEpisodes.find((e) => e.id === watchEntry.episodeId);
+                                if (epMatch) {
+                                  handlePlayEpisode(epMatch, 0);
+                                  return;
+                                }
+                              }
+                              if (seasonEpisodes[0]) {
+                                handlePlayEpisode(seasonEpisodes[0], 0);
+                              } else {
+                                handleResumeSeriesFromHero();
+                              }
+                            }}
+                            className="cursor-pointer inline-flex items-center justify-center gap-2 px-5 py-3 rounded-md border border-zinc-600 bg-zinc-900/80 text-white font-semibold text-sm sm:text-base hover:bg-zinc-800 transition-colors backdrop-blur-md disabled:opacity-50"
+                            title="Reproducir desde el principio"
+                          >
+                            <RotateCcw className="w-4 h-4" />
+                            <span>Desde el inicio</span>
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          disabled={isResolving || initialLoading}
+                          onClick={() => handlePlayMovie()}
+                          className="featured-play cursor-pointer inline-flex items-center justify-center gap-2.5 px-7 py-3 rounded-md bg-white text-black font-bold text-base sm:text-lg hover:bg-white/85 transition-colors shadow-2xl disabled:opacity-50"
+                        >
+                          {isResolving ? (
+                            <>
+                              <Loader2 className="w-5 h-5 animate-spin text-black" />
+                              <span>Cargando...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Play className="w-5 h-5 fill-current" />
+                              <span>{hasResume ? resumeLabel : 'Reproducir'}</span>
+                            </>
+                          )}
+                        </button>
+
+                        {hasResume && (
+                          <button
+                            type="button"
+                            disabled={isResolving || initialLoading}
+                            onClick={() => handlePlayMovie(0)}
+                            className="cursor-pointer inline-flex items-center justify-center gap-2 px-5 py-3 rounded-md border border-zinc-600 bg-zinc-900/80 text-white font-semibold text-sm sm:text-base hover:bg-zinc-800 transition-colors backdrop-blur-md disabled:opacity-50"
+                            title="Reproducir desde el principio"
+                          >
+                            <RotateCcw className="w-4 h-4" />
+                            <span>Desde el inicio</span>
+                          </button>
+                        )}
+                      </>
+                    )}
+
+                    {onToggleFavorite && (
+                      <button
+                        type="button"
+                        className={`featured-info cursor-pointer inline-flex items-center justify-center gap-2 px-6 py-3 rounded-md border text-base font-bold transition-colors backdrop-blur-md ${
+                          isFavorite
+                            ? 'border-pink-800/80 bg-pink-950/60 text-pink-300 hover:bg-pink-900/60'
+                            : 'border-zinc-600 bg-zinc-800/70 text-white hover:bg-zinc-700/80'
+                        }`}
+                        onClick={() => onToggleFavorite(media)}
+                      >
+                        {isFavorite ? (
+                          <>
+                            <Check className="w-5 h-5 text-pink-400" />
+                            <span>En Mi lista</span>
+                          </>
+                        ) : (
+                          <>
+                            <Plus className="w-5 h-5 text-white" />
+                            <span>Mi lista</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+
+                  {hasResume && watchEntry && (
+                    <div className="max-w-md space-y-1.5 pt-1">
+                      <div className="w-full h-1.5 bg-zinc-800/90 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-red-600 rounded-full transition-all"
+                          style={{
+                            width: `${Math.min(100, Math.max(4, watchEntry.progressPercent || 0))}%`,
+                          }}
+                        />
+                      </div>
+                      <p className="text-xs text-zinc-300 font-medium">
+                        Lo dejaste en{' '}
+                        <span className="text-white font-bold">
+                          {formatPlaybackTime(watchEntry.currentTime)}
+                        </span>
+                        {watchEntry.duration > 0
+                          ? ` de ${formatPlaybackTime(watchEntry.duration)}`
+                          : ''}
+                        {isSeries && watchEntry.episodeTitle ? ` • ${watchEntry.episodeTitle}` : ''}
+                      </p>
+                    </div>
                   )}
-                </button>
-              )}
-            </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       </section>
@@ -659,11 +863,21 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {seasonEpisodes.map((ep, idx) => {
                   const isResolvingThis = isResolving && resolvingEpId === ep.id;
+                  const epProg =
+                    episodeProgressMap?.[ep.id] ||
+                    (watchEntry?.episodeId === ep.id ? watchEntry : undefined);
+                  const epPct = epProg ? Math.min(100, Math.max(4, epProg.progressPercent || 0)) : 0;
+                  const epHasResume = Boolean(epProg && epProg.currentTime > 5);
+
                   return (
                     <div
                       key={ep.id || idx}
                       onClick={() => !isResolving && handlePlayEpisode(ep)}
-                      className="group flex gap-4 p-3.5 rounded-xl bg-zinc-900/40 hover:bg-zinc-800/80 border border-zinc-800/60 hover:border-zinc-700 transition-all cursor-pointer"
+                      className={`group flex gap-4 p-3.5 rounded-xl bg-zinc-900/40 hover:bg-zinc-800/80 border transition-all cursor-pointer ${
+                        watchEntry?.episodeId === ep.id
+                          ? 'border-red-700/70 bg-zinc-900/75'
+                          : 'border-zinc-800/60 hover:border-zinc-700'
+                      }`}
                     >
                       {/* Thumbnail with hover play overlay */}
                       <div className="relative w-36 sm:w-44 aspect-video rounded-lg overflow-hidden bg-zinc-800 shrink-0">
@@ -682,9 +896,17 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
                             </div>
                           )}
                         </div>
-                        <span className="absolute bottom-1.5 left-1.5 text-[10px] font-bold bg-black/80 px-1.5 py-0.5 rounded text-zinc-300">
+                        <span className="absolute bottom-2 left-1.5 text-[10px] font-bold bg-black/80 px-1.5 py-0.5 rounded text-zinc-300">
                           E{ep.number || idx + 1}
                         </span>
+                        {epHasResume && (
+                          <div className="absolute bottom-0 left-0 right-0 h-1 bg-zinc-800/95">
+                            <div
+                              className="h-full bg-red-600"
+                              style={{ width: `${epPct}%` }}
+                            />
+                          </div>
+                        )}
                       </div>
 
                       {/* Episode Details */}
@@ -699,6 +921,15 @@ export const MediaDetailPage: React.FC<MediaDetailPageProps> = ({
                             </span>
                           )}
                         </div>
+                        {epHasResume && epProg && (
+                          <p className="text-[11px] font-semibold text-red-400">
+                            {epProg.progressPercent >= 96
+                              ? 'Visto'
+                              : `Continuar • ${formatPlaybackTime(epProg.currentTime)}${
+                                  epProg.duration > 0 ? ` / ${formatPlaybackTime(epProg.duration)}` : ''
+                                }`}
+                          </p>
+                        )}
                         {ep.description ? (
                           <p className="text-xs text-zinc-400 line-clamp-2 leading-relaxed">
                             {ep.description}
