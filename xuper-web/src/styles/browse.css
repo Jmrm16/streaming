@@ -556,7 +556,9 @@
 .media-row {
   position: relative;
   margin-bottom: 38px;
+  animation: media-row-settle .34s cubic-bezier(.2,.8,.2,1) both;
 }
+@keyframes media-row-settle { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
 .media-row-header {
   padding: 0 var(--catalog-gutter);
   display: flex;
@@ -606,6 +608,9 @@
   scroll-padding-inline: var(--catalog-gutter);
   padding: 8px var(--catalog-gutter) 18px;
   overscroll-behavior-x: contain;
+  scroll-behavior: smooth;
+  scroll-snap-stop: always;
+  will-change: scroll-position;
 }
 .media-track::-webkit-scrollbar {
   display: none;
@@ -1435,8 +1440,10 @@
   }
 }
 @media(prefers-reduced-motion:reduce) {
-  .browse-header,.media-card,.browse-search input,.browse-toast {
+  .browse-header,.media-card,.media-row,.media-track,.browse-search input,.browse-toast {
     transition: none;
+    animation: none;
+    scroll-behavior: auto;
   }
 }
 /* Title treatments belong inside the artwork, with legible metadata below. */

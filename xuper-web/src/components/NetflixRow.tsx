@@ -57,9 +57,23 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
   if (totalCount === 0) return null;
 
   const move = (direction: number) => {
-    if (!trackRef.current) return;
-    const scrollAmount = trackRef.current.clientWidth * 0.85;
-    trackRef.current.scrollBy({
+    const track = trackRef.current;
+    if (!track) return;
+    const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
+    const atStart = track.scrollLeft <= 5;
+    const atEnd = track.scrollLeft >= maxScroll - 5;
+    const scrollAmount = track.clientWidth * 0.85;
+
+    // Netflix-style continuous rails: never leave either arrow at a dead end.
+    if (direction > 0 && atEnd) {
+      track.scrollTo({ left: 0, behavior: 'smooth' });
+      return;
+    }
+    if (direction < 0 && atStart) {
+      track.scrollTo({ left: maxScroll, behavior: 'smooth' });
+      return;
+    }
+    track.scrollBy({
       left: direction * scrollAmount,
       behavior: 'smooth',
     });
@@ -85,8 +99,8 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
           <button
             type="button"
             className="row-arrow"
-            disabled={edges.start}
-            aria-label={`Anterior en ${heading}`}
+            disabled={!edges.overflow}
+            aria-label={edges.start ? `Ir al final de ${heading}` : `Anterior en ${heading}`}
             onClick={() => move(-1)}
           >
             <ChevronLeft className="w-4 h-4" />
@@ -94,8 +108,8 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
           <button
             type="button"
             className="row-arrow"
-            disabled={edges.end}
-            aria-label={`Siguiente en ${heading}`}
+            disabled={!edges.overflow}
+            aria-label={edges.end ? `Volver al inicio de ${heading}` : `Siguiente en ${heading}`}
             onClick={() => move(1)}
           >
             <ChevronRight className="w-4 h-4" />
@@ -109,7 +123,7 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
               const fav = isFavorite ? isFavorite(channel.id || channel.channelCode || '') : false;
               return (
                 <div
-                  key={channel.id || channel.channelCode || idx}
+                  key={`${channel.id || channel.channelCode || channel.name}-${idx}`}
                   className="media-card group cursor-pointer"
                   onClick={() => onSelectChannel && onSelectChannel(channel)}
                 >
@@ -164,7 +178,7 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
               const artworkUrl = item.poster || item.landscape || item.backdrop;
               return (
                 <div
-                  key={item.id || idx}
+                  key={`${item.id || item.title || 'media'}-${idx}`}
                   className="media-card group cursor-pointer"
                   onClick={() => onSelectMedia(item)}
                 >
