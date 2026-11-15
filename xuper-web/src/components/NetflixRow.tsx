@@ -30,6 +30,7 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
   onViewAll,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
+  const animationFrameRef = useRef<number | null>(null);
   const [edges, setEdges] = useState({ start: true, end: false, overflow: false });
 
   const totalCount = isChannelRow ? channels.length : items.length;
@@ -41,7 +42,11 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
       const atStart = track.scrollLeft <= 5;
       const atEnd = track.scrollLeft >= track.scrollWidth - track.clientWidth - 5;
       const canScroll = track.scrollWidth > track.clientWidth + 5;
-      setEdges({ start: atStart, end: atEnd, overflow: canScroll });
+      setEdges((previous) =>
+        previous.start === atStart && previous.end === atEnd && previous.overflow === canScroll
+          ? previous
+          : { start: atStart, end: atEnd, overflow: canScroll }
+      );
     };
 
     update();
@@ -54,7 +59,33 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
     };
   }, [totalCount]);
 
+  useEffect(() => () => {
+    if (animationFrameRef.current !== null) cancelAnimationFrame(animationFrameRef.current);
+  }, []);
+
   if (totalCount === 0) return null;
+
+  const animateTo = (track: HTMLDivElement, target: number) => {
+    if (animationFrameRef.current !== null) cancelAnimationFrame(animationFrameRef.current);
+    const start = track.scrollLeft;
+    const distance = target - start;
+    if (Math.abs(distance) < 2) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      track.scrollLeft = target;
+      return;
+    }
+
+    const duration = 480;
+    const startedAt = performance.now();
+    const tick = (now: number) => {
+      const elapsed = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - Math.pow(1 - elapsed, 4);
+      track.scrollLeft = start + distance * eased;
+      if (elapsed < 1) animationFrameRef.current = requestAnimationFrame(tick);
+      else animationFrameRef.current = null;
+    };
+    animationFrameRef.current = requestAnimationFrame(tick);
+  };
 
   const move = (direction: number) => {
     const track = trackRef.current;
@@ -66,17 +97,14 @@ export const NetflixRow: React.FC<NetflixRowProps> = ({
 
     // Netflix-style continuous rails: never leave either arrow at a dead end.
     if (direction > 0 && atEnd) {
-      track.scrollTo({ left: 0, behavior: 'smooth' });
+      animateTo(track, 0);
       return;
     }
     if (direction < 0 && atStart) {
-      track.scrollTo({ left: maxScroll, behavior: 'smooth' });
+      animateTo(track, maxScroll);
       return;
     }
-    track.scrollBy({
-      left: direction * scrollAmount,
-      behavior: 'smooth',
-    });
+    animateTo(track, Math.max(0, Math.min(maxScroll, track.scrollLeft + direction * scrollAmount)));
   };
 
   return (

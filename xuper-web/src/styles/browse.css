@@ -459,7 +459,8 @@
   overflow-x: auto;
   padding: 2px 22px 5px 1px;
   scrollbar-width: none;
-  scroll-behavior: smooth;
+  /* The component drives a consistent requestAnimationFrame animation. */
+  scroll-behavior: auto;
   scroll-snap-type: x proximity;
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
