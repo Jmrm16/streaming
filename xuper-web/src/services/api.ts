@@ -208,12 +208,22 @@ export const api = {
   },
 
   async getPublicLiveCatalog(forceRefresh = false): Promise<{ channels: Channel[]; categories: { id: string; name: string }[] }> {
-    const data = await fetchWithCache<{ channels?: Channel[]; categories?: { id: string; name: string }[] }>(
+    let data = await fetchWithCache<{ channels?: Channel[]; categories?: { id: string; name: string }[] }>(
       'public_live_catalog',
       `${getApiBaseUrl()}/publicLiveChannels`,
       15000,
       forceRefresh
     );
+    // Render puede tardar unos minutos en tomar un commit. Conserva TV utilizable
+    // durante ese intervalo y cambia al catálogo completo en cuanto esté disponible.
+    if (!data) {
+      data = await fetchWithCache<{ channels?: Channel[]; categories?: { id: string; name: string }[] }>(
+        'public_live_catalog_legacy',
+        `${getApiBaseUrl()}/publicMoviesChannels`,
+        15000,
+        forceRefresh
+      );
+    }
     return {
       channels: data && Array.isArray(data.channels) ? data.channels : [],
       categories: data && Array.isArray(data.categories) ? data.categories : [],
