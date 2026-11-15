@@ -659,7 +659,10 @@ export const Player: React.FC<PlayerProps> = ({
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
               if (
-                (statusCode === 410 || statusCode === 404 || networkRetryRef.current >= 2) &&
+                (statusCode === 410 ||
+                  statusCode === 409 ||
+                  statusCode === 404 ||
+                  networkRetryRef.current >= 2) &&
                 onRefreshStreamRef.current &&
                 !refreshingStreamRef.current
               ) {
@@ -710,16 +713,29 @@ export const Player: React.FC<PlayerProps> = ({
           (data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR ||
             data.details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT ||
             data.details === Hls.ErrorDetails.LEVEL_LOAD_ERROR ||
-            data.details === Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT) &&
-          statusCode === 410 &&
+            data.details === Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT ||
+            data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR) &&
+          (statusCode === 410 || statusCode === 409) &&
           onRefreshStreamRef.current &&
           !refreshingStreamRef.current
         ) {
           refreshingStreamRef.current = true;
-          console.warn('Proxy token expired (HTTP 410), refreshing stream token...');
+          console.warn(
+            `Proxy stream error (HTTP ${statusCode}), refreshing stream token...`
+          );
           Promise.resolve(onRefreshStreamRef.current()).finally(() => {
             refreshingStreamRef.current = false;
           });
+        } else if (
+          data.details === Hls.ErrorDetails.LEVEL_LOAD_ERROR ||
+          data.details === Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT ||
+          data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR
+        ) {
+          setTimeout(() => {
+            if (hlsRef.current === hls) {
+              hls.startLoad();
+            }
+          }, 600);
         } else if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
           // Jump only across genuine buffered gaps ahead; never seek past the buffered end
           if (video && !video.paused) {

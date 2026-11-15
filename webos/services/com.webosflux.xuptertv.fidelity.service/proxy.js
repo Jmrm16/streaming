@@ -259,6 +259,116 @@ function isCacheFlyHost(e, t) {
     /swzablvpm|kyalbhxgw|m3x8o50te|qnrgmzpcw|faolmbghu/i.test(String(e || ""))
   );
 }
+for (
+  var LIVE_K = [
+      3614090360, 3905402710, 606105819, 3250441966, 4118548399, 1200080426,
+      2821735955, 4249261313, 1770035416, 2336552879, 4294925233, 2304563134,
+      1804603682, 4254626195, 2792965006, 1236535329, 4129170786, 3225465664,
+      643717713, 3921069994, 3593408605, 38016083, 3634488961, 3889429448,
+      568446438, 3275163606, 4107603335, 1163531501, 2850285829, 4243563512,
+      1735328473, 2368359562, 4294588738, 2272392833, 1839030562, 4259657740,
+      2763975236, 1272893353, 4139469664, 3200236656, 681279174, 3936430074,
+      3564056709, 76029189, 3654602809, 3871185381, 530742520, 3299628645,
+      4096336452, 1126891415, 2878612391, 4237533241, 1700485571, 2399980690,
+      4293706877, 2240044497, 1873313359, 4264355552, 2734768916, 1309151649,
+      4149444226, 3174756917, 765973179, 3951481745,
+    ],
+    LIVE_S = [
+      7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20,
+      5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4,
+      11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6,
+      10, 15, 21,
+    ],
+    LIVE_ROUND1 = [10, 11, 12, 13, 14, 15, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5],
+    LIVE_G = [],
+    iLiveG = 0;
+  iLiveG < 64;
+  iLiveG++
+)
+  LIVE_G.push(
+    iLiveG < 16
+      ? LIVE_ROUND1[iLiveG]
+      : iLiveG < 32
+        ? (5 * iLiveG + 1) % 16
+        : iLiveG < 48
+          ? (3 * iLiveG + 5) % 16
+          : (7 * iLiveG) % 16
+  );
+var LIVE_SALT = Buffer.from([
+  115, 97, 108, 116, 51, 51, 51, 51, 61, 52, 152, 13, 10, 21, 50, 201, 195, 130,
+  23, 8, 192,
+]);
+function rotl(e, r) {
+  return ((e << r) | (e >>> (32 - r))) >>> 0;
+}
+function liveCompress(e, r, t) {
+  for (var n = new Array(16), s = 0; s < 16; s++) {
+    var a = t + 4 * s;
+    n[s] = (r[a] | (r[a + 1] << 8) | (r[a + 2] << 16) | (r[a + 3] << 24)) >>> 0;
+  }
+  for (var o = e[0], i = e[1], l = e[2], u = e[3], d = 0; d < 64; d++) {
+    var c =
+      ((d < 16
+        ? (i & l) | (~i & u)
+        : d < 32
+          ? (u & i) | (~u & l)
+          : d < 48
+            ? i ^ l ^ u
+            : l ^ (i | ~u)) +
+        o +
+        LIVE_K[d] +
+        n[LIVE_G[d]]) >>>
+      0;
+    ((o = u), (u = l), (l = i), (i = (i + rotl(c, LIVE_S[d])) >>> 0));
+  }
+  ((e[0] = (e[0] + o) >>> 0),
+    (e[1] = (e[1] + i) >>> 0),
+    (e[2] = (e[2] + l) >>> 0),
+    (e[3] = (e[3] + u) >>> 0));
+}
+function liveDigestHex(e) {
+  var r = [1732584193, 4023233417, 2562383102, 271733878],
+    t = e.length,
+    n = (56 - ((t + 1) % 64) + 64) % 64,
+    s = Buffer.alloc(t + 1 + n + 8);
+  (e.copy(s, 0), (s[t] = 128));
+  for (
+    var a = (t % 536870912) * 8, o = Math.floor(t / 536870912), i = 0;
+    i < 4;
+    i++
+  )
+    ((s[t + 1 + n + i] = (a >>> (8 * i)) & 255),
+      (s[t + 5 + n + i] = (o >>> (8 * i)) & 255));
+  for (var l = 0; l < s.length; l += 64) liveCompress(r, s, l);
+  for (var u = "", d = 0; d < 4; d++)
+    for (var c = 0; c < 4; c++) {
+      var f = ((r[d] >>> (8 * c)) & 255).toString(16);
+      (f.length < 2 && (f = "0" + f), (u += f));
+    }
+  return u;
+}
+function signO3(e, r) {
+  var t = Buffer.from(
+    "token=" + e + "&sign2_method=sign_o3&instance=0&start_moment=" + r,
+    "utf8"
+  );
+  return liveDigestHex(Buffer.concat([t, LIVE_SALT]));
+}
+var lastLiveSignMoment = 0;
+function refreshLiveAuthHeader(authVal) {
+  if (!authVal || "string" != typeof authVal) return authVal;
+  if (-1 === authVal.indexOf("sign2_method=sign_o3")) return authVal;
+  var mTok =
+    authVal.match(/token=([0-9a-fA-F]{32})/) || authVal.match(/token=([^&]+)/);
+  if (!mTok) return authVal;
+  var d = Math.floor(Date.now());
+  if (d <= lastLiveSignMoment) d = lastLiveSignMoment + 1;
+  lastLiveSignMoment = d;
+  var newSign = signO3(mTok[1], d);
+  return authVal
+    .replace(/start_moment=\d+/, "start_moment=" + d)
+    .replace(/sign2=[0-9a-fA-F]+/, "sign2=" + newSign);
+}
 function mediaRequest(e, t, r, n) {
   e.url = normalizePublicHlsUrl(e.url);
   var o = urlmod.parse(e.url || ""),
@@ -281,6 +391,10 @@ function mediaRequest(e, t, r, n) {
     Object.prototype.hasOwnProperty.call(e.headers, c) && (p[c] = e.headers[c]);
   for (c in r || {})
     Object.prototype.hasOwnProperty.call(r, c) && (p[c] = r[c]);
+  for (c in p)
+    Object.prototype.hasOwnProperty.call(p, c) &&
+      "content-auth" === c.toLowerCase() &&
+      (p[c] = refreshLiveAuthHeader(p[c]));
   /* Algunos proveedores HLS rechazan las peticiones sin User-Agent. Respeta
      el agente declarado por la lista y usa uno estable solamente si falta. */
   (p["User-Agent"] || p["user-agent"] || (p["User-Agent"] = "XuperWeb/1.0"));
@@ -845,6 +959,26 @@ function normalizePublicHlsUrl(e) {
 }
 function forward(e, t, r, n) {
   activeToken = n;
+  if (
+    r &&
+    r.isLive &&
+    !r._isHlsChild &&
+    "GET" === e.method &&
+    r._lastManifest &&
+    Date.now() - r._lastManifest.at < 1200
+  ) {
+    try {
+      t.writeHead(200, {
+        "Content-Type": "application/vnd.apple.mpegurl",
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-cache, no-store",
+        Connection: "keep-alive",
+        "Content-Length": Buffer.byteLength(r._lastManifest.body),
+      });
+      t.end(r._lastManifest.body);
+    } catch (errCache) {}
+    return;
+  }
   var o = {};
   (e.headers.range && (o.Range = e.headers.range),
     e.headers["if-range"] && (o["If-Range"] = e.headers["if-range"]),
@@ -918,12 +1052,33 @@ function forward(e, t, r, n) {
             o.statusCode >= 400 &&
             !t.headersSent &&
             r &&
+            r.isLive &&
+            !r._isHlsChild &&
+            !r._authRetried
+          )
+            return (
+              o.resume(),
+              (r._authRetried = !0),
+              (r._noKeepAlive = !0),
+              p(),
+              forward(e, t, r, n)
+            );
+          if (
+            o.statusCode >= 400 &&
+            !t.headersSent &&
+            r &&
             !r._isHlsChild &&
             r.backupUrls &&
-            r.backupIndex < r.backupUrls.length
+            r.backupUrls.length > 0 &&
+            (r._backupTries || 0) < r.backupUrls.length
           ) {
-            var bItem = r.backupUrls[r.backupIndex++],
+            if (!r._primaryAdded) {
+              r._primaryAdded = !0;
+              r.backupUrls.push({ url: r.url, headers: r.headers });
+            }
+            var bItem = r.backupUrls[r.backupIndex++ % r.backupUrls.length],
               bUrl = bItem && "string" == typeof bItem ? bItem : bItem && bItem.url;
+            r._backupTries = (r._backupTries || 0) + 1;
             if (bUrl)
               return (
                 o.resume(),
@@ -942,11 +1097,38 @@ function forward(e, t, r, n) {
                 (r._retriedProtocol = !1),
                 (r._maskSni = !1),
                 (r._dnsRetry = !1),
+                (r._authRetried = !1),
                 p(),
                 forward(e, t, r, n)
               );
           }
-          r && ((r._redirects = 0), (r._freshRetry = !1), (r._noKeepAlive = !1));
+          if (
+            o.statusCode >= 400 &&
+            !t.headersSent &&
+            r &&
+            r.isLive &&
+            !r._isHlsChild &&
+            "GET" === e.method &&
+            r._lastManifest &&
+            Date.now() - r._lastManifest.at < 20000
+          ) {
+            o.resume();
+            r._authRetried = !1;
+            r._backupTries = 0;
+            p();
+            try {
+              t.writeHead(200, {
+                "Content-Type": "application/vnd.apple.mpegurl",
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "no-cache, no-store",
+                Connection: "keep-alive",
+                "Content-Length": Buffer.byteLength(r._lastManifest.body),
+              });
+              t.end(r._lastManifest.body);
+            } catch (errFb) {}
+            return;
+          }
+          r && ((r._redirects = 0), (r._freshRetry = !1), (r._noKeepAlive = !1), (r._authRetried = !1), (r._backupTries = 0));
           var a = (o.headers["content-type"] || "").toLowerCase(),
             i = "video/mp2t";
           -1 !== a.indexOf("mp4")
@@ -977,26 +1159,40 @@ function forward(e, t, r, n) {
               void o.resume()
             );
           if (l) {
-            var h = [];
+            var h = [],
+              isGetManifest = "GET" === e.method;
             return (
-              o.on("data", function (e) {
-                h.push(e);
+              o.on("data", function (chunk) {
+                h.push(chunk);
               }),
               o.on("error", function () {
                 p();
               }),
               void o.on("end", function () {
-                var e = rewriteHlsManifest(
+                var manifestBody = rewriteHlsManifest(
                   Buffer.concat(h).toString("utf8"),
                   n,
                   r.url
                 );
+                if ((o.statusCode || 200) < 400) {
+                  r._authRetried = !1;
+                  r._backupTries = 0;
+                  if (
+                    isGetManifest &&
+                    r &&
+                    r.isLive &&
+                    !r._isHlsChild &&
+                    manifestBody &&
+                    -1 !== manifestBody.indexOf("#EXTM3U")
+                  )
+                    r._lastManifest = { body: manifestBody, at: Date.now() };
+                }
                 (delete d["Content-Length"],
                   delete d["Content-Range"],
-                  (d["Content-Length"] = Buffer.byteLength(e)));
+                  (d["Content-Length"] = Buffer.byteLength(manifestBody)));
                 try {
-                  (t.writeHead(o.statusCode || 200, d), t.end(e));
-                } catch (e) {
+                  (t.writeHead(o.statusCode || 200, d), t.end(manifestBody));
+                } catch (errWrite) {
                   p();
                 }
               })
@@ -1362,13 +1558,21 @@ function handler(e, t) {
       );
     var a = normalizePublicHlsUrl(fromBase64Url(o[2]));
     var isChildPlaylist = /\.m3u8(?:$|\?)/i.test(a);
+    var childHeaders = s.headers;
+    if (!isChildPlaylist && s.headers && "object" == typeof s.headers) {
+      childHeaders = {};
+      for (var hk in s.headers)
+        Object.prototype.hasOwnProperty.call(s.headers, hk) &&
+          !/^content-(auth|license)$/i.test(hk) &&
+          (childHeaders[hk] = s.headers[hk]);
+    }
     return /^https?:\/\//i.test(a)
       ? void forward(
           e,
           t,
           {
             url: a,
-            headers: s.headers,
+            headers: childHeaders,
             duration: 0,
             backupUrls: [],
             backupIndex: 0,
