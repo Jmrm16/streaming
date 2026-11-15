@@ -136,6 +136,7 @@ interface PlayerProps {
   ) => Promise<void> | void;
   onSwitchAudioTrack?: (trackIndex: number) => void;
   onProgressUpdate?: (currentTime: number, duration: number) => void;
+  onRefreshStream?: () => Promise<void> | void;
   onClose: () => void;
 }
 
@@ -190,6 +191,7 @@ export const Player: React.FC<PlayerProps> = ({
   onSelectEpisode,
   onSwitchAudioTrack,
   onProgressUpdate,
+  onRefreshStream,
   onClose,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -274,6 +276,10 @@ export const Player: React.FC<PlayerProps> = ({
   const latestProgressRef = useRef<{ cur: number; dur: number }>({ cur: 0, dur: 0 });
   const onProgressUpdateRef = useRef(onProgressUpdate);
   onProgressUpdateRef.current = onProgressUpdate;
+  const onRefreshStreamRef = useRef(onRefreshStream);
+  onRefreshStreamRef.current = onRefreshStream;
+  const refreshingStreamRef = useRef<boolean>(false);
+  const lastUiProgressRef = useRef<number>(0);
   const resumeBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lockedNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -498,13 +504,15 @@ export const Player: React.FC<PlayerProps> = ({
     setIsLoading(true);
     setErrorAlert(null);
     networkRetryRef.current = 0;
+    refreshingStreamRef.current = false;
+    lastUiProgressRef.current = 0;
     setLevels([]);
     setCurrentLevel(-1);
     setAudioTracks([]);
     setCurrentAudioTrack(0);
 
     // Apply initial resume position when source changes (or reset for Live TV)
-    const initKey = `${url}::${initialTime}`;
+    const initKey = `${contentId || url}::${seriesId || ''}::${initialTime}`;
     if (isLive) {
       savedPositionRef.current = 0;
       lastInitKeyRef.current = initKey;
@@ -645,10 +653,25 @@ export const Player: React.FC<PlayerProps> = ({
       });
 
       hls.on(Hls.Events.ERROR, (_, data) => {
+        const statusCode = (data as { response?: { code?: number } })?.response?.code;
         if (data.fatal) {
           const maxRetries = isLive ? 8 : 4;
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
+              if (
+                (statusCode === 410 || statusCode === 404 || networkRetryRef.current >= 2) &&
+                onRefreshStreamRef.current &&
+                !refreshingStreamRef.current
+              ) {
+                refreshingStreamRef.current = true;
+                console.warn(
+                  `HLS Network Error (HTTP ${statusCode ?? 'err'}), refreshing stream token...`
+                );
+                Promise.resolve(onRefreshStreamRef.current()).finally(() => {
+                  refreshingStreamRef.current = false;
+                });
+                return;
+              }
               if (networkRetryRef.current < maxRetries) {
                 networkRetryRef.current += 1;
                 console.warn(`HLS Network Error, attempting recovery (${networkRetryRef.current}/${maxRetries})...`);
@@ -683,23 +706,39 @@ export const Player: React.FC<PlayerProps> = ({
               hls.destroy();
               break;
           }
-        } else if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR && isLive) {
-          // Auto-unstall live TV signal by jumping across any buffer hole or nudging forward
+        } else if (
+          (data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR ||
+            data.details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT ||
+            data.details === Hls.ErrorDetails.LEVEL_LOAD_ERROR ||
+            data.details === Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT) &&
+          statusCode === 410 &&
+          onRefreshStreamRef.current &&
+          !refreshingStreamRef.current
+        ) {
+          refreshingStreamRef.current = true;
+          console.warn('Proxy token expired (HTTP 410), refreshing stream token...');
+          Promise.resolve(onRefreshStreamRef.current()).finally(() => {
+            refreshingStreamRef.current = false;
+          });
+        } else if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
+          // Jump only across genuine buffered gaps ahead; never seek past the buffered end
           if (video && !video.paused) {
             const ct = video.currentTime;
             const buf = video.buffered;
-            let jumped = false;
             for (let i = 0; i < buf.length; i++) {
-              if (buf.start(i) > ct + 0.05) {
+              if (buf.start(i) > ct + 0.05 && buf.end(i) > buf.start(i) + 0.3) {
                 video.currentTime = buf.start(i) + 0.1;
-                jumped = true;
                 break;
               }
             }
-            if (!jumped) {
-              video.currentTime = ct + 0.25;
+            if (isLive && buf.length > 0) {
+              const liveEdge = buf.end(buf.length - 1);
+              if (liveEdge - ct > 25) {
+                video.currentTime = Math.max(buf.start(buf.length - 1), liveEdge - 4);
+              }
             }
           }
+          hls.startLoad();
         }
       });
     } else if ((isHlsSource && video.canPlayType('application/vnd.apple.mpegurl')) || isMp4Source) {
@@ -723,7 +762,7 @@ export const Player: React.FC<PlayerProps> = ({
         message: 'La fuente de video no tiene un formato compatible. Intenta recargar el título.',
       });
     }
-  }, [url, isLive, initialTime]);
+  }, [url, isLive, initialTime, contentId, seriesId]);
 
   // Resilient play with unmuted -> muted autoplay fallback
   const attemptPlay = (video: HTMLVideoElement) => {
@@ -1262,8 +1301,12 @@ export const Player: React.FC<PlayerProps> = ({
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
 
-  const filteredDrawerChannels = channels.filter((c) =>
-    c.name.toLowerCase().includes(channelSearch.toLowerCase())
+  const filteredDrawerChannels = useMemo(
+    () =>
+      showChannelDrawer
+        ? channels.filter((c) => c.name.toLowerCase().includes(channelSearch.toLowerCase()))
+        : [],
+    [showChannelDrawer, channels, channelSearch]
   );
 
   return (
@@ -1287,25 +1330,28 @@ export const Player: React.FC<PlayerProps> = ({
         onTimeUpdate={() => {
           if (videoRef.current) {
             const cur = videoRef.current.currentTime;
-            setProgress(cur);
             const vidDur = videoRef.current.duration;
-            if (vidDur && isFinite(vidDur) && vidDur > 0) {
-              setDuration((prev) => Math.max(prev, vidDur));
-            }
             savedPositionRef.current = cur;
 
-            // Throttled playback progress reporting (every ~5s) for VOD/Series
-            if (!isLive && cur > 3 && vidDur && isFinite(vidDur) && vidDur > 0) {
-              latestProgressRef.current = { cur, dur: vidDur };
-              if (Math.abs(cur - lastReportedTimeRef.current) >= 5) {
-                lastReportedTimeRef.current = cur;
-                onProgressUpdateRef.current?.(cur, vidDur);
+            // Throttled UI state updates (skip Live TV; update VOD every >= 0.25s)
+            if (!isLive && Math.abs(cur - lastUiProgressRef.current) >= 0.25) {
+              lastUiProgressRef.current = cur;
+              setProgress(cur);
+              if (vidDur && isFinite(vidDur) && vidDur > 0) {
+                setDuration((prev) => (vidDur > prev ? vidDur : prev));
+              }
+              if (videoRef.current.buffered.length > 0) {
+                setBufferedEnd(videoRef.current.buffered.end(videoRef.current.buffered.length - 1));
               }
             }
 
-            // Buffered range indicator
-            if (videoRef.current.buffered.length > 0) {
-              setBufferedEnd(videoRef.current.buffered.end(videoRef.current.buffered.length - 1));
+            // Throttled playback progress reporting (every ~15s) for VOD/Series
+            if (!isLive && cur > 3 && vidDur && isFinite(vidDur) && vidDur > 0) {
+              latestProgressRef.current = { cur, dur: vidDur };
+              if (Math.abs(cur - lastReportedTimeRef.current) >= 15) {
+                lastReportedTimeRef.current = cur;
+                onProgressUpdateRef.current?.(cur, vidDur);
+              }
             }
 
             // Real-time subtitle cue lookup

@@ -546,7 +546,7 @@ function ensureVodMap(n, callback) {
       alignedTotal = totalPackets * 188,
       videoPid = detectTsVideoPid(headBuf),
       firstPts = extractPtsFromTs(headBuf, !1, videoPid),
-      fracs = [0.25, 0.5, 0.75, 1.0],
+      fracs = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.85, 1.0],
       points = [{ byte: 0, pts: firstPts, sec: 0 }],
       pending = fracs.length;
     fracs.forEach(function (f) {
@@ -760,13 +760,8 @@ function sendVirtualTsSegment(e, t, r, n, segIdx) {
       });
       return void t.end("segment not found");
     }
-    var hasStart = "number" == typeof map.boundaries[segIdx],
-      hasEnd = "number" == typeof map.boundaries[segIdx + 1],
-      lookahead = 188 * 5500,
-      reqStart = hasStart ? map.boundaries[segIdx] : map.nomBytes[segIdx],
-      reqEnd = hasEnd
-        ? map.boundaries[segIdx + 1] - 1
-        : Math.min(map.totalSize - 1, map.nomBytes[segIdx + 1] + lookahead - 1);
+    var reqStart = map.nomBytes[segIdx],
+      reqEnd = map.nomBytes[segIdx + 1] - 1;
     if (reqEnd <= reqStart) {
       reqEnd = Math.min(map.totalSize - 1, reqStart + 188 * 1000 - 1);
     }
@@ -781,26 +776,8 @@ function sendVirtualTsSegment(e, t, r, n, segIdx) {
         }
         return;
       }
-      var sliceStart = hasStart ? 0 : findKeyframePatOffset(buf, 0, map.videoPid);
-      if (!hasStart) {
-        map.boundaries[segIdx] = reqStart + sliceStart;
-      }
-      var sliceEnd = buf.length;
-      if (!hasEnd) {
-        var nomEndRel = Math.max(
-          sliceStart + 188,
-          map.nomBytes[segIdx + 1] - reqStart
-        );
-        if (nomEndRel < buf.length) {
-          sliceEnd = findKeyframePatOffset(buf, nomEndRel, map.videoPid);
-          if (sliceEnd <= sliceStart) {
-            sliceEnd = buf.length;
-          } else {
-            map.boundaries[segIdx + 1] = reqStart + sliceEnd;
-          }
-        }
-      }
-      var segBuf = buf.slice(sliceStart, sliceEnd);
+      var validLen = buf.length - (buf.length % 188);
+      var segBuf = validLen > 0 ? buf.slice(0, validLen) : buf;
       if (audioTrack > 0) {
         segBuf = transformTsBuffer(segBuf, audioTrack);
       }
@@ -1384,6 +1361,7 @@ function handler(e, t) {
         void t.end("expired")
       );
     var a = normalizePublicHlsUrl(fromBase64Url(o[2]));
+    var isChildPlaylist = /\.m3u8(?:$|\?)/i.test(a);
     return /^https?:\/\//i.test(a)
       ? void forward(
           e,
@@ -1396,8 +1374,8 @@ function handler(e, t) {
             backupIndex: 0,
             isLive: s.isLive,
             _isHlsChild: !0,
-            _segBuf: !1,
-            _noKeepAlive: !1,
+            _segBuf: !!s.isLive && !isChildPlaylist,
+            _noKeepAlive: !!s.isLive,
           },
           o[1]
         )

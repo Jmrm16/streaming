@@ -809,6 +809,41 @@ export const App: React.FC = () => {
     }
   };
 
+  // Re-resolve active stream URL seamlessly when proxy token expires (HTTP 410) or connection drops
+  const handleRefreshActiveStream = async () => {
+    const current = activePlaybackRef.current;
+    if (!current || !current.contentId) return;
+    try {
+      if (current.isLive) {
+        const isPublicM3uChannel = current.contentId.startsWith('public_m3u_');
+        const ch = channels.find((c) => (c.channelCode || c.id) === current.contentId);
+        const res = await api.resolveLive(
+          current.contentId,
+          isPublicM3uChannel ? undefined : ch?.streamUrl
+        );
+        if (res && res.url) {
+          setActivePlayback((prev) => (prev ? { ...prev, url: res.url } : null));
+        }
+      } else {
+        const res = await api.resolveMedia(current.contentId, current.seriesId);
+        if (res && res.url) {
+          setActivePlayback((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  url: res.url,
+                  subtitles: res.subtitles?.length ? res.subtitles : prev.subtitles,
+                  audioLanguages: res.audioLanguages?.length ? res.audioLanguages : prev.audioLanguages,
+                }
+              : null
+          );
+        }
+      }
+    } catch (e) {
+      console.error('Error refreshing stream token:', e);
+    }
+  };
+
   // Search is deferred and cancellable: typing never waits for network or a large result render.
   useEffect(() => {
     const query = deferredSearchQuery.trim();
@@ -2706,6 +2741,7 @@ export const App: React.FC = () => {
           onSelectEpisode={handleSwitchEpisodeInPlayer}
           onSwitchAudioTrack={handleSwitchAudioTrack}
           onProgressUpdate={handlePlaybackProgress}
+          onRefreshStream={handleRefreshActiveStream}
           onClose={() => setActivePlayback(null)}
         />
       )}
