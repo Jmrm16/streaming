@@ -29,6 +29,8 @@ const m3uAttribute = (line, name) => {
   return match ? match[1].trim() : "";
 };
 
+const safeHeaderValue = (value) => String(value || "").replace(/[\r\n]/g, "").trim().slice(0, 1024);
+
 const parsePublicM3u = (body) => {
   const lines = body.split(/\r?\n/);
   const channels = [];
@@ -40,6 +42,11 @@ const parsePublicM3u = (body) => {
     if (line.startsWith("#") || !metadata || !/^https?:\/\//i.test(line)) continue;
     const comma = metadata.lastIndexOf(",");
     const title = (comma >= 0 ? metadata.slice(comma + 1) : "Canal en vivo").trim();
+    const userAgent = safeHeaderValue(m3uAttribute(metadata, "http-user-agent"));
+    const referer = safeHeaderValue(m3uAttribute(metadata, "http-referrer"));
+    const headers = {};
+    if (userAgent) headers["User-Agent"] = userAgent;
+    if (referer) headers.Referer = referer;
     channels.push({
       id: `public_m3u_${channels.length + 1}`,
       channelCode: `public_m3u_${channels.length + 1}`,
@@ -47,6 +54,7 @@ const parsePublicM3u = (body) => {
       logo: m3uAttribute(metadata, "tvg-logo"),
       category: m3uAttribute(metadata, "group-title") || "TV en vivo",
       streamUrl: line,
+      headers,
     });
     metadata = "";
     if (channels.length >= 800) break;
@@ -417,7 +425,10 @@ const server = http.createServer((req, res) => {
   }
 
   if (u.pathname === "/publicMoviesChannels") {
-    return getPublicMoviesChannels((err, channels) => done(err, { channels: channels || [] }));
+    return getPublicMoviesChannels((err, channels) => {
+      const responseChannels = (channels || []).map(({ headers, ...channel }) => channel);
+      done(err, { channels: responseChannels });
+    });
   }
 
   if (u.pathname === "/liveCategories") {
@@ -453,6 +464,20 @@ const server = http.createServer((req, res) => {
 
   if (u.pathname === "/resolveLive") {
     const streamUrl = u.searchParams.get("streamUrl") || "";
+    const channelCode = u.searchParams.get("channelCode") || u.searchParams.get("id") || "";
+    if (channelCode.startsWith("public_m3u_")) {
+      return getPublicMoviesChannels((err, channels) => {
+        if (err) return done(err);
+        const channel = (channels || []).find((item) => item.channelCode === channelCode);
+        if (!channel) return done(new Error("Canal público no encontrado o actualizado"));
+        const token = proxy.add(channel.streamUrl, channel.headers || {}, 0, null, null, true);
+        done(null, {
+          url: `${currentBaseUrl}/media/${token}/stream.m3u8`,
+          proxyPath: `${currentBaseUrl}/media/${token}/stream.m3u8`,
+          isHls: true,
+        });
+      });
+    }
     if (streamUrl) {
       const token = proxy.add(streamUrl, {}, 0, null, null, true);
       return done(null, {
@@ -461,7 +486,6 @@ const server = http.createServer((req, res) => {
         isHls: true,
       });
     }
-    const channelCode = u.searchParams.get("channelCode") || u.searchParams.get("id") || "";
     const fetchResolve = (retry = true) => {
       magis.resolveLive(channelCode, (err, stream) => {
         if (err && retry && (/aaa100028|aaa100027|未登录/i.test(err.message || "") || err.portalCode === "aaa100028")) {

@@ -465,7 +465,8 @@ export const App: React.FC = () => {
     }
     try {
       const code = channel.channelCode || channel.id || '';
-      const res = await api.resolveLive(code, channel.streamUrl);
+      const isPublicM3uChannel = code.startsWith('public_m3u_');
+      const res = await api.resolveLive(code, isPublicM3uChannel ? undefined : channel.streamUrl);
       if (res && res.url) {
         setActivePlayback({
           url: res.url,
