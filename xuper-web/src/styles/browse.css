@@ -20,11 +20,13 @@
   height: 68px;
   padding: 0 var(--catalog-gutter);
   gap: 36px;
-  background: linear-gradient(180deg,rgba(0,0,0,.8),transparent);
-  transition: background-color .35s;
+  background: linear-gradient(180deg,rgba(0,0,0,.86),rgba(0,0,0,.42) 72%,transparent);
+  transition: background-color .3s ease,backdrop-filter .3s ease,border-color .3s ease;
 }
 .browse-header.is-scrolled,.browse-header.scrolled {
-  background-color: #141414;
+  background-color: rgba(20,20,20,.94);
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  backdrop-filter: blur(14px);
 }
 .browse-brand {
   width: auto;
@@ -46,16 +48,28 @@
   font-size: 14px;
   line-height: 1.2;
 }
-.primary-navigation a {
+.primary-navigation a,.primary-navigation button {
+  position: relative;
   color: #e5e5e5;
-  transition: color .18s;
+  transition: color .18s ease;
 }
-.primary-navigation a:hover {
+.primary-navigation a:hover,.primary-navigation button:hover {
   color: #b3b3b3;
 }
-.primary-navigation a[aria-current="page"] {
+.primary-navigation a[aria-current="page"],.primary-navigation button[aria-current="page"] {
   color: #fff;
   font-weight: 700;
+}
+.primary-navigation a[aria-current="page"]::after,.primary-navigation button[aria-current="page"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -9px;
+  height: 2px;
+  border-radius: 2px;
+  background: #e50914;
+  animation: nav-indicator-in .2s ease-out;
 }
 .list-count:empty {
   display: none;
@@ -427,13 +441,31 @@
   min-height: 32px;
   font-weight: 600;
   max-width: 200px;
+  transition: border-color .18s ease,background-color .18s ease;
 }
+.catalog-filter select:hover,.catalog-filter select:focus { border-color: #aaa; background: #151515; }
 .catalog-filter svg {
   position: absolute;
   right: 12px;
   top: 13px;
   pointer-events: none;
 }
+.live-category-rail {
+  scroll-behavior: smooth;
+  scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  mask-image: linear-gradient(90deg,#000 0%,#000 calc(100% - 28px),transparent 100%);
+}
+.live-category-rail>button {
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  transform: translateZ(0);
+  transition: color .18s ease,background-color .18s ease,border-color .18s ease,transform .18s ease,box-shadow .18s ease;
+}
+.live-category-rail>button:hover { transform: translateY(-1px); }
+.live-category-rail>button:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+@keyframes nav-indicator-in { from { transform: scaleX(.45); opacity: .2; } to { transform: scaleX(1); opacity: 1; } }
 .sort-control {
   margin-left: auto;
 }

@@ -56,6 +56,7 @@ import {
 
 type TabView = 'home' | 'series' | 'movies' | 'live' | 'anime' | 'kids' | 'favorites';
 const LIVE_CHANNEL_PAGE_SIZE = 120;
+const normalizeFilterValue = (value: string) => value.trim().toLocaleLowerCase('es');
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabView>('home');
@@ -642,22 +643,25 @@ export const App: React.FC = () => {
   }, [activeTab, movies, series, anime, kids, favMedia]);
 
   const availableGenres = useMemo(() => {
-    const set = new Set<string>();
+    const genres = new Map<string, string>();
     currentCatalogList.forEach((item) => {
       if (item.genres && Array.isArray(item.genres)) {
         item.genres.forEach((g) => {
-          if (g && typeof g === 'string') set.add(g.trim());
+          if (g && typeof g === 'string' && g.trim()) {
+            const label = g.trim();
+            genres.set(normalizeFilterValue(label), label);
+          }
         });
       }
     });
-    return ['all', ...Array.from(set).sort((a, b) => a.localeCompare(b, 'es'))];
+    return ['all', ...Array.from(genres.values()).sort((a, b) => a.localeCompare(b, 'es'))];
   }, [currentCatalogList]);
 
   const filteredMediaList = useMemo(() => {
     let list = currentCatalogList;
     if (selectedGenre !== 'all') {
       list = list.filter((item) =>
-        item.genres?.some((g) => g.toLowerCase() === selectedGenre.toLowerCase())
+        item.genres?.some((g) => normalizeFilterValue(g) === normalizeFilterValue(selectedGenre))
       );
     }
     if (sortOption === 'title') {
@@ -828,7 +832,7 @@ export const App: React.FC = () => {
 
             {/* Primary Desktop Navigation Links */}
             <nav
-              className="hidden md:flex items-center gap-5 text-sm font-medium"
+              className="primary-navigation hidden md:flex items-center gap-5 text-sm font-medium"
               aria-label="Navegación principal"
             >
               <button
@@ -839,6 +843,7 @@ export const App: React.FC = () => {
                     : 'text-zinc-300 hover:text-zinc-400'
                 }`}
                 onClick={() => navigateTab('home')}
+                aria-current={activeTab === 'home' && !isSearchActive ? 'page' : undefined}
               >
                 Inicio
               </button>
@@ -850,6 +855,7 @@ export const App: React.FC = () => {
                     : 'text-zinc-300 hover:text-zinc-400'
                 }`}
                 onClick={() => navigateTab('series')}
+                aria-current={activeTab === 'series' && !isSearchActive ? 'page' : undefined}
               >
                 Series
               </button>
@@ -861,6 +867,7 @@ export const App: React.FC = () => {
                     : 'text-zinc-300 hover:text-zinc-400'
                 }`}
                 onClick={() => navigateTab('movies')}
+                aria-current={activeTab === 'movies' && !isSearchActive ? 'page' : undefined}
               >
                 Películas
               </button>
@@ -872,6 +879,7 @@ export const App: React.FC = () => {
                     : 'text-zinc-300 hover:text-zinc-400'
                 }`}
                 onClick={() => navigateTab('live')}
+                aria-current={activeTab === 'live' && !isSearchActive ? 'page' : undefined}
               >
                 <span className="zentix-live-dot" />
                 <span>TV en vivo</span>
@@ -884,6 +892,7 @@ export const App: React.FC = () => {
                     : 'text-zinc-300 hover:text-zinc-400'
                 }`}
                 onClick={() => navigateTab('anime')}
+                aria-current={activeTab === 'anime' && !isSearchActive ? 'page' : undefined}
               >
                 Animé
               </button>
@@ -895,6 +904,7 @@ export const App: React.FC = () => {
                     : 'text-zinc-300 hover:text-zinc-400'
                 }`}
                 onClick={() => navigateTab('kids')}
+                aria-current={activeTab === 'kids' && !isSearchActive ? 'page' : undefined}
               >
                 Infantil
               </button>
@@ -906,6 +916,7 @@ export const App: React.FC = () => {
                     : 'text-zinc-300 hover:text-zinc-400'
                 }`}
                 onClick={() => navigateTab('favorites')}
+                aria-current={activeTab === 'favorites' && !isSearchActive ? 'page' : undefined}
               >
                 <span>Mi lista</span>
                 {favChannels.length + favMedia.length > 0 && (
@@ -1476,18 +1487,32 @@ export const App: React.FC = () => {
                       </div>
 
                       {/* Sort dropdown */}
-                      <label className="catalog-filter sort-control relative">
-                        <span className="sr-only">Ordenar</span>
-                        <select
-                          value={sortOption}
-                          onChange={(e) => setSortOption(e.target.value)}
-                          className="bg-[#242424] text-white text-xs font-semibold border border-zinc-700 rounded px-3 py-1.5 cursor-pointer focus:outline-none"
-                        >
-                          <option value="recommended">Recomendados</option>
-                          <option value="title">Título: A–Z</option>
-                          <option value="year">Más recientes</option>
-                        </select>
-                      </label>
+                      <div className="flex items-center gap-2">
+                        {(selectedGenre !== 'all' || sortOption !== 'recommended') && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedGenre('all');
+                              setSortOption('recommended');
+                            }}
+                            className="h-8 px-2 text-xs font-semibold text-zinc-400 transition-colors hover:text-white"
+                          >
+                            Restablecer
+                          </button>
+                        )}
+                        <label className="catalog-filter sort-control relative">
+                          <span className="sr-only">Ordenar</span>
+                          <select
+                            value={sortOption}
+                            onChange={(e) => setSortOption(e.target.value)}
+                            className="bg-[#242424] text-white text-xs font-semibold border border-zinc-700 rounded px-3 py-1.5 cursor-pointer focus:outline-none"
+                          >
+                            <option value="recommended">Recomendados</option>
+                            <option value="title">Título: A–Z</option>
+                            <option value="year">Más recientes</option>
+                          </select>
+                        </label>
+                      </div>
                     </div>
 
                     <div className="zentix-catalog-status text-xs text-zinc-400">
@@ -1627,7 +1652,7 @@ export const App: React.FC = () => {
 
                     {/* Category Scrolling Pills */}
                     {visibleCategories.length > 0 && (
-                      <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
+                      <div className="live-category-rail flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
                         <button
                           type="button"
                           onClick={() => handleCategorySelect('all')}
