@@ -207,6 +207,16 @@ export const api = {
     return [];
   },
 
+  async getPublicMoviesChannels(forceRefresh = false): Promise<Channel[]> {
+    const data = await fetchWithCache<{ channels?: Channel[] }>(
+      'public_movies_channels',
+      `${getApiBaseUrl()}/publicMoviesChannels`,
+      15000,
+      forceRefresh
+    );
+    return data && Array.isArray(data.channels) ? data.channels : [];
+  },
+
   async resolveLive(channelCode: string, streamUrl?: string): Promise<{ url: string }> {
     const params = new URLSearchParams();
     if (channelCode) params.set('channelCode', channelCode);

@@ -1,6 +1,7 @@
 // Unified Production & Render Server for XUPER
 // Single-port architecture: serves both API and Video Media Proxy
 import http from "node:http";
+import https from "node:https";
 import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -18,6 +19,82 @@ const netdiag = require(path.join(svcDir, "netdiag.js"));
 const PORT = Number(process.env.PORT || 8910);
 const SEED_INGEST_TOKEN = process.env.SEED_INGEST_TOKEN || "";
 const MAX_SEED_BODY_BYTES = 1024 * 1024;
+const PUBLIC_MOVIES_M3U_URL = "https://iptv-org.github.io/iptv/categories/movies.m3u";
+const PUBLIC_M3U_CACHE_MS = 10 * 60 * 1000;
+const PUBLIC_M3U_MAX_BYTES = 3 * 1024 * 1024;
+let publicMoviesM3uCache = { at: 0, channels: [] };
+
+const m3uAttribute = (line, name) => {
+  const match = new RegExp(`${name}="([^"]*)"`, "i").exec(line);
+  return match ? match[1].trim() : "";
+};
+
+const parsePublicM3u = (body) => {
+  const lines = body.split(/\r?\n/);
+  const channels = [];
+  let metadata = "";
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith("#EXTINF:")) {
+      metadata = line;
+      continue;
+    }
+    if (line.startsWith("#") || !metadata || !/^https?:\/\//i.test(line)) continue;
+
+    const comma = metadata.lastIndexOf(",");
+    const title = (comma >= 0 ? metadata.slice(comma + 1) : "Canal de películas").trim();
+    channels.push({
+      id: `public_movies_${channels.length + 1}`,
+      channelCode: `public_movies_${channels.length + 1}`,
+      name: title || "Canal de películas",
+      logo: m3uAttribute(metadata, "tvg-logo"),
+      category: m3uAttribute(metadata, "group-title") || "Películas en vivo",
+      streamUrl: line,
+    });
+    metadata = "";
+    if (channels.length >= 800) break;
+  }
+  return channels;
+};
+
+const getPublicMoviesChannels = (callback) => {
+  if (publicMoviesM3uCache.channels.length && Date.now() - publicMoviesM3uCache.at < PUBLIC_M3U_CACHE_MS) {
+    callback(null, publicMoviesM3uCache.channels);
+    return;
+  }
+
+  const request = https.get(PUBLIC_MOVIES_M3U_URL, { headers: { "User-Agent": "XuperWeb/1.0" } }, (response) => {
+    if (response.statusCode !== 200) {
+      response.resume();
+      callback(new Error(`La lista pública respondió HTTP ${response.statusCode || 0}`));
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    response.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > PUBLIC_M3U_MAX_BYTES) {
+        request.destroy(new Error("La lista pública excede el tamaño permitido"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    response.on("end", () => {
+      if (size > PUBLIC_M3U_MAX_BYTES) return;
+      const channels = parsePublicM3u(Buffer.concat(chunks).toString("utf8"));
+      if (!channels.length) {
+        callback(new Error("La lista pública no contiene canales compatibles"));
+        return;
+      }
+      publicMoviesM3uCache = { at: Date.now(), channels };
+      callback(null, channels);
+    });
+  });
+  request.setTimeout(15000, () => request.destroy(new Error("Tiempo de espera agotado al descargar la lista pública")));
+  request.on("error", callback);
+};
 
 const isAuthorizedSeedRequest = (req) => {
   const supplied = req.headers["x-seed-token"];
@@ -349,6 +426,12 @@ const server = http.createServer((req, res) => {
     return magis.ensureSession((err) => {
       done(err, { message: "Session reset and initialized", session: magis.session });
     });
+  }
+
+  // Public, provider-independent live channels. This list is intentionally
+  // fixed server-side so the endpoint cannot be used to fetch arbitrary URLs.
+  if (u.pathname === "/publicMoviesChannels") {
+    return getPublicMoviesChannels((err, channels) => done(err, { channels: channels || [] }));
   }
 
   if (u.pathname === "/liveCategories") {

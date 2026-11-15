@@ -184,6 +184,15 @@ log("acuñando " + COUNT + " semillas (vida declarada " + TTL_HOURS + " h)");
 var fresh = [];
 var i = 0;
 
+/* `portal200001` no es un problema de conectividad ni de región: el propio
+   portal comunica que la versión del contrato fue retirada. Insistir con 40
+   dispositivos distintos no puede producir una semilla válida y solo oculta
+   la causa real en los logs de Actions. */
+function retiredProtocol(err) {
+  var message = String((err && err.message) || err || "");
+  return /portal200001|版本已停止使用|version (?:has been )?(?:stopped|retired|discontinued)/i.test(message);
+}
+
 function next() {
   if (i >= COUNT) return done();
   i++;
@@ -191,9 +200,13 @@ function next() {
   mintOne(function (err, seed) {
     if (err) {
       log("intento " + i + "/" + COUNT + " FALLÓ: " + (err.message || err));
+      if (retiredProtocol(err)) {
+        log("ABORTADO: el portal retiró v3/snToken (portal200001). El pool no se modificó; hace falta el contrato oficial actualizado antes de volver a acuñar.");
+        return done(true, "protocol-retired");
+      }
       /* Un bloqueo de zona no se arregla insistiendo: abortar el lote. */
       if (/portal100024|zona bloqueada|aaa10002[78]/i.test(String(err.message || err))) {
-        return done(true);
+        return done(true, "region-blocked");
       }
     } else {
       fresh.push(seed);
@@ -203,9 +216,13 @@ function next() {
   });
 }
 
-function done(aborted) {
+function done(aborted, reason) {
   if (!fresh.length) {
-    log(aborted ? "ABORTADO: esta IP está bloqueada por el portal; no se acuñó ninguna semilla." : "sin semillas nuevas; el pool queda como estaba.");
+    if (reason === "protocol-retired") {
+      log("sin semillas nuevas; se conservó el pool de entrada sin cambios.");
+    } else {
+      log(aborted ? "ABORTADO: esta IP está bloqueada por el portal; no se acuñó ninguna semilla." : "sin semillas nuevas; el pool queda como estaba.");
+    }
     process.exitCode = aborted ? 2 : 1;
     return;
   }

@@ -381,7 +381,7 @@ function post(e, r, t) {
                       : String(s.returnCode);
                   if ("" !== u && "0" !== u) {
                     var d = new Error(
-                      e + " -> " + u + " " + text(s.errorMessage)
+                      e + " -> " + u + " " + text(s.errorMessage) + " (" + r + ")"
                     );
                     return ((d.portalCode = u), c(d));
                   }

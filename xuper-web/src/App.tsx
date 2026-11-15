@@ -363,7 +363,9 @@ export const App: React.FC = () => {
     setSelectedCategory(catId);
     setIsLoading(true);
     try {
-      const chs = await api.getLiveChannels(catId, 1, 200, false);
+      const chs = catId === 'public_movies'
+        ? await api.getPublicMoviesChannels(false)
+        : await api.getLiveChannels(catId, 1, 200, false);
       setChannels(chs);
     } catch (err) {
       console.error('Error fetching category channels:', err);
@@ -373,6 +375,10 @@ export const App: React.FC = () => {
   };
 
   const handleCategorySelect = async (catId: string) => {
+    if (catId === 'public_movies') {
+      await loadCategoryChannels(catId);
+      return;
+    }
     const catObj = categories.find((c) => c.id === catId);
     if (isAdultCategory(catObj || { id: catId }) && !isAdultUnlocked) {
       setPinInput('');
@@ -1584,7 +1590,7 @@ export const App: React.FC = () => {
                     </div>
 
                     {/* Category Scrolling Pills */}
-                    {visibleCategories.length > 0 && (
+                    {(
                       <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
                         <button
                           type="button"
@@ -1596,6 +1602,18 @@ export const App: React.FC = () => {
                           }`}
                         >
                           Todos ({visibleCategories.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCategorySelect('public_movies')}
+                          className={`text-xs px-3.5 py-1.5 rounded-full font-semibold transition-all cursor-pointer whitespace-nowrap inline-flex items-center gap-1.5 ${
+                            selectedCategory === 'public_movies'
+                              ? 'bg-white text-black font-bold shadow'
+                              : 'bg-[#242424] text-zinc-300 hover:text-white border border-zinc-800'
+                          }`}
+                        >
+                          <Film className="w-3 h-3" />
+                          <span>Películas en vivo</span>
                         </button>
                         {visibleCategories.map((cat) => {
                           const adultCat = isAdultCategory(cat);
