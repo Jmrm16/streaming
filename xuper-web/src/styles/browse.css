@@ -494,6 +494,27 @@
 .catalog-skeleton-line { height:10px; width:66%; margin-top:10px; border-radius:2px; }
 .catalog-skeleton-line.is-title { width:84%; height:13px; }
 @keyframes catalog-skeleton-shimmer { to { background-position-x:-210%; } }
+.home-loading { min-height:72vh; padding-bottom:42px; }
+.home-skeleton-hero,.home-skeleton-copy,.home-skeleton-card {
+  background: linear-gradient(100deg,#151515 16%,#292929 38%,#151515 60%);
+  background-size:210% 100%;
+  animation:catalog-skeleton-shimmer 1.2s ease-in-out infinite;
+}
+.home-skeleton-hero {
+  height:min(57vw,640px);
+  min-height:360px;
+  padding:30% var(--catalog-gutter) 48px;
+  display:flex;
+  flex-direction:column;
+  justify-content:flex-end;
+  gap:14px;
+}
+.home-skeleton-copy { width:min(460px,72%); height:32px; border-radius:3px; }
+.home-skeleton-copy.is-short { width:min(280px,45%); height:14px; }
+.home-skeleton-row { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:var(--card-gap); padding:36px var(--catalog-gutter) 0; }
+.home-skeleton-card { aspect-ratio:2/3; border-radius:5px; }
+.home-load-error { min-height:60vh; display:grid; place-content:center; }
+.search-skeleton-grid { min-height:410px; }
 .live-category-rail {
   scroll-behavior: smooth;
   scroll-snap-type: x proximity;

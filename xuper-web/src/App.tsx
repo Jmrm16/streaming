@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useRef, useCallback, useTransition } from 'react';
+import React, { useEffect, useState, useMemo, useRef, useCallback, useDeferredValue, useTransition } from 'react';
 import {
   Search,
   Play,
@@ -57,6 +57,7 @@ import {
 type TabView = 'home' | 'series' | 'movies' | 'live' | 'anime' | 'kids' | 'favorites';
 const LIVE_CHANNEL_PAGE_SIZE = 120;
 const CATALOG_PAGE_SIZE = 72;
+const SEARCH_RESULT_LIMIT = 48;
 const normalizeFilterValue = (value: string) => value.trim().toLocaleLowerCase('es');
 
 export const App: React.FC = () => {
@@ -92,9 +93,12 @@ export const App: React.FC = () => {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchRequestRef = useRef(0);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  const deferredSearchQuery = useDeferredValue(searchQuery);
 
   // Pagination & Loading
   const [isLoading, setIsLoading] = useState(false);
+  const [initialLoadFailed, setInitialLoadFailed] = useState(false);
   const [catalogPages, setCatalogPages] = useState<Record<string, number>>({
     movies: 1,
     series: 1,
@@ -338,6 +342,7 @@ export const App: React.FC = () => {
   // Initial Data Load
   const loadInitialData = useCallback(async (force = false) => {
     setIsLoading(true);
+    setInitialLoadFailed(false);
     try {
       const [feat, mov, ser, anim, kid, cats, chs, publicLiveCatalog] = await Promise.all([
         api.getHome('featured', 1, force),
@@ -364,8 +369,18 @@ export const App: React.FC = () => {
         setCategories(publicLiveCatalog.categories);
         setChannels(publicLiveCatalog.channels);
       }
+      setInitialLoadFailed(
+        feat.length === 0 &&
+          mov.length === 0 &&
+          ser.length === 0 &&
+          anim.length === 0 &&
+          kid.length === 0 &&
+          chs.length === 0 &&
+          publicLiveCatalog.channels.length === 0
+      );
     } catch (err) {
       console.error('Error loading initial data:', err);
+      setInitialLoadFailed(true);
     } finally {
       setIsLoading(false);
     }
@@ -533,9 +548,10 @@ export const App: React.FC = () => {
     }
   };
 
-  // Search the remote catalog with debounce and ignore stale responses.
+  // Search is deferred and cancellable: typing never waits for network or a large result render.
   useEffect(() => {
-    const query = searchQuery.trim();
+    const query = deferredSearchQuery.trim();
+    searchAbortRef.current?.abort();
     if (query.length < 2) {
       searchRequestRef.current += 1;
       setSearchResults([]);
@@ -544,15 +560,17 @@ export const App: React.FC = () => {
     }
 
     const requestId = ++searchRequestRef.current;
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
     setIsSearching(true);
     const timer = setTimeout(async () => {
       try {
-        const mediaRes = await api.search(query);
+        const mediaRes = await api.search(query, controller.signal);
         if (requestId === searchRequestRef.current) {
-          setSearchResults(mediaRes);
+          setSearchResults(mediaRes.slice(0, SEARCH_RESULT_LIMIT));
         }
       } catch (err) {
-        console.error('Error searching:', err);
+        if (!controller.signal.aborted) console.error('Error searching:', err);
       } finally {
         if (requestId === searchRequestRef.current) {
           setIsSearching(false);
@@ -560,25 +578,32 @@ export const App: React.FC = () => {
       }
     }, 320);
 
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [deferredSearchQuery]);
 
   // Channel search is local and should not re-query the remote media catalog.
   useEffect(() => {
-    const query = searchQuery.trim().toLowerCase();
+    const query = deferredSearchQuery.trim().toLowerCase();
     if (query.length < 2) {
       setChannelSearchResults([]);
       return;
     }
-    setChannelSearchResults(
-      channels.filter(
-        (channel) =>
-          (isAdultUnlocked || !isAdultChannel(channel)) &&
-          (channel.name.toLowerCase().includes(query) ||
-            Boolean(channel.category && channel.category.toLowerCase().includes(query)))
-      )
-    );
-  }, [searchQuery, channels, isAdultUnlocked]);
+    const matches: Channel[] = [];
+    for (const channel of channels) {
+      if (
+        (isAdultUnlocked || !isAdultChannel(channel)) &&
+        (channel.name.toLowerCase().includes(query) ||
+          Boolean(channel.category && channel.category.toLowerCase().includes(query)))
+      ) {
+        matches.push(channel);
+        if (matches.length >= SEARCH_RESULT_LIMIT) break;
+      }
+    }
+    setChannelSearchResults(matches);
+  }, [deferredSearchQuery, channels, isAdultUnlocked]);
 
   const visibleCategories = useMemo(() => {
     return categories.filter((cat) => !(hideAdultCategory && isAdultCategory(cat)));
@@ -690,6 +715,7 @@ export const App: React.FC = () => {
     if (series.length > 0) return series[0];
     return null;
   }, [homeFeatured, movies, series]);
+  const hasHomeContent = Boolean(heroItem || movies.length || series.length || anime.length || kids.length || channels.length);
 
   const navigateTab = (tab: TabView) => {
     setSelectedMedia(null);
@@ -1131,8 +1157,20 @@ export const App: React.FC = () => {
                   </div>
                 </div>
 
+                {isSearchReady && isSearching && (
+                  <div className="results-grid catalog-skeleton-grid search-skeleton-grid" aria-busy="true" aria-label="Buscando en el catálogo">
+                    {Array.from({ length: 12 }, (_, index) => (
+                      <div className="catalog-skeleton-card" key={index} aria-hidden="true">
+                        <div className="catalog-skeleton-poster" />
+                        <div className="catalog-skeleton-line is-title" />
+                        <div className="catalog-skeleton-line" />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {/* Channels Search Matches */}
-                {(searchFilterTab === 'all' || searchFilterTab === 'channels') &&
+                {!isSearching && (searchFilterTab === 'all' || searchFilterTab === 'channels') &&
                   channelSearchResults.length > 0 && (
                     <div className="space-y-3">
                       <h3 className="text-sm font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-2">
@@ -1142,7 +1180,7 @@ export const App: React.FC = () => {
                       <div className="results-grid">
                         {channelSearchResults.map((ch, idx) => (
                           <div
-                            key={ch.channelCode || idx}
+                            key={`${ch.channelCode || ch.id || ch.name}-${idx}`}
                             className="media-card group cursor-pointer"
                             onClick={() => playChannel(ch)}
                           >
@@ -1193,7 +1231,7 @@ export const App: React.FC = () => {
                   )}
 
                 {/* Media Search Matches */}
-                {(searchFilterTab === 'all' || searchFilterTab === 'media') &&
+                {!isSearching && (searchFilterTab === 'all' || searchFilterTab === 'media') &&
                   searchResults.length > 0 && (
                     <div className="space-y-3">
                       <h3 className="text-sm font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-2">
@@ -1203,7 +1241,7 @@ export const App: React.FC = () => {
                       <div className="results-grid">
                         {searchResults.map((item, idx) => (
                           <div
-                            key={item.id || idx}
+                            key={`${item.id || item.title || 'media'}-${idx}`}
                             className="media-card group cursor-pointer"
                             onClick={() => openMediaDetail(item)}
                           >
@@ -1292,6 +1330,29 @@ export const App: React.FC = () => {
                 {/* VIEW: INICIO (HOME) */}
                 {activeTab === 'home' && (
                   <>
+                    {!hasHomeContent && isLoading && (
+                      <section className="home-loading" aria-busy="true" aria-label="Cargando catálogo">
+                        <div className="home-skeleton-hero" aria-hidden="true">
+                          <div className="home-skeleton-copy" />
+                          <div className="home-skeleton-copy is-short" />
+                        </div>
+                        <div className="home-skeleton-row" aria-hidden="true">
+                          {Array.from({ length: 6 }, (_, index) => <div className="home-skeleton-card" key={index} />)}
+                        </div>
+                        <div className="home-skeleton-row" aria-hidden="true">
+                          {Array.from({ length: 6 }, (_, index) => <div className="home-skeleton-card" key={index} />)}
+                        </div>
+                      </section>
+                    )}
+                    {!hasHomeContent && !isLoading && initialLoadFailed && (
+                      <section className="home-load-error empty-state" aria-live="polite">
+                        <h1 className="empty-title">No pudimos cargar el catálogo</h1>
+                        <p className="empty-copy">El servicio tardó demasiado. Puedes reintentar sin recargar la página.</p>
+                        <button type="button" className="empty-button" onClick={() => loadInitialData(true)}>
+                          Reintentar
+                        </button>
+                      </section>
+                    )}
                     {/* 1. CINEMATIC BILLBOARD HERO */}
                     {heroItem && (
                       <section

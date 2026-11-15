@@ -283,15 +283,25 @@ export const api = {
     return null;
   },
 
-  async search(query: string): Promise<MediaItem[]> {
+  async search(query: string, signal?: AbortSignal): Promise<MediaItem[]> {
     if (!query.trim()) return [];
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 7000);
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
     try {
-      const res = await fetch(`${getApiBaseUrl()}/search?value=${encodeURIComponent(query)}`);
+      const res = await fetch(`${getApiBaseUrl()}/search?value=${encodeURIComponent(query)}`, {
+        signal: controller.signal,
+      });
+      if (!res.ok) return [];
       const data = await res.json();
       return data.items || [];
     } catch (e) {
-      console.error('Error in search:', e);
+      if (!controller.signal.aborted) console.error('Error in search:', e);
       return [];
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
     }
   },
 
