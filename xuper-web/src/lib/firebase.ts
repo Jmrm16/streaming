@@ -7,6 +7,9 @@ import {
   signOut,
   onAuthStateChanged,
   updateProfile,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  reload,
   User,
 } from 'firebase/auth';
 import { getDatabase, ref, set, remove, update, onValue } from 'firebase/database';
@@ -29,6 +32,7 @@ export const firebaseConfig = {
 // Initialize Firebase
 export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+auth.languageCode = 'es';
 export const db = getDatabase(app);
 
 // Initialize Analytics conditionally (only in supported browser environments)
@@ -82,6 +86,7 @@ export interface EpisodeProgressEntry {
 }
 
 export const WATCH_UPDATED_EVENT = 'maicaoflix-watch-updated';
+export const AUTH_VERIFIED_EVENT = 'maicaoflix-auth-verified';
 const MAX_HISTORY_ITEMS = 60;
 
 // ============================================================
@@ -101,7 +106,58 @@ export const registerWithEmail = async (
   if (cleanName) {
     await updateProfile(cred.user, { displayName: cleanName });
   }
+  await sendEmailVerification(cred.user);
   return cred;
+};
+
+const ensureAuthUser = async (email?: string, password?: string): Promise<User | null> => {
+  if (auth.currentUser) return auth.currentUser;
+  if (email?.trim() && password) {
+    const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
+    return cred.user;
+  }
+  return null;
+};
+
+const emitAuthVerifiedEvent = () => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(AUTH_VERIFIED_EVENT));
+  }
+};
+
+export const resendVerificationEmail = async (email?: string, password?: string) => {
+  const user = await ensureAuthUser(email, password);
+  if (!user) {
+    throw new Error('Inicia sesión primero para reenviar el correo de verificación.');
+  }
+  await reload(user);
+  if (user.emailVerified) {
+    emitAuthVerifiedEvent();
+    return { alreadyVerified: true };
+  }
+  await sendEmailVerification(user);
+  return { alreadyVerified: false };
+};
+
+export const verifyEmailStatus = async (
+  email?: string,
+  password?: string
+): Promise<{ verified: boolean; user: User | null }> => {
+  const user = await ensureAuthUser(email, password);
+  if (!user) {
+    return { verified: false, user: null };
+  }
+  await reload(user);
+  if (user.emailVerified) {
+    await user.getIdToken(true);
+    emitAuthVerifiedEvent();
+    return { verified: true, user: auth.currentUser || user };
+  }
+  return { verified: false, user };
+};
+
+export const sendPasswordReset = async (email: string) => {
+  return sendPasswordResetEmail(auth, email.trim());
 };
 
 export const logoutUser = async () => {
@@ -109,7 +165,26 @@ export const logoutUser = async () => {
 };
 
 export const subscribeToAuth = (cb: (user: User | null) => void) => {
-  return onAuthStateChanged(auth, cb);
+  const emit = (user: User | null) => {
+    if (user && user.emailVerified) {
+      cb(user);
+    } else {
+      cb(null);
+    }
+  };
+  const unsubAuth = onAuthStateChanged(auth, emit);
+  const handleVerified = () => {
+    emit(auth.currentUser);
+  };
+  if (typeof window !== 'undefined') {
+    window.addEventListener(AUTH_VERIFIED_EVENT, handleVerified);
+  }
+  return () => {
+    unsubAuth();
+    if (typeof window !== 'undefined') {
+      window.removeEventListener(AUTH_VERIFIED_EVENT, handleVerified);
+    }
+  };
 };
 
 export const getFriendlyAuthError = (err: unknown): string => {
