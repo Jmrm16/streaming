@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useRef, useCallback, useTransition } from 'react';
 import {
   Search,
   Play,
@@ -56,6 +56,7 @@ import {
 
 type TabView = 'home' | 'series' | 'movies' | 'live' | 'anime' | 'kids' | 'favorites';
 const LIVE_CHANNEL_PAGE_SIZE = 120;
+const CATALOG_PAGE_SIZE = 72;
 const normalizeFilterValue = (value: string) => value.trim().toLocaleLowerCase('es');
 
 export const App: React.FC = () => {
@@ -78,6 +79,8 @@ export const App: React.FC = () => {
   const [liveVisibleLimit, setLiveVisibleLimit] = useState(LIVE_CHANNEL_PAGE_SIZE);
   const [selectedGenre, setSelectedGenre] = useState<string>('all');
   const [sortOption, setSortOption] = useState<string>('recommended');
+  const [catalogVisibleLimit, setCatalogVisibleLimit] = useState(CATALOG_PAGE_SIZE);
+  const [isCatalogFiltering, startCatalogFiltering] = useTransition();
 
   // Search states
   const [searchQuery, setSearchQuery] = useState('');
@@ -674,6 +677,12 @@ export const App: React.FC = () => {
     return list;
   }, [currentCatalogList, selectedGenre, sortOption]);
 
+  // Keeping a bounded first render prevents a large catalog filter from blocking the UI.
+  const visibleMediaList = useMemo(
+    () => filteredMediaList.slice(0, catalogVisibleLimit),
+    [filteredMediaList, catalogVisibleLimit]
+  );
+
   // Billboard Hero Item
   const heroItem = useMemo(() => {
     if (homeFeatured.length > 0) return homeFeatured[0];
@@ -697,6 +706,7 @@ export const App: React.FC = () => {
     setActiveTab(tab);
     setSelectedGenre('all');
     setSortOption('recommended');
+    setCatalogVisibleLimit(CATALOG_PAGE_SIZE);
     setSearchQuery('');
     setIsSearchOpen(false);
     setExploreMenuOpen(false);
@@ -1464,25 +1474,30 @@ export const App: React.FC = () => {
                             : 'Zona Infantil'}
                         </h1>
 
-                        {/* Genre Dropdown / Filter */}
+                        {/* Fast horizontal genre filter: avoids rendering a large native menu over the catalog. */}
                         {availableGenres.length > 2 && (
-                          <label className="catalog-filter relative">
-                            <span className="sr-only">Filtrar por género</span>
-                            <select
-                              value={selectedGenre}
-                              onChange={(e) => setSelectedGenre(e.target.value)}
-                              className="bg-[#242424] text-white text-xs font-semibold border border-zinc-700 rounded px-3 py-1.5 cursor-pointer focus:outline-none"
-                            >
-                              <option value="all">Todos los géneros</option>
-                              {availableGenres
-                                .filter((g) => g !== 'all')
-                                .map((g) => (
-                                  <option key={g} value={g}>
-                                    {g}
-                                  </option>
-                                ))}
-                            </select>
-                          </label>
+                          <div className="catalog-genre-rail" aria-label="Filtrar por género">
+                            {availableGenres.map((genre) => {
+                              const isSelected = selectedGenre === genre;
+                              return (
+                                <button
+                                  key={genre}
+                                  type="button"
+                                  aria-pressed={isSelected}
+                                  className={isSelected ? 'is-selected' : ''}
+                                  onClick={() => {
+                                    if (isSelected) return;
+                                    startCatalogFiltering(() => {
+                                      setSelectedGenre(genre);
+                                      setCatalogVisibleLimit(CATALOG_PAGE_SIZE);
+                                    });
+                                  }}
+                                >
+                                  {genre === 'all' ? 'Todos los géneros' : genre}
+                                </button>
+                              );
+                            })}
+                          </div>
                         )}
                       </div>
 
@@ -1492,8 +1507,11 @@ export const App: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => {
-                              setSelectedGenre('all');
-                              setSortOption('recommended');
+                              startCatalogFiltering(() => {
+                                setSelectedGenre('all');
+                                setSortOption('recommended');
+                                setCatalogVisibleLimit(CATALOG_PAGE_SIZE);
+                              });
                             }}
                             className="h-8 px-2 text-xs font-semibold text-zinc-400 transition-colors hover:text-white"
                           >
@@ -1502,9 +1520,15 @@ export const App: React.FC = () => {
                         )}
                         <label className="catalog-filter sort-control relative">
                           <span className="sr-only">Ordenar</span>
-                          <select
-                            value={sortOption}
-                            onChange={(e) => setSortOption(e.target.value)}
+                            <select
+                              value={sortOption}
+                              onChange={(e) => {
+                                const nextSort = e.target.value;
+                                startCatalogFiltering(() => {
+                                  setSortOption(nextSort);
+                                  setCatalogVisibleLimit(CATALOG_PAGE_SIZE);
+                                });
+                              }}
                             className="bg-[#242424] text-white text-xs font-semibold border border-zinc-700 rounded px-3 py-1.5 cursor-pointer focus:outline-none"
                           >
                             <option value="recommended">Recomendados</option>
@@ -1518,13 +1542,25 @@ export const App: React.FC = () => {
                     <div className="zentix-catalog-status text-xs text-zinc-400">
                       {filteredMediaList.length} títulos disponibles
                       {selectedGenre !== 'all' && ` en género "${selectedGenre}"`}
+                      {isCatalogFiltering && <span className="catalog-filtering-note">Actualizando…</span>}
                     </div>
 
                     {/* Grid of Titles */}
-                    <div className="results-grid">
-                      {filteredMediaList.map((item, idx) => (
+                    {isLoading && currentCatalogList.length === 0 ? (
+                      <div className="results-grid catalog-skeleton-grid" aria-busy="true" aria-label="Cargando catálogo">
+                        {Array.from({ length: 12 }, (_, index) => (
+                          <div className="catalog-skeleton-card" key={index} aria-hidden="true">
+                            <div className="catalog-skeleton-poster" />
+                            <div className="catalog-skeleton-line is-title" />
+                            <div className="catalog-skeleton-line" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                    <div className="results-grid" aria-busy={isCatalogFiltering}>
+                      {visibleMediaList.map((item, idx) => (
                         <div
-                          key={item.id || idx}
+                          key={`${item.id || item.title || 'media'}-${idx}`}
                           className="media-card group cursor-pointer"
                           onClick={() => openMediaDetail(item)}
                         >
@@ -1578,15 +1614,21 @@ export const App: React.FC = () => {
                         </div>
                       ))}
                     </div>
+                    )}
 
                     {/* Load More Button */}
                     {filteredMediaList.length > 0 &&
-                      selectedGenre === 'all' &&
-                      hasMoreMap[activeTab] !== false && (
+                      (visibleMediaList.length < filteredMediaList.length || hasMoreMap[activeTab] !== false) && (
                         <div className="zentix-load-more pt-6 pb-12 flex justify-center">
                           <button
                             type="button"
-                            onClick={handleLoadMore}
+                            onClick={() => {
+                              if (visibleMediaList.length < filteredMediaList.length) {
+                                setCatalogVisibleLimit((limit) => limit + CATALOG_PAGE_SIZE);
+                                return;
+                              }
+                              handleLoadMore();
+                            }}
                             disabled={isLoadingMore}
                             className="empty-button flex items-center gap-2 cursor-pointer font-semibold"
                           >
@@ -1596,7 +1638,11 @@ export const App: React.FC = () => {
                                 <span>Cargando más títulos...</span>
                               </>
                             ) : (
-                              <span>Cargar más títulos</span>
+                              <span>
+                                {visibleMediaList.length < filteredMediaList.length
+                                  ? 'Ver más títulos'
+                                  : 'Cargar más títulos'}
+                              </span>
                             )}
                           </button>
                         </div>
