@@ -55,6 +55,7 @@ import {
 } from './services/api';
 
 type TabView = 'home' | 'series' | 'movies' | 'live' | 'anime' | 'kids' | 'favorites';
+const LIVE_CHANNEL_PAGE_SIZE = 120;
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabView>('home');
@@ -69,9 +70,11 @@ export const App: React.FC = () => {
   const [kids, setKids] = useState<MediaItem[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+  const [isPublicLiveMode, setIsPublicLiveMode] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [liveQuery, setLiveQuery] = useState('');
   const [liveSort, setLiveSort] = useState<'recommended' | 'title'>('recommended');
+  const [liveVisibleLimit, setLiveVisibleLimit] = useState(LIVE_CHANNEL_PAGE_SIZE);
   const [selectedGenre, setSelectedGenre] = useState<string>('all');
   const [sortOption, setSortOption] = useState<string>('recommended');
 
@@ -332,7 +335,7 @@ export const App: React.FC = () => {
   const loadInitialData = useCallback(async (force = false) => {
     setIsLoading(true);
     try {
-      const [feat, mov, ser, anim, kid, cats, chs, publicChannels] = await Promise.all([
+      const [feat, mov, ser, anim, kid, cats, chs, publicLiveCatalog] = await Promise.all([
         api.getHome('featured', 1, force),
         api.getHome('movies', 1, force),
         api.getHome('series', 1, force),
@@ -340,7 +343,7 @@ export const App: React.FC = () => {
         api.getHome('kids', 1, force),
         api.getLiveColumns(force),
         api.getLiveChannels('all', 1, 100, force),
-        api.getPublicMoviesChannels(force),
+        api.getPublicLiveCatalog(force),
       ]);
 
       if (feat.length > 0) setHomeFeatured(feat);
@@ -348,9 +351,15 @@ export const App: React.FC = () => {
       if (ser.length > 0) setSeries(ser);
       if (anim.length > 0) setAnime(anim);
       if (kid.length > 0) setKids(kid);
-      if (cats.length > 0) setCategories(cats);
-      if (chs.length > 0) setChannels(chs);
-      else if (publicChannels.length > 0) setChannels(publicChannels);
+      if (chs.length > 0) {
+        setIsPublicLiveMode(false);
+        if (cats.length > 0) setCategories(cats);
+        setChannels(chs);
+      } else if (publicLiveCatalog.channels.length > 0) {
+        setIsPublicLiveMode(true);
+        setCategories(publicLiveCatalog.categories);
+        setChannels(publicLiveCatalog.channels);
+      }
     } catch (err) {
       console.error('Error loading initial data:', err);
     } finally {
@@ -365,6 +374,8 @@ export const App: React.FC = () => {
   // Category change for Live TV
   const loadCategoryChannels = async (catId: string) => {
     setSelectedCategory(catId);
+    setLiveVisibleLimit(LIVE_CHANNEL_PAGE_SIZE);
+    if (isPublicLiveMode) return;
     setIsLoading(true);
     try {
       const chs = await api.getLiveChannels(catId, 1, 200, false);
@@ -569,9 +580,19 @@ export const App: React.FC = () => {
     return categories.filter((cat) => !(hideAdultCategory && isAdultCategory(cat)));
   }, [categories, hideAdultCategory]);
 
-  const visibleLiveChannels = useMemo(() => {
+  const filteredLiveChannels = useMemo(() => {
     const query = liveQuery.trim().toLocaleLowerCase('es');
     let list = isAdultUnlocked ? channels : channels.filter((c) => !isAdultChannel(c));
+    if (isPublicLiveMode && selectedCategory !== 'all') {
+      const category = categories.find((item) => item.id === selectedCategory);
+      if (category) {
+        list = list.filter((channel) =>
+          String(channel.category || '')
+            .split(';')
+            .some((name) => name.trim() === category.name)
+        );
+      }
+    }
     if (query) {
       list = list.filter((channel) =>
         `${channel.name || ''} ${channel.category || ''} ${channel.channelCode || ''}`
@@ -583,7 +604,12 @@ export const App: React.FC = () => {
       list = [...list].sort((a, b) => a.name.localeCompare(b.name, 'es'));
     }
     return list;
-  }, [channels, isAdultUnlocked, liveQuery, liveSort]);
+  }, [channels, categories, isAdultUnlocked, isPublicLiveMode, liveQuery, liveSort, selectedCategory]);
+
+  const visibleLiveChannels = useMemo(
+    () => filteredLiveChannels.slice(0, liveVisibleLimit),
+    [filteredLiveChannels, liveVisibleLimit]
+  );
 
   const homeLiveChannels = useMemo(() => {
     return channels.filter((c) => !isAdultChannel(c));
@@ -1584,7 +1610,7 @@ export const App: React.FC = () => {
                           </span>
                         </h1>
                         <p className="text-xs text-zinc-400 mt-1">
-                          {visibleLiveChannels.length} canales disponibles en alta definición
+                          {filteredLiveChannels.length.toLocaleString('es-CO')} canales disponibles en alta definición
                         </p>
                       </div>
                       {isAdultUnlocked && (
@@ -1643,7 +1669,10 @@ export const App: React.FC = () => {
                         <input
                           type="search"
                           value={liveQuery}
-                          onChange={(event) => setLiveQuery(event.target.value)}
+                          onChange={(event) => {
+                            setLiveQuery(event.target.value);
+                            setLiveVisibleLimit(LIVE_CHANNEL_PAGE_SIZE);
+                          }}
                           placeholder="Buscar canal o categoría"
                           className="w-full h-9 rounded-md border border-zinc-800 bg-[#171717] pl-9 pr-3 text-sm text-white placeholder:text-zinc-500 outline-none transition-colors focus:border-zinc-500"
                         />
@@ -1652,7 +1681,10 @@ export const App: React.FC = () => {
                         <span className="text-xs text-zinc-500">Ordenar</span>
                         <select
                           value={liveSort}
-                          onChange={(event) => setLiveSort(event.target.value as 'recommended' | 'title')}
+                          onChange={(event) => {
+                            setLiveSort(event.target.value as 'recommended' | 'title');
+                            setLiveVisibleLimit(LIVE_CHANNEL_PAGE_SIZE);
+                          }}
                           className="h-9 rounded-md border border-zinc-800 bg-[#171717] px-3 text-xs font-semibold text-zinc-200 outline-none focus:border-zinc-500"
                         >
                           <option value="recommended">Recomendados</option>
@@ -1662,7 +1694,10 @@ export const App: React.FC = () => {
                       {liveQuery && (
                         <button
                           type="button"
-                          onClick={() => setLiveQuery('')}
+                          onClick={() => {
+                            setLiveQuery('');
+                            setLiveVisibleLimit(LIVE_CHANNEL_PAGE_SIZE);
+                          }}
                           className="h-9 px-3 text-xs font-semibold text-zinc-300 hover:text-white transition-colors"
                         >
                           Limpiar
@@ -1724,6 +1759,18 @@ export const App: React.FC = () => {
                         </div>
                       ))}
                     </div>
+
+                    {visibleLiveChannels.length < filteredLiveChannels.length && (
+                      <div className="zentix-load-more pt-2 pb-8 flex justify-center">
+                        <button
+                          type="button"
+                          onClick={() => setLiveVisibleLimit((limit) => limit + LIVE_CHANNEL_PAGE_SIZE)}
+                          className="empty-button flex items-center gap-2 cursor-pointer font-semibold"
+                        >
+                          Mostrar más canales ({(filteredLiveChannels.length - visibleLiveChannels.length).toLocaleString('es-CO')} restantes)
+                        </button>
+                      </div>
+                    )}
 
                     {visibleLiveChannels.length === 0 && !isLoading && (
                       <div className="empty-state py-20 text-center text-zinc-500 space-y-3">

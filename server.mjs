@@ -19,10 +19,10 @@ const netdiag = require(path.join(svcDir, "netdiag.js"));
 const PORT = Number(process.env.PORT || 8910);
 const SEED_INGEST_TOKEN = process.env.SEED_INGEST_TOKEN || "";
 const MAX_SEED_BODY_BYTES = 1024 * 1024;
-const PUBLIC_MOVIES_M3U_URL = "https://iptv-org.github.io/iptv/categories/movies.m3u";
+const PUBLIC_LIVE_M3U_URL = "https://iptv-org.github.io/iptv/index.m3u";
 const PUBLIC_M3U_CACHE_MS = 10 * 60 * 1000;
 const PUBLIC_M3U_MAX_BYTES = 3 * 1024 * 1024;
-let publicMoviesM3uCache = { at: 0, channels: [] };
+let publicLiveM3uCache = { at: 0, channels: [], categories: [] };
 
 const m3uAttribute = (line, name) => {
   const match = new RegExp(`${name}="([^"]*)"`, "i").exec(line);
@@ -57,17 +57,29 @@ const parsePublicM3u = (body) => {
       headers,
     });
     metadata = "";
-    if (channels.length >= 800) break;
   }
   return channels;
 };
 
-const getPublicMoviesChannels = (callback) => {
-  if (publicMoviesM3uCache.channels.length && Date.now() - publicMoviesM3uCache.at < PUBLIC_M3U_CACHE_MS) {
-    callback(null, publicMoviesM3uCache.channels);
+const publicLiveCategories = (channels) => {
+  const names = new Set();
+  for (const channel of channels) {
+    for (const name of String(channel.category || 'TV en vivo').split(';')) {
+      const cleanName = name.trim();
+      if (cleanName) names.add(cleanName);
+    }
+  }
+  return Array.from(names)
+    .sort((a, b) => a.localeCompare(b, 'es'))
+    .map((name) => ({ id: `public_category_${name}`, name }));
+};
+
+const getPublicLiveCatalog = (callback) => {
+  if (publicLiveM3uCache.channels.length && Date.now() - publicLiveM3uCache.at < PUBLIC_M3U_CACHE_MS) {
+    callback(null, publicLiveM3uCache);
     return;
   }
-  const request = https.get(PUBLIC_MOVIES_M3U_URL, { headers: { "User-Agent": "XuperWeb/1.0" } }, (response) => {
+  const request = https.get(PUBLIC_LIVE_M3U_URL, { headers: { "User-Agent": "XuperWeb/1.0" } }, (response) => {
     if (response.statusCode !== 200) {
       response.resume();
       callback(new Error(`La lista pública respondió HTTP ${response.statusCode || 0}`));
@@ -84,8 +96,8 @@ const getPublicMoviesChannels = (callback) => {
       if (size > PUBLIC_M3U_MAX_BYTES) return;
       const channels = parsePublicM3u(Buffer.concat(chunks).toString("utf8"));
       if (!channels.length) return callback(new Error("La lista pública no contiene canales compatibles"));
-      publicMoviesM3uCache = { at: Date.now(), channels };
-      callback(null, channels);
+      publicLiveM3uCache = { at: Date.now(), channels, categories: publicLiveCategories(channels) };
+      callback(null, publicLiveM3uCache);
     });
   });
   request.setTimeout(15000, () => request.destroy(new Error("Tiempo de espera agotado al descargar la lista pública")));
@@ -424,10 +436,10 @@ const server = http.createServer((req, res) => {
     });
   }
 
-  if (u.pathname === "/publicMoviesChannels") {
-    return getPublicMoviesChannels((err, channels) => {
-      const responseChannels = (channels || []).map(({ headers, ...channel }) => channel);
-      done(err, { channels: responseChannels });
+  if (u.pathname === "/publicLiveChannels" || u.pathname === "/publicMoviesChannels") {
+    return getPublicLiveCatalog((err, catalog) => {
+      const responseChannels = ((catalog && catalog.channels) || []).map(({ headers, ...channel }) => channel);
+      done(err, { channels: responseChannels, categories: (catalog && catalog.categories) || [] });
     });
   }
 
@@ -466,9 +478,9 @@ const server = http.createServer((req, res) => {
     const streamUrl = u.searchParams.get("streamUrl") || "";
     const channelCode = u.searchParams.get("channelCode") || u.searchParams.get("id") || "";
     if (channelCode.startsWith("public_m3u_")) {
-      return getPublicMoviesChannels((err, channels) => {
+      return getPublicLiveCatalog((err, catalog) => {
         if (err) return done(err);
-        const channel = (channels || []).find((item) => item.channelCode === channelCode);
+        const channel = ((catalog && catalog.channels) || []).find((item) => item.channelCode === channelCode);
         if (!channel) return done(new Error("Canal público no encontrado o actualizado"));
         const token = proxy.add(channel.streamUrl, channel.headers || {}, 0, null, null, true);
         done(null, {
